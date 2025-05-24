@@ -1,7 +1,7 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "26.1") (transient "0.3.0") (compat "30.0.2.0") (markdown-mode "2.7"))
+;; Package-Requires: ((emacs "26.1") (transient "0.3.0") (compat "30.0.2.0") (eat "0.9.2"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
 ;; SPDX-License-Identifier: MIT
@@ -11,20 +11,21 @@
 ;;; Commentary:
 
 ;; Claudemacs integrates with Claude Code (https://docs.anthropic.com/en/docs/claude-code/overview)
-;; for AI-assisted programming in Emacs.
+;; for AI-assisted programming in Emacs using the eat terminal emulator.
 ;;
 ;; Inspired by Aidermacs: https://github.com/MatthewZMD/aidermacs and
-;; and claude-code.el: https://github.com/stevemolitor/claude-code.el
+;; claude-code.el: https://github.com/stevemolitor/claude-code.el
 
 ;;; Code:
 
-(require 'compat)
+;;;; Dependencies
+(require 'cl-lib)
 (require 'transient)
-(require 'comint)
 (require 'project)
 (require 'vc-git)
-(require 'vterm nil 'noerror)
+(require 'eat nil 'noerror)
 
+;;;; Customization
 (defgroup claudemacs nil
   "AI pair programming with Claude Code."
   :group 'tools)
@@ -34,12 +35,12 @@
   :type 'string
   :group 'claudemacs)
 
-(defvar-local claudemacs--ready nil
-  "Buffer-local variable to track whether claude is ready to accept commands.")
+(defface claudemacs-repl-face
+  nil
+  "Face for Claude REPL."
+  :group 'claudemacs)
 
-(defvar-local claudemacs--current-mode nil
-  "Buffer-local variable to track the current claudemacs mode.")
-
+;;;; Utility Functions
 (defun claudemacs--project-root ()
   "Get the project root using VC-git, or fallback to file directory."
   (or (vc-git-root default-directory)
@@ -47,10 +48,18 @@
         (file-name-directory buffer-file-name))
       default-directory))
 
-(defun claudemacs--get-buffer-name ()
-  "Generate the claudemacs buffer name based on project root."
-  (let ((root (claudemacs--project-root)))
+(defun claudemacs--get-buffer-name (&optional dir)
+  "Generate the claudemacs buffer name based on project root.
+If DIR is supplied, generate a name for that directory's session;
+otherwise use the current project root."
+  (let ((root (if dir
+                  (claudemacs--project-root dir)
+                (claudemacs--project-root))))
     (format "*claudemacs:%s*" (file-truename root))))
+
+(defun claudemacs--get-buffer (&optional dir)
+  "Return existing claudemacs buffer for DIR or nil."
+  (get-buffer (claudemacs--get-buffer-name dir)))
 
 (defun claudemacs--is-claudemacs-buffer-p (&optional buffer)
   "Return t if BUFFER (or current buffer) is a claudemacs buffer."
@@ -58,136 +67,90 @@
     (and (buffer-live-p buf)
          (string-match-p "^\\*claudemacs:" (buffer-name buf)))))
 
-(defun claudemacs--live-p (&optional buffer-name)
-  "Return t if the claudemacs buffer is available and process is running."
-  (let ((buf-name (or buffer-name (claudemacs--get-buffer-name))))
-    (and (get-buffer buf-name)
-         (process-live-p (get-buffer-process buf-name)))))
+;;;; Terminal Integration
+;; Eat terminal emulator functions  
+(declare-function eat-make "eat")
+(declare-function eat-term-send-string "eat")
+(declare-function eat-kill-process "eat")
+(defvar eat-terminal)
+(defvar eat-term-name)
 
-(defun claudemacs--start-process (buffer-name program args)
-  "Start the claudemacs comint process in BUFFER-NAME with PROGRAM and ARGS."
-  (let ((default-directory (claudemacs--project-root))
-        (process-environment 
-         (append '("TERM=dumb"
-                   "INSIDE_EMACS=t"
-                   "NO_COLOR=1"
-                   "COLUMNS=80"
-                   "LINES=25")
-                 process-environment))
-        (process-connection-type nil)) ; Force pipe mode
-    (unless (comint-check-proc buffer-name)
-      (condition-case err
-          (progn
-            (apply #'make-comint-in-buffer "claudemacs" buffer-name program nil args)
-            (with-current-buffer buffer-name
-              (claudemacs--comint-mode)
-              (setq-local claudemacs--ready nil)
-              (setq-local claudemacs--current-mode 'code)
-              ;; Ensure buffer is writable
-              (setq buffer-read-only nil)
-              (setq inhibit-read-only t)
-              ;; Add debugging info
-              (let ((process (get-buffer-process buffer-name)))
-                (when process
-                  (set-process-query-on-exit-flag process nil)
-                  (message "Claude process started: %s" (process-status process))
-                  ;; Wait a moment for process to settle
-                  (sit-for 0.5))))))
-        (error (err)
-         (error "Failed to start %s: %s" program (error-message-string err))))))
+(defun claudemacs--setup-repl-faces ()
+  "Setup faces for the Claude REPL buffer.
+Applies consistent styling to all eat-mode terminal faces."
+  
+  ;; Helper function to remap a face to inherit from claudemacs-repl-face
+  (cl-flet ((remap-face (face &rest props)
+              (apply #'face-remap-add-relative face :inherit 'claudemacs-repl-face props)))
+    
+    ;; Set buffer default face
+    (buffer-face-set :inherit 'claudemacs-repl-face)
+    
+    ;; Remap all eat terminal faces to inherit from claudemacs-repl-face
+    (mapc #'remap-face
+          '(eat-shell-prompt-annotation-running
+            eat-shell-prompt-annotation-success
+            eat-shell-prompt-annotation-failure
+            eat-term-bold eat-term-faint eat-term-italic
+            eat-term-slow-blink eat-term-fast-blink))
+    
+    ;; Remap font faces (eat-term-font-0 through eat-term-font-9)
+    (dotimes (i 10)
+      (remap-face (intern (format "eat-term-font-%d" i))))
+    
+    ;; Specific overrides
+    (face-remap-add-relative 'nobreak-space :underline nil)
+    (remap-face 'eat-term-faint :foreground "#999999" :weight 'light)))
 
-(defun claudemacs--switch-to-buffer (buffer-name)
-  "Switch to the claudemacs buffer."
-  (let ((buffer (get-buffer buffer-name)))
-    (cond
-     ((and buffer (get-buffer-window buffer))
-      (select-window (get-buffer-window buffer)))
-     (buffer
-      (pop-to-buffer buffer))
-     (t
-      (error "No claudemacs buffer exists")))))
 
-(define-derived-mode claudemacs--comint-mode comint-mode "Claude"
-  "Major mode for Claude Code comint sessions."
-  (setq-local comint-prompt-regexp "^[>]+\\|^.*> *")
-  (setq-local comint-input-ignoredups t)
-  (setq-local comint-process-echoes nil)
-  (setq-local comint-use-prompt-regexp nil) ; Let comint handle prompts naturally
-  (setq-local comint-input-sender 'comint-simple-send)
-  (setq-local comint-eol-on-send t)
-  (setq-local comint-scroll-to-bottom-on-input t)
-  (setq-local comint-scroll-to-bottom-on-output t)
-  (setq-local comint-move-point-for-output t)
-  (setq-local comint-input-ring-size 1000)
-  ;; Explicitly set buffer as writable
-  (setq buffer-read-only nil)
-  (setq inhibit-read-only t)
-  ;; Add a hook to keep buffer writable
-  (add-hook 'comint-output-filter-functions
-            (lambda (_output)
-              (setq buffer-read-only nil)
-              (setq inhibit-read-only t))
-            nil t))
+(defun claudemacs--start (dir &rest args)
+  "Start Claude Code in directory DIR with optional ARGS."
+  (require 'eat)
+  (let* ((default-directory dir)
+         (buffer-name (claudemacs--get-buffer-name dir))
+         (buffer (get-buffer-create buffer-name))
+         (process-environment 
+          (append '("TERM=xterm-256color")
+                  process-environment)))
+    (with-current-buffer buffer
+      (cd dir)
+      (setq-local eat-term-name "xterm-256color")
+      (let ((process-adaptive-read-buffering nil)
+            (switches (remove nil (append args))))
+        (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches))
+      
+      (claudemacs--setup-repl-faces)
+      ;; Keep cursor at end of buffer for terminal interaction
+      (setq-local scroll-conservatively 101)
+      (setq-local scroll-margin 0)
+      (setq-local maximum-scroll-margin 0)
+      
+      ;; Bind C-g to send ESC to terminal in Claude buffers
+      (local-set-key (kbd "C-g") (lambda () (interactive) 
+                                    (eat-term-send-string eat-terminal (kbd "ESC")))))
+    
+    (let ((window (display-buffer buffer)))
+      (select-window window))))
 
-(defun claudemacs--debug-process ()
-  "Debug function to check Claude process status."
-  (interactive)
-  (let* ((buffer-name (claudemacs--get-buffer-name))
-         (buffer (get-buffer buffer-name))
-         (process (and buffer (get-buffer-process buffer))))
-    (if process
-        (progn
-          (message "Process status: %s" (process-status process))
-          (message "Process command: %s" (process-command process))
-          (when (eq (process-status process) 'run)
-            (with-current-buffer buffer
-              (goto-char (point-max))
-              (insert "\n;; Sending test command...\n")
-              (process-send-string process "/help\n"))))
-      (message "No Claude process found"))))
-
-;; VTerm backend functions
-(declare-function vterm-other-window "vterm")
-(declare-function vterm-send-string "vterm")
-(declare-function vterm-send-return "vterm")
-
-(defun claudemacs--run-vterm-simple ()
-  "Simple test function to run Claude Code in vterm."
-  (interactive)
-  (unless (require 'vterm nil t)
-    (error "VTerm package is not available. Please install vterm"))
-  (let* ((buffer-name "*claude-vterm-test*")
-         (vterm-buffer-name buffer-name)
-         (vterm-shell "claude")
-         (vterm-kill-buffer-on-exit nil))
-    (message "Starting Claude Code in vterm...")
-    (vterm-other-window)
-    (message "Claude Code started in vterm buffer: %s" buffer-name)))
-
+;;;; Interactive Commands
 ;;;###autoload
-(defun claudemacs-run ()
-  "Run claudemacs process using comint."
-  (interactive)
-  (let* ((buffer-name (claudemacs--get-buffer-name))
-         (args '()))  ; Claude Code CLI arguments can be added here
-    (if (claudemacs--live-p buffer-name)
-        (claudemacs--switch-to-buffer buffer-name)
-      (progn
-        ;; Kill existing buffer if it exists but process is dead
-        (when (get-buffer buffer-name)
-          (kill-buffer buffer-name))
-        (claudemacs--start-process buffer-name claudemacs-program args)
-        (claudemacs--switch-to-buffer buffer-name)))))
+(defun claudemacs-run (&optional arg)
+  "Start Claude Code.
+With prefix ARG, prompt for the project directory."
+  (interactive "P")
+  (let* ((dir (if arg
+                  (read-directory-name "Project directory: ")
+                (claudemacs--project-root))))
+    (claudemacs--start dir)))
 
+;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()
   "Claude Code AI Pair Programming Interface."
   ["Claudemacs: AI Pair Programming"
    ["Core"
-    ("c" "Start/Open Session (Comint)" claudemacs-run)
-    ("v" "Start/Open Session (VTerm)" claudemacs--run-vterm-simple)]
-   ["Debug"
-    ("d" "Debug Process" claudemacs--debug-process)]])
+    ("c" "Start/Open Session" claudemacs-run)
+    ("r" "Start with Resume" (lambda () (interactive) (claudemacs--start (claudemacs--project-root) "--resume")))]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
