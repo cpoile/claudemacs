@@ -35,26 +35,31 @@
   :type 'string
   :group 'claudemacs)
 
+(defcustom claudemacs-program-switches nil
+  "List of command line switches to pass to the Claude program.
+These are passed as SWITCHES parameters to `eat-make`.
+E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
+  :type '(repeat string)
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
   :group 'claudemacs)
 
 ;;;; Utility Functions
-(defun claudemacs--project-root ()
-  "Get the project root using VC-git, or fallback to file directory."
-  (or (vc-git-root default-directory)
-      (when buffer-file-name
-        (file-name-directory buffer-file-name))
-      default-directory))
+(defun claudemacs--project-root (&optional dir)
+  "Get the project root using VC-git, or fallback to current buffer's directory.
+
+If DIR is given, use the vc-git-root of DIR."
+  (let ((loc (or dir (file-name-directory (buffer-file-name)))))
+    (vc-git-root loc)))
 
 (defun claudemacs--get-buffer-name (&optional dir)
   "Generate the claudemacs buffer name based on project root.
 If DIR is supplied, generate a name for that directory's session;
 otherwise use the current project root."
-  (let ((root (if dir
-                  (claudemacs--project-root dir)
-                (claudemacs--project-root))))
+  (let ((root (claudemacs--project-root)))
     (format "*claudemacs:%s*" (file-truename root))))
 
 (defun claudemacs--get-buffer (&optional dir)
@@ -116,7 +121,7 @@ Applies consistent styling to all eat-mode terminal faces."
       (cd dir)
       (setq-local eat-term-name "xterm-256color")
       (let ((process-adaptive-read-buffering nil)
-            (switches (remove nil (append args))))
+            (switches (remove nil (append args claudemacs-program-switches))))
         (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches))
       
       (claudemacs--setup-repl-faces)
@@ -143,6 +148,16 @@ With prefix ARG, prompt for the project directory."
                 (claudemacs--project-root))))
     (claudemacs--start dir)))
 
+;;;###autoload
+(defun claudemacs-resume (&optional arg)
+  "Start Claude Code, resuming a previous session.
+With prefix ARG, prompt for the project directory."
+  (interactive "P")
+  (let* ((dir (if arg
+                  (read-directory-name "Project directory: ")
+                (claudemacs--project-root))))
+    (claudemacs--start dir "--resume")))
+
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()
@@ -150,7 +165,7 @@ With prefix ARG, prompt for the project directory."
   ["Claudemacs: AI Pair Programming"
    ["Core"
     ("c" "Start/Open Session" claudemacs-run)
-    ("r" "Start with Resume" (lambda () (interactive) (claudemacs--start (claudemacs--project-root) "--resume")))]])
+    ("r" "Start with Resume" claudemacs-resume)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
