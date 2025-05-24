@@ -246,13 +246,14 @@ Returns a plist with :file-path, :project-root, and :relative-path."
           :project-root project-root
           :relative-path relative-path)))
 
-(defun claudemacs--send-message-to-claude (message)
-  "Send MESSAGE to the active Claudemacs session."
+(defun claudemacs--send-message-to-claude (message &optional no-return)
+  "Send MESSAGE to the active Claudemacs session.
+If NO-RETURN is non-nil, don't send a return/newline."
   (let ((claude-buffer (claudemacs--get-buffer)))
     (with-current-buffer claude-buffer
-      (goto-char (point-max))
       (eat-term-send-string eat-terminal message)
-      (eat-term-send-string eat-terminal (kbd "RET")))
+      (unless no-return
+        (eat-term-send-string eat-terminal (kbd "RET"))))
     (claudemacs--switch-to-buffer)))
 
 (defun claudemacs--format-context-line-range (relative-path start-line end-line)
@@ -308,6 +309,36 @@ Otherwise, use current line as context."
     (claudemacs--send-message-to-claude message-text)
     (message "Sent request to Claude with context")))
 
+;;;###autoload
+(defun claudemacs-add-file-reference ()
+  "Add a file reference to the Claude conversation.
+Prompts for a file and sends @rel/path/to/file without newline."
+  (interactive)
+  (claudemacs--validate-session)
+  
+  (let* ((context (claudemacs--get-file-context))
+         (project-root (plist-get context :project-root))
+         (selected-file (read-file-name "Add file reference: " project-root))
+         (relative-path (file-relative-name selected-file project-root))
+         (reference-text (format "@%s " relative-path)))
+    
+    (claudemacs--send-message-to-claude reference-text t)
+    (message "Added file reference: @%s" relative-path)))
+
+;;;###autoload
+(defun claudemacs-add-current-file-reference ()
+  "Add current file reference to the Claude conversation.
+Sends @rel/path/to/current/file without newline."
+  (interactive)
+  (claudemacs--validate-session)
+  
+  (let* ((context (claudemacs--get-file-context))
+         (relative-path (plist-get context :relative-path))
+         (reference-text (format "@%s " relative-path)))
+    
+    (claudemacs--send-message-to-claude reference-text t)
+    (message "Added current file reference: @%s" relative-path)))
+
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()
@@ -319,7 +350,9 @@ Otherwise, use current line as context."
     ("k" "Kill Session" claudemacs-kill)]
    ["Actions"
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
-    ("x" "Execute Request with Context" claudemacs-execute-request)]])
+    ("x" "Execute Request with Context" claudemacs-execute-request)
+    ("f" "Add File Reference" claudemacs-add-file-reference)
+    ("F" "Add Current File" claudemacs-add-current-file-reference)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
