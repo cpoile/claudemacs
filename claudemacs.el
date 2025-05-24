@@ -337,5 +337,34 @@ Otherwise, use current line as context."
   :keymap claudemacs-mode-map
   :group 'claudemacs)
 
+(defun claudemacs--goto-point-max ()
+  "Move cursor to end of buffer in Claudemacs buffers."
+  (when (and (eq major-mode 'eat-mode)
+             (claudemacs--is-claudemacs-buffer-p))
+    (goto-char (point-max))))
+
+(defun claudemacs--show-cursor (&rest _args)
+  "Show cursor in Claudemacs buffers when in emacs mode."
+  (when (claudemacs--is-claudemacs-buffer-p)
+    (setq-local cursor-type 'box)))
+
+(defun claudemacs--hide-cursor (&rest _args)
+  "Hide cursor in Claudemacs buffers when in semi-char mode."
+  (when (claudemacs--is-claudemacs-buffer-p)
+    (setq-local cursor-type nil)))
+
+;; Set up hooks when package is loaded
+(unless (memq 'claudemacs--goto-point-max window-state-change-hook)
+  (add-hook 'window-state-change-hook 'claudemacs--goto-point-max))
+
+;; Set up advice when package is loaded
+(unless (advice-member-p #'claudemacs--show-cursor 'eat-emacs-mode)
+  (advice-add 'eat-emacs-mode :after #'claudemacs--show-cursor))
+
+(unless (advice-member-p #'claudemacs--hide-cursor 'eat-semi-char-mode)
+  (advice-add 'eat-semi-char-mode :after #'claudemacs--hide-cursor))
+
+
+
 (provide 'claudemacs)
 ;;; claudemacs.el ends here
