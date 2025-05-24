@@ -55,12 +55,33 @@ If DIR is given, use the vc-git-root of DIR."
   (let ((loc (or dir (file-name-directory (buffer-file-name)))))
     (vc-git-root loc)))
 
+(defun claudemacs--session-id ()
+  "Return an identifier for the current Claude session.
+If a workspace is active (checking various workspace packages), 
+use its name, otherwise fall back to the project root."
+  (cond
+   ;; Doom Emacs workspace
+   ((and (fboundp '+workspace-current-name)
+         (let ((ws (+workspace-current-name)))
+           (and ws (stringp ws) (not (string-empty-p ws)))))
+    (+workspace-current-name))
+   ;; Perspective mode
+   ((and (and (fboundp 'safe-persp-name) (fboundp 'get-current-persp))
+         (let ((ws (safe-persp-name (get-current-persp))))
+           (and ws (stringp ws) (not (string-empty-p ws)))))
+    (safe-persp-name (get-current-persp)))
+   ;; Fall back to project root
+   (t (file-truename (claudemacs--project-root)))))
+
 (defun claudemacs--get-buffer-name (&optional dir)
-  "Generate the claudemacs buffer name based on project root.
+  "Generate the claudemacs buffer name based on session ID.
 If DIR is supplied, generate a name for that directory's session;
-otherwise use the current project root."
-  (let ((root (claudemacs--project-root)))
-    (format "*claudemacs:%s*" (file-truename root))))
+otherwise use the current workspace (or project root if no
+workspace is available)."
+  (format "*claudemacs:%s*"
+          (if dir
+              (file-truename (claudemacs--project-root dir))
+            (claudemacs--session-id))))
 
 (defun claudemacs--get-buffer (&optional dir)
   "Return existing claudemacs buffer for DIR or nil."
