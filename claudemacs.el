@@ -339,6 +339,39 @@ Sends @rel/path/to/current/file without newline."
     (claudemacs--send-message-to-claude reference-text t)
     (message "Added current file reference: @%s" relative-path)))
 
+;;;###autoload
+(defun claudemacs-toggle-buffer ()
+  "Toggle Claude buffer visibility.
+Hide if current, focus if visible elsewhere, show if hidden."
+  (interactive)
+  (let ((claude-buffer (claudemacs--get-buffer)))
+    (cond
+     ;; Case 1: No Claude session exists
+     ((not claude-buffer)
+      (error "No Claudemacs session is active"))
+     
+     ;; Case 2: Current buffer IS the Claude buffer
+     ((eq (current-buffer) claude-buffer)
+      ;; Hide using quit-window (automatically handles window vs buffer logic)
+      (quit-window))
+     
+     ;; Case 3: Claude buffer visible in another window  
+     ((get-buffer-window claude-buffer)
+      ;; Quit that window (automatically handles created vs reused)
+      ;; 
+      ;; Edge case: (note in the README) if the window was created for Claude,
+      ;; but in the meantime you have switched to another workspace and back,
+      ;; the window is no longer created just for claudemacs -- it has shown
+      ;; something previous, so it will no longer go away if you toggle. Them's
+      ;; the breaks.
+      (with-selected-window (get-buffer-window claude-buffer)
+        (quit-window)))
+     
+     ;; Case 4: Claude buffer exists but not visible
+     (t
+      ;; Show Claude buffer
+      (claudemacs--switch-to-buffer)))))
+
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()
@@ -347,7 +380,8 @@ Sends @rel/path/to/current/file without newline."
    ["Core"
     ("c" "Start/Open Session" claudemacs-run)
     ("r" "Start with Resume" claudemacs-resume)
-    ("k" "Kill Session" claudemacs-kill)]
+    ("k" "Kill Session" claudemacs-kill)
+    ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
    ["Actions"
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
     ("x" "Execute Request with Context" claudemacs-execute-request)
