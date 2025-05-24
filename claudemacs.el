@@ -73,25 +73,29 @@ use its name, otherwise fall back to the project root."
    ;; Fall back to project root
    (t (file-truename (claudemacs--project-root)))))
 
-(defun claudemacs--get-buffer-name (&optional dir)
-  "Generate the claudemacs buffer name based on session ID.
-If DIR is supplied, generate a name for that directory's session;
-otherwise use the current workspace (or project root if no
-workspace is available)."
-  (format "*claudemacs:%s*"
-          (if dir
-              (file-truename (claudemacs--project-root dir))
-            (claudemacs--session-id))))
+(defun claudemacs--get-buffer-name ()
+  "Generate the claudemacs buffer name based on workspace session ID."
+  (format "*claudemacs:%s*" (claudemacs--session-id)))
 
-(defun claudemacs--get-buffer (&optional dir)
-  "Return existing claudemacs buffer for DIR or nil."
-  (get-buffer (claudemacs--get-buffer-name dir)))
+(defun claudemacs--get-buffer ()
+  "Return existing claudemacs buffer for current session."
+  (get-buffer (claudemacs--get-buffer-name)))
 
 (defun claudemacs--is-claudemacs-buffer-p (&optional buffer)
   "Return t if BUFFER (or current buffer) is a claudemacs buffer."
   (let ((buf (or buffer (current-buffer))))
     (and (buffer-live-p buf)
          (string-match-p "^\\*claudemacs:" (buffer-name buf)))))
+
+(defun claudemacs--switch-to-buffer ()
+  "Switch to the claudemacs buffer for current session.
+Returns t if switched successfully, nil if no buffer exists."
+  (if-let ((buffer (claudemacs--get-buffer)))
+      (progn
+        (display-buffer buffer)
+        (select-window (get-buffer-window buffer))
+        t)
+    nil))
 
 ;;;; Terminal Integration
 ;; Eat terminal emulator functions  
@@ -129,17 +133,17 @@ Applies consistent styling to all eat-mode terminal faces."
     (remap-face 'eat-term-faint :foreground "#999999" :weight 'light)))
 
 
-(defun claudemacs--start (dir &rest args)
-  "Start Claude Code in directory DIR with optional ARGS."
+(defun claudemacs--start (work-dir &rest args)
+  "Start Claude Code in WORK-DIR with ARGS."
   (require 'eat)
-  (let* ((default-directory dir)
-         (buffer-name (claudemacs--get-buffer-name dir))
+  (let* ((default-directory work-dir)
+         (buffer-name (claudemacs--get-buffer-name))
          (buffer (get-buffer-create buffer-name))
          (process-environment 
           (append '("TERM=xterm-256color")
                   process-environment)))
     (with-current-buffer buffer
-      (cd dir)
+      (cd work-dir)
       (setq-local eat-term-name "xterm-256color")
       (let ((process-adaptive-read-buffering nil)
             (switches (remove nil (append args claudemacs-program-switches))))
@@ -158,26 +162,28 @@ Applies consistent styling to all eat-mode terminal faces."
     (let ((window (display-buffer buffer)))
       (select-window window))))
 
+(defun claudemacs--run-with-args (&optional arg &rest args)
+  "Start Claude Code with ARGS or switch to existing session.
+With prefix ARG, prompt for the project directory."
+  (let* ((explicit-dir (when arg (read-directory-name "Project directory: ")))
+         (work-dir (or explicit-dir (claudemacs--project-root))))
+    (unless (claudemacs--switch-to-buffer)
+      (apply #'claudemacs--start work-dir args))))
+
 ;;;; Interactive Commands
 ;;;###autoload
 (defun claudemacs-run (&optional arg)
-  "Start Claude Code.
+  "Start Claude Code or switch to existing session.
 With prefix ARG, prompt for the project directory."
   (interactive "P")
-  (let* ((dir (if arg
-                  (read-directory-name "Project directory: ")
-                (claudemacs--project-root))))
-    (claudemacs--start dir)))
+  (claudemacs--run-with-args arg))
 
 ;;;###autoload
 (defun claudemacs-resume (&optional arg)
-  "Start Claude Code, resuming a previous session.
+  "Start Claude Code with resume or switch to existing session.
 With prefix ARG, prompt for the project directory."
   (interactive "P")
-  (let* ((dir (if arg
-                  (read-directory-name "Project directory: ")
-                (claudemacs--project-root))))
-    (claudemacs--start dir "--resume")))
+  (claudemacs--run-with-args arg "--resume"))
 
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
