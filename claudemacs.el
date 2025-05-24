@@ -56,13 +56,12 @@ E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
 ;;;; Utility Functions
 (defun claudemacs--project-root (&optional dir)
   "Get the project root using VC-git, or fallback to current buffer's directory.
-
 If DIR is given, use the vc-git-root of DIR."
   (let ((loc (or dir (file-name-directory (buffer-file-name)))))
     (vc-git-root loc)))
 
 (defun claudemacs--session-id ()
-  "Return an identifier for the current Claude session.
+  "Return an identifier for the current Claudemacs session.
 If a workspace is active (checking various workspace packages),
 use its name, otherwise fall back to the project root."
   (cond
@@ -228,37 +227,86 @@ With prefix ARG, prompt for the project directory."
         (message "Claudemacs session killed"))
     (error "There is no Claudemacs session in this workspace or project")))
 
-;;;###autoload
-(defun claudemacs-fix-error-at-point ()
-  "Send a request to Claude to fix the error at point using flycheck."
-  (interactive)
+(defun claudemacs--validate-session ()
+  "Validate that we have a file, project, and active Claudemacs session."
   (unless (buffer-file-name)
     (error "Buffer is not visiting a file"))
   (unless (claudemacs--project-root)
     (error "Not in a project"))
   (unless (claudemacs--get-buffer)
-    (error "No Claude session is active"))
-  
+    (error "No Claudemacs session is active")))
+
+(defun claudemacs--get-file-context ()
+  "Get file context information for the current buffer.
+Returns a plist with :file-path, :project-root, and :relative-path."
   (let* ((file-path (buffer-file-name))
          (project-root (claudemacs--project-root))
-         (relative-path (file-relative-name file-path project-root))
+         (relative-path (file-relative-name file-path project-root)))
+    (list :file-path file-path
+          :project-root project-root
+          :relative-path relative-path)))
+
+(defun claudemacs--send-message-to-claude (message)
+  "Send MESSAGE to the active Claudemacs session."
+  (let ((claude-buffer (claudemacs--get-buffer)))
+    (with-current-buffer claude-buffer
+      (goto-char (point-max))
+      (eat-term-send-string eat-terminal message)
+      (eat-term-send-string eat-terminal (kbd "RET")))
+    (claudemacs--switch-to-buffer)))
+
+(defun claudemacs--format-context-line-range (relative-path start-line end-line)
+  "Format context for a line range in RELATIVE-PATH from START-LINE to END-LINE."
+  (if (= start-line end-line)
+      (format "Context: @%s line %d\n" relative-path start-line)
+    (format "Context: @%s lines %d-%d\n" relative-path start-line end-line)))
+
+;;;###autoload
+(defun claudemacs-fix-error-at-point ()
+  "Send a request to Claude to fix the error at point using flycheck."
+  (interactive)
+  (claudemacs--validate-session)
+  
+  (let* ((context (claudemacs--get-file-context))
+         (relative-path (plist-get context :relative-path))
          (line-number (line-number-at-pos))
          (errors (claudemacs--get-flycheck-errors-on-line))
          (error-message (claudemacs--format-flycheck-errors errors))
-         (claude-buffer (claudemacs--get-buffer))
          (message-text (if (string-empty-p error-message)
                           (format "Please fix any issues at @%s line %d"
                                   relative-path line-number)
                         (format "Please fix the error at @%s line %d: %s"
                                 relative-path line-number error-message))))
     
-    (with-current-buffer claude-buffer
-      (goto-char (point-max))
-      (eat-term-send-string eat-terminal message-text)
-      (eat-term-send-string eat-terminal (kbd "RET")))
-    
-    (claudemacs--switch-to-buffer)
+    (claudemacs--send-message-to-claude message-text)
     (message "Sent error fix request to Claude")))
+
+;;;###autoload
+(defun claudemacs-execute-request ()
+  "Execute a Claude request with file context.
+If a region is selected, use it as context with line range.
+Otherwise, use current line as context."
+  (interactive)
+  (claudemacs--validate-session)
+  
+  (let* ((context (claudemacs--get-file-context))
+         (relative-path (plist-get context :relative-path))
+         (has-region (use-region-p))
+         (start-line (if has-region
+                         (line-number-at-pos (region-beginning))
+                       (line-number-at-pos)))
+         (end-line (if has-region
+                       (line-number-at-pos (region-end))
+                     (line-number-at-pos)))
+         (context-text (claudemacs--format-context-line-range relative-path start-line end-line))
+         (request (read-string "Claude request: "))
+         (message-text (concat context-text request)))
+    
+    (when (string-empty-p (string-trim request))
+      (error "Request cannot be empty"))
+    
+    (claudemacs--send-message-to-claude message-text)
+    (message "Sent request to Claude with context")))
 
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
@@ -270,7 +318,8 @@ With prefix ARG, prompt for the project directory."
     ("r" "Start with Resume" claudemacs-resume)
     ("k" "Kill Session" claudemacs-kill)]
    ["Actions"
-    ("e" "Fix Error at Point" claudemacs-fix-error-at-point)]])
+    ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
+    ("x" "Execute Request with Context" claudemacs-execute-request)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
