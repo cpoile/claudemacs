@@ -48,6 +48,20 @@ E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
   :type '(repeat string)
   :group 'claudemacs)
 
+(defcustom claudemacs-switch-to-buffer-on-create t
+  "Whether to switch to the Claudemacs buffer when creating a new session.
+If non-nil, automatically switch to the Claude buffer after starting.
+If nil, create the session but don't switch focus to it."
+  :type 'boolean
+  :group 'claudemacs)
+
+(defcustom claudemacs-switch-to-buffer-on-toggle t
+  "Whether to switch to the Claudemacs buffer when toggling to show it.
+If non-nil, switch to the Claude buffer when toggling from hidden to visible.
+If nil, show the buffer but don't switch focus to it."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -190,7 +204,8 @@ Applies consistent styling to all eat-mode terminal faces."
                                     (eat-term-send-string eat-terminal (kbd "ESC")))))
     
     (let ((window (display-buffer buffer)))
-      (select-window window))))
+      (when claudemacs-switch-to-buffer-on-create
+        (select-window window)))))
 
 (defun claudemacs--run-with-args (&optional arg &rest args)
   "Start Claude Code with ARGS or switch to existing session.
@@ -370,7 +385,13 @@ Hide if current, focus if visible elsewhere, show if hidden."
      ;; Case 4: Claude buffer exists but not visible
      (t
       ;; Show Claude buffer
-      (claudemacs--switch-to-buffer)))))
+      (if claudemacs-switch-to-buffer-on-toggle
+          (claudemacs--switch-to-buffer)
+        (progn
+          (display-buffer claude-buffer)
+          ;; Move to bottom without switching focus
+          (with-current-buffer claude-buffer
+            (set-window-point (get-buffer-window claude-buffer) (point-max)))))))))
 
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
