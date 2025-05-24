@@ -1,7 +1,7 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "26.1") (transient "0.3.0") (compat "30.0.2.0") (eat "0.9.2"))
+;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
 ;; SPDX-License-Identifier: MIT
@@ -24,6 +24,12 @@
 (require 'project)
 (require 'vc-git)
 (require 'eat nil 'noerror)
+
+;; Declare functions from optional packages
+(declare-function safe-persp-name "perspective")
+(declare-function get-current-persp "perspective")
+(declare-function flycheck-error-message "flycheck")
+(declare-function flycheck-overlay-errors-in "flycheck")
 
 ;;;; Customization
 (defgroup claudemacs nil
@@ -57,7 +63,7 @@ If DIR is given, use the vc-git-root of DIR."
 
 (defun claudemacs--session-id ()
   "Return an identifier for the current Claude session.
-If a workspace is active (checking various workspace packages), 
+If a workspace is active (checking various workspace packages),
 use its name, otherwise fall back to the project root."
   (cond
    ;; Doom Emacs workspace
@@ -90,15 +96,40 @@ use its name, otherwise fall back to the project root."
 (defun claudemacs--switch-to-buffer ()
   "Switch to the claudemacs buffer for current session.
 Returns t if switched successfully, nil if no buffer exists."
-  (if-let ((buffer (claudemacs--get-buffer)))
+  (if-let* ((buffer (claudemacs--get-buffer)))
       (progn
         (display-buffer buffer)
         (select-window (get-buffer-window buffer))
         t)
     nil))
 
+(defun claudemacs--get-flycheck-errors-on-line ()
+  "Get all flycheck errors on the current line."
+  (when (and (bound-and-true-p flycheck-mode)
+             (fboundp 'flycheck-overlay-errors-in))
+    (let ((line-start (line-beginning-position))
+          (line-end (line-end-position)))
+      (flycheck-overlay-errors-in line-start line-end))))
+
+(defun claudemacs--format-flycheck-errors (errors)
+  "Format flycheck ERRORS for display to Claude."
+  (cond
+   ((null errors) "")
+   ((= 1 (length errors))
+    (flycheck-error-message (car errors)))
+   ((<= (length errors) 3)
+    (format "(%d errors: %s)"
+            (length errors)
+            (mapconcat (lambda (err) (flycheck-error-message err))
+                      errors "; ")))
+   (t
+    (format "(%d errors including: %s; ...)"
+            (length errors)
+            (mapconcat (lambda (err) (flycheck-error-message err))
+                      (seq-take errors 2) "; ")))))
+
 ;;;; Terminal Integration
-;; Eat terminal emulator functions  
+;; Eat terminal emulator functions
 (declare-function eat-make "eat")
 (declare-function eat-term-send-string "eat")
 (declare-function eat-kill-process "eat")
@@ -139,7 +170,7 @@ Applies consistent styling to all eat-mode terminal faces."
   (let* ((default-directory work-dir)
          (buffer-name (claudemacs--get-buffer-name))
          (buffer (get-buffer-create buffer-name))
-         (process-environment 
+         (process-environment
           (append '("TERM=xterm-256color")
                   process-environment)))
     (with-current-buffer buffer
@@ -156,7 +187,7 @@ Applies consistent styling to all eat-mode terminal faces."
       (setq-local maximum-scroll-margin 0)
       
       ;; Bind C-g to send ESC to terminal in Claude buffers
-      (local-set-key (kbd "C-g") (lambda () (interactive) 
+      (local-set-key (kbd "C-g") (lambda () (interactive)
                                     (eat-term-send-string eat-terminal (kbd "ESC")))))
     
     (let ((window (display-buffer buffer)))
@@ -189,13 +220,45 @@ With prefix ARG, prompt for the project directory."
 (defun claudemacs-kill ()
   "Kill Claudemacs process and close its window."
   (interactive)
-  (if-let ((claudemacs-buffer (claudemacs--get-buffer)))
-      (progn 
+  (if-let* ((claudemacs-buffer (claudemacs--get-buffer)))
+      (progn
         (with-current-buffer claudemacs-buffer
           (eat-kill-process)
           (kill-buffer claudemacs-buffer))
         (message "Claudemacs session killed"))
     (error "There is no Claudemacs session in this workspace or project")))
+
+;;;###autoload
+(defun claudemacs-fix-error-at-point ()
+  "Send a request to Claude to fix the error at point using flycheck."
+  (interactive)
+  (unless (buffer-file-name)
+    (error "Buffer is not visiting a file"))
+  (unless (claudemacs--project-root)
+    (error "Not in a project"))
+  (unless (claudemacs--get-buffer)
+    (error "No Claude session is active"))
+  
+  (let* ((file-path (buffer-file-name))
+         (project-root (claudemacs--project-root))
+         (relative-path (file-relative-name file-path project-root))
+         (line-number (line-number-at-pos))
+         (errors (claudemacs--get-flycheck-errors-on-line))
+         (error-message (claudemacs--format-flycheck-errors errors))
+         (claude-buffer (claudemacs--get-buffer))
+         (message-text (if (string-empty-p error-message)
+                          (format "Please fix any issues at @%s line %d"
+                                  relative-path line-number)
+                        (format "Please fix the error at @%s line %d: %s"
+                                relative-path line-number error-message))))
+    
+    (with-current-buffer claude-buffer
+      (goto-char (point-max))
+      (eat-term-send-string eat-terminal message-text)
+      (eat-term-send-string eat-terminal (kbd "RET")))
+    
+    (claudemacs--switch-to-buffer)
+    (message "Sent error fix request to Claude")))
 
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
@@ -205,7 +268,9 @@ With prefix ARG, prompt for the project directory."
    ["Core"
     ("c" "Start/Open Session" claudemacs-run)
     ("r" "Start with Resume" claudemacs-resume)
-    ("k" "Kill Session" claudemacs-kill)]])
+    ("k" "Kill Session" claudemacs-kill)]
+   ["Actions"
+    ("e" "Fix Error at Point" claudemacs-fix-error-at-point)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
