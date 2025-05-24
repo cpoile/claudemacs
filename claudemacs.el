@@ -23,6 +23,7 @@
 (require 'comint)
 (require 'project)
 (require 'vc-git)
+(require 'vterm nil 'noerror)
 
 (defgroup claudemacs nil
   "AI pair programming with Claude Code."
@@ -65,17 +66,35 @@
 
 (defun claudemacs--start-process (buffer-name program args)
   "Start the claudemacs comint process in BUFFER-NAME with PROGRAM and ARGS."
-  (let* ((buffer (get-buffer-create buffer-name))
-         (process-environment process-environment)
-         (default-directory (claudemacs--project-root)))
-    (with-current-buffer buffer
-      (unless (process-live-p (get-buffer-process buffer))
-        (let ((process (apply #'make-comint-in-buffer
-                              "claudemacs" buffer program nil args)))
-          (set-process-filter process #'comint-output-filter)
-          (setq-local claudemacs--ready t)
-          (setq-local claudemacs--current-mode 'code))))
-    buffer))
+  (let ((default-directory (claudemacs--project-root))
+        (process-environment 
+         (append '("TERM=dumb"
+                   "INSIDE_EMACS=t"
+                   "NO_COLOR=1"
+                   "COLUMNS=80"
+                   "LINES=25")
+                 process-environment))
+        (process-connection-type nil)) ; Force pipe mode
+    (unless (comint-check-proc buffer-name)
+      (condition-case err
+          (progn
+            (apply #'make-comint-in-buffer "claudemacs" buffer-name program nil args)
+            (with-current-buffer buffer-name
+              (claudemacs--comint-mode)
+              (setq-local claudemacs--ready nil)
+              (setq-local claudemacs--current-mode 'code)
+              ;; Ensure buffer is writable
+              (setq buffer-read-only nil)
+              (setq inhibit-read-only t)
+              ;; Add debugging info
+              (let ((process (get-buffer-process buffer-name)))
+                (when process
+                  (set-process-query-on-exit-flag process nil)
+                  (message "Claude process started: %s" (process-status process))
+                  ;; Wait a moment for process to settle
+                  (sit-for 0.5))))))
+        (error (err)
+         (error "Failed to start %s: %s" program (error-message-string err))))))
 
 (defun claudemacs--switch-to-buffer (buffer-name)
   "Switch to the claudemacs buffer."
@@ -88,6 +107,63 @@
      (t
       (error "No claudemacs buffer exists")))))
 
+(define-derived-mode claudemacs--comint-mode comint-mode "Claude"
+  "Major mode for Claude Code comint sessions."
+  (setq-local comint-prompt-regexp "^[>]+\\|^.*> *")
+  (setq-local comint-input-ignoredups t)
+  (setq-local comint-process-echoes nil)
+  (setq-local comint-use-prompt-regexp nil) ; Let comint handle prompts naturally
+  (setq-local comint-input-sender 'comint-simple-send)
+  (setq-local comint-eol-on-send t)
+  (setq-local comint-scroll-to-bottom-on-input t)
+  (setq-local comint-scroll-to-bottom-on-output t)
+  (setq-local comint-move-point-for-output t)
+  (setq-local comint-input-ring-size 1000)
+  ;; Explicitly set buffer as writable
+  (setq buffer-read-only nil)
+  (setq inhibit-read-only t)
+  ;; Add a hook to keep buffer writable
+  (add-hook 'comint-output-filter-functions
+            (lambda (_output)
+              (setq buffer-read-only nil)
+              (setq inhibit-read-only t))
+            nil t))
+
+(defun claudemacs--debug-process ()
+  "Debug function to check Claude process status."
+  (interactive)
+  (let* ((buffer-name (claudemacs--get-buffer-name))
+         (buffer (get-buffer buffer-name))
+         (process (and buffer (get-buffer-process buffer))))
+    (if process
+        (progn
+          (message "Process status: %s" (process-status process))
+          (message "Process command: %s" (process-command process))
+          (when (eq (process-status process) 'run)
+            (with-current-buffer buffer
+              (goto-char (point-max))
+              (insert "\n;; Sending test command...\n")
+              (process-send-string process "/help\n"))))
+      (message "No Claude process found"))))
+
+;; VTerm backend functions
+(declare-function vterm-other-window "vterm")
+(declare-function vterm-send-string "vterm")
+(declare-function vterm-send-return "vterm")
+
+(defun claudemacs--run-vterm-simple ()
+  "Simple test function to run Claude Code in vterm."
+  (interactive)
+  (unless (require 'vterm nil t)
+    (error "VTerm package is not available. Please install vterm"))
+  (let* ((buffer-name "*claude-vterm-test*")
+         (vterm-buffer-name buffer-name)
+         (vterm-shell "claude")
+         (vterm-kill-buffer-on-exit nil))
+    (message "Starting Claude Code in vterm...")
+    (vterm-other-window)
+    (message "Claude Code started in vterm buffer: %s" buffer-name)))
+
 ;;;###autoload
 (defun claudemacs-run ()
   "Run claudemacs process using comint."
@@ -96,7 +172,11 @@
          (args '()))  ; Claude Code CLI arguments can be added here
     (if (claudemacs--live-p buffer-name)
         (claudemacs--switch-to-buffer buffer-name)
-      (let ((buffer (claudemacs--start-process buffer-name claudemacs-program args)))
+      (progn
+        ;; Kill existing buffer if it exists but process is dead
+        (when (get-buffer buffer-name)
+          (kill-buffer buffer-name))
+        (claudemacs--start-process buffer-name claudemacs-program args)
         (claudemacs--switch-to-buffer buffer-name)))))
 
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
@@ -104,7 +184,10 @@
   "Claude Code AI Pair Programming Interface."
   ["Claudemacs: AI Pair Programming"
    ["Core"
-    ("c" "Start/Open Session" claudemacs-run)]])
+    ("c" "Start/Open Session (Comint)" claudemacs-run)
+    ("v" "Start/Open Session (VTerm)" claudemacs--run-vterm-simple)]
+   ["Debug"
+    ("d" "Debug Process" claudemacs--debug-process)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
