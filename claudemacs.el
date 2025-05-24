@@ -185,6 +185,18 @@ With prefix ARG, prompt for the project directory."
   (interactive "P")
   (claudemacs--run-with-args arg "--resume"))
 
+;;;###autoload
+(defun claudemacs-kill ()
+  "Kill Claudemacs process and close its window."
+  (interactive)
+  (if-let ((claudemacs-buffer (claudemacs--get-buffer)))
+      (progn 
+        (with-current-buffer claudemacs-buffer
+          (eat-kill-process)
+          (kill-buffer claudemacs-buffer))
+        (message "Claudemacs session killed"))
+    (error "There is no Claudemacs session in this workspace or project")))
+
 ;;;; User Interface
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()
@@ -192,7 +204,8 @@ With prefix ARG, prompt for the project directory."
   ["Claudemacs: AI Pair Programming"
    ["Core"
     ("c" "Start/Open Session" claudemacs-run)
-    ("r" "Start with Resume" claudemacs-resume)]])
+    ("r" "Start with Resume" claudemacs-resume)
+    ("k" "Kill Session" claudemacs-kill)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
