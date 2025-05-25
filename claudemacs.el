@@ -62,6 +62,15 @@ If nil, show the buffer but don't switch focus to it."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-m-enter-is-submit nil
+  "Swap the behavior of RET and M-RET in claudemacs buffers.
+If nil (default): RET submits input, M-RET creates new line (standard behavior).
+If non-nil: M-RET submits input, RET creates new line (swapped behavior).
+
+This setting only affects claudemacs buffers and does not impact other eat buffers."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -145,9 +154,12 @@ Returns t if switched successfully, nil if no buffer exists."
 ;; Eat terminal emulator functions
 (declare-function eat-make "eat")
 (declare-function eat-term-send-string "eat")
+(declare-function eat-term-input-event "eat")
 (declare-function eat-kill-process "eat")
-(defvar eat-terminal)
-(defvar eat-term-name)
+;; (defvar eat-terminal)
+;; (defvar eat-term-name)
+;; (defvar eat-mode-map)
+;; (defvar eat-semi-char-mode-map)
 
 (defun claudemacs--setup-repl-faces ()
   "Setup faces for the Claude REPL buffer.
@@ -176,6 +188,34 @@ Applies consistent styling to all eat-mode terminal faces."
     (face-remap-add-relative 'nobreak-space :underline nil)
     (remap-face 'eat-term-faint :foreground "#999999" :weight 'light)))
 
+(defun claudemacs--ret-key ()
+  "Send return key event to eat terminal."
+  (interactive)
+  (eat-term-input-event eat-terminal 1 'return))
+
+(defun claudemacs--meta-ret-key ()
+  "Send meta + return to eat terminal."
+  (interactive)
+  (eat-term-send-string eat-terminal "\e\C-m"))
+
+(defun claudemacs--send-escape ()
+  "Send ESC to eat terminal."
+  (interactive)
+  (eat-term-send-string eat-terminal "\e"))
+
+(defun claudemacs--setup-buffer-keymap ()
+  "Set up buffer-local keymap for claudemacs buffers with custom key bindings."
+  ;; Set up C-g binding
+  (local-set-key (kbd "C-g") #'claudemacs--send-escape)
+  
+  ;; Conditionally swap RET and M-RET keys based on user preference
+  ;; Use buffer-local copy to avoid affecting other eat buffers
+  (when (and claudemacs-m-enter-is-submit (boundp 'eat-semi-char-mode-map))
+    ;; Create buffer-local copy of eat-semi-char-mode-map
+    (setq-local eat-semi-char-mode-map (copy-keymap eat-semi-char-mode-map))
+    ;; Now modify our buffer-local copy
+    (define-key eat-semi-char-mode-map (kbd "RET") #'claudemacs--meta-ret-key)
+    (define-key eat-semi-char-mode-map (kbd "M-RET") #'claudemacs--ret-key)))
 
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
@@ -199,9 +239,8 @@ Applies consistent styling to all eat-mode terminal faces."
       (setq-local scroll-margin 0)
       (setq-local maximum-scroll-margin 0)
       
-      ;; Bind C-g to send ESC to terminal in Claude buffers
-      (local-set-key (kbd "C-g") (lambda () (interactive)
-                                    (eat-term-send-string eat-terminal (kbd "ESC")))))
+      ;; Set up custom key mappings for claudemacs buffers
+      (claudemacs--setup-buffer-keymap))
     
     (let ((window (display-buffer buffer)))
       (when claudemacs-switch-to-buffer-on-create
@@ -274,8 +313,8 @@ If NO-RETURN is non-nil, don't send a return/newline."
 (defun claudemacs--format-context-line-range (relative-path start-line end-line)
   "Format context for a line range in RELATIVE-PATH from START-LINE to END-LINE."
   (if (= start-line end-line)
-      (format "Context: @%s line %d\n" relative-path start-line)
-    (format "Context: @%s lines %d-%d\n" relative-path start-line end-line)))
+      (format "File context: %s:%d\n" relative-path start-line)
+    (format "File context: %s:%d-%d\n" relative-path start-line end-line)))
 
 ;;;###autoload
 (defun claudemacs-fix-error-at-point ()
@@ -370,7 +409,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
       ;; Hide using quit-window (automatically handles window vs buffer logic)
       (quit-window))
      
-     ;; Case 3: Claude buffer visible in another window  
+     ;; Case 3: Claude buffer visible in another window
      ((get-buffer-window claude-buffer)
       ;; Quit that window (automatically handles created vs reused)
       ;; 
@@ -432,7 +471,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
     (goto-char (point-max))))
 
 (defun claudemacs--show-cursor (&rest _args)
-  "Show cursor in Claudemacs buffers when in emacs mode."
+  "Show cursor in Claudemacs buffers when in Emacs mode."
   (when (claudemacs--is-claudemacs-buffer-p)
     (setq-local cursor-type 'box)))
 
