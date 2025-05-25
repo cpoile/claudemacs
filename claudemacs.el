@@ -190,14 +190,17 @@ Applies consistent styling to all eat-mode terminal faces."
 
 (defun claudemacs--ret-key ()
   "Send return key event to eat terminal."
+  (interactive)
   (eat-term-input-event eat-terminal 1 'return))
 
 (defun claudemacs--meta-ret-key ()
   "Send meta + return to eat terminal."
+  (interactive)
   (eat-term-send-string eat-terminal "\e\C-m"))
 
 (defun claudemacs--send-escape ()
   "Send ESC to eat terminal."
+  (interactive)
   (eat-term-send-string eat-terminal "\e"))
 
 (defun claudemacs--setup-buffer-keymap ()
@@ -232,15 +235,11 @@ Applies consistent styling to all eat-mode terminal faces."
         (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches))
       
       (claudemacs--setup-repl-faces)
-      ;; Keep cursor at end of buffer for terminal interaction
-      (setq-local scroll-conservatively 101)
-      (setq-local scroll-margin 0)
-      (setq-local maximum-scroll-margin 0)
-      
-      ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
-      ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
-      (setq-local window-adjust-process-window-size-function 'ignore)
-      
+      ;; Optimize scrolling for terminal input - allows text to go to bottom
+      (setq-local scroll-conservatively 10000)  ; Never recenter
+      (setq-local scroll-margin 0)              ; No margin so text goes to edge
+      (setq-local maximum-scroll-margin 0)      ; No maximum margin
+      (setq-local scroll-preserve-screen-position t)  ; Preserve position during scrolling
       
       ;; Set up custom key mappings for claudemacs buffers
       (claudemacs--setup-buffer-keymap))
@@ -318,6 +317,24 @@ If NO-RETURN is non-nil, don't send a return/newline."
   (if (= start-line end-line)
       (format "File context: %s:%d\n" relative-path start-line)
     (format "File context: %s:%d-%d\n" relative-path start-line end-line)))
+
+(defun claudemacs--scroll-to-bottom ()
+  "Scroll the claudemacs buffer to bottom without switching to it."
+  (interactive)
+  (when-let* ((claude-buffer (claudemacs--get-buffer))
+              (claude-window (get-buffer-window claude-buffer)))
+    (with-current-buffer claude-buffer
+      (goto-char (point-max))
+      (set-window-point claude-window (point-max)))))
+
+(defun claudemacs--scroll-to-top ()
+  "Scroll the claudemacs buffer to top without switching to it."
+  (interactive)
+  (when-let* ((claude-buffer (claudemacs--get-buffer))
+              (claude-window (get-buffer-window claude-buffer)))
+    (with-current-buffer claude-buffer
+      (goto-char (point-min))
+      (set-window-point claude-window (point-min)))))
 
 ;;;###autoload
 (defun claudemacs-fix-error-at-point ()
@@ -449,7 +466,9 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
     ("x" "Execute Request with Context" claudemacs-execute-request)
     ("f" "Add File Reference" claudemacs-add-file-reference)
-    ("F" "Add Current File" claudemacs-add-current-file-reference)]])
+    ("F" "Add Current File" claudemacs-add-current-file-reference)]
+   ["Maintenance"
+    ("u" "Unstick Claude input box location" claudemacs-reset-buffer-tracking)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
@@ -467,12 +486,6 @@ Hide if current, focus if visible elsewhere, show if hidden."
   :keymap claudemacs-mode-map
   :group 'claudemacs)
 
-(defun claudemacs--goto-point-max ()
-  "Move cursor to end of buffer in Claudemacs buffers."
-  (when (and (eq major-mode 'eat-mode)
-             (claudemacs--is-claudemacs-buffer-p))
-    (goto-char (point-max))))
-
 (defun claudemacs--show-cursor (&rest _args)
   "Show cursor in Claudemacs buffers when in Emacs mode."
   (when (claudemacs--is-claudemacs-buffer-p)
@@ -483,9 +496,49 @@ Hide if current, focus if visible elsewhere, show if hidden."
   (when (claudemacs--is-claudemacs-buffer-p)
     (setq-local cursor-type nil)))
 
+
+(defun claudemacs--check-and-disable-window-adjust (&rest _)
+  "Check if buffer is longer than one screen and disable window adjustment if so."
+  (when (and (not (eq window-adjust-process-window-size-function 'ignore))
+             (claudemacs--is-claudemacs-buffer-p))
+    (let* ((claude-buffer (current-buffer))
+           (claude-window (get-buffer-window claude-buffer))
+           (window-ht (when claude-window (window-height claude-window)))
+           (buffer-lines (count-lines (point-min) (point-max))))
+      ;; If buffer has more lines than window height, switch to 'ignore mode
+      (when (and window-ht (> buffer-lines window-ht))
+        (goto-char (point-min))
+        (redisplay)
+        (goto-char (point-max))
+        (redisplay)
+        ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
+        ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
+        (setq-local window-adjust-process-window-size-function 'ignore)))))
+
+
+(defun claudemacs-reset-buffer-tracking ()
+  "Reset the claudemacs buffer's vertical rest point.
+Sometimes the input box gets stuck mid or top of the buffer because of
+the idiosyncracies of eat-mode. This will reset the input box to the
+bottom of the buffer."
+  (interactive)
+  (when (claudemacs--is-claudemacs-buffer-p)
+    (error "Reset buffer cannot be used while visiting the claudemacs buffer itself"))
+  (with-current-buffer (claudemacs--get-buffer)
+    (setq-local window-adjust-process-window-size-function
+                'window-adjust-process-window-size-smallest))
+  (claudemacs--scroll-to-top)
+  (redisplay)
+  (claudemacs--scroll-to-bottom)
+  (redisplay)
+  (with-current-buffer (claudemacs--get-buffer)
+    ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
+    ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
+    (setq-local window-adjust-process-window-size-function 'ignore)))
+
 ;; Set up hooks when package is loaded
-(unless (memq 'claudemacs--goto-point-max window-state-change-hook)
-  (add-hook 'window-state-change-hook 'claudemacs--goto-point-max))
+(unless (memq 'claudemacs--check-and-disable-window-adjust window-buffer-change-functions)
+  (add-hook 'window-buffer-change-functions #'claudemacs--check-and-disable-window-adjust))
 
 ;; Set up advice when package is loaded
 (unless (advice-member-p #'claudemacs--show-cursor 'eat-emacs-mode)
@@ -493,8 +546,6 @@ Hide if current, focus if visible elsewhere, show if hidden."
 
 (unless (advice-member-p #'claudemacs--hide-cursor 'eat-semi-char-mode)
   (advice-add 'eat-semi-char-mode :after #'claudemacs--hide-cursor))
-
-
 
 (provide 'claudemacs)
 ;;; claudemacs.el ends here
