@@ -67,7 +67,17 @@ If nil, show the buffer but don't switch focus to it."
 If nil (default): RET submits input, M-RET creates new line (standard behavior).
 If non-nil: M-RET submits input, RET creates new line (swapped behavior).
 
-This setting only affects claudemacs buffers and does not impact other eat buffers."
+This setting only affects claudemacs buffers and does not impact other
+eat buffers."
+  :type 'boolean
+  :group 'claudemacs)
+
+(defcustom claudemacs-shift-return-newline t
+  "Whether Shift-Return creates a newline in claudemacs buffers.
+If non-nil: S-RET acts like M-RET (creates a newline).
+If nil (default): S-RET has default behavior.
+
+This provides an alternative way to create newlines without using M-RET."
   :type 'boolean
   :group 'claudemacs)
 
@@ -210,11 +220,17 @@ Applies consistent styling to all eat-mode terminal faces."
 
   ;; This was a pain to make work.
   ;; Use the nuclear option - force override in minor mode maps
-  (when (and claudemacs-m-return-is-submit (boundp 'minor-mode-map-alist))
+  (when (and (or claudemacs-m-return-is-submit claudemacs-shift-return-newline)
+             (boundp 'minor-mode-map-alist))
     (setq-local minor-mode-map-alist
                 (cons `(t . ,(let ((map (make-sparse-keymap)))
-                               (define-key map (kbd "RET") #'claudemacs--meta-ret-key)
-                               (define-key map (kbd "M-RET") #'claudemacs--ret-key)
+                               ;; Swap RET and M-RET if enabled
+                               (when claudemacs-m-return-is-submit
+                                 (define-key map (kbd "RET") #'claudemacs--meta-ret-key)
+                                 (define-key map (kbd "M-RET") #'claudemacs--ret-key))
+                               ;; Bind S-RET to newline if enabled
+                               (when claudemacs-shift-return-newline
+                                 (define-key map (kbd "S-RET") #'claudemacs--meta-ret-key))
                                map))
                       minor-mode-map-alist))))
 
@@ -496,7 +512,6 @@ Hide if current, focus if visible elsewhere, show if hidden."
   (when (claudemacs--is-claudemacs-buffer-p)
     (setq-local cursor-type nil)))
 
-
 (defun claudemacs--check-and-disable-window-adjust (&rest _)
   "Check if buffer is longer than one screen and disable window adjustment if so."
   (when (and (not (eq window-adjust-process-window-size-function 'ignore))
@@ -514,7 +529,6 @@ Hide if current, focus if visible elsewhere, show if hidden."
         ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
         ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
         (setq-local window-adjust-process-window-size-function 'ignore)))))
-
 
 (defun claudemacs-reset-buffer-tracking ()
   "Reset the claudemacs buffer's vertical rest point.
