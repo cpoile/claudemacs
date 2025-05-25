@@ -207,15 +207,16 @@ Applies consistent styling to all eat-mode terminal faces."
   "Set up buffer-local keymap for claudemacs buffers with custom key bindings."
   ;; Set up C-g binding
   (local-set-key (kbd "C-g") #'claudemacs--send-escape)
-  
-  ;; Conditionally swap RET and M-RET keys based on user preference
-  ;; Use buffer-local copy to avoid affecting other eat buffers
-  (when (and claudemacs-m-enter-is-submit (boundp 'eat-semi-char-mode-map))
-    ;; Create buffer-local copy of eat-semi-char-mode-map
-    (setq-local eat-semi-char-mode-map (copy-keymap eat-semi-char-mode-map))
-    ;; Now modify our buffer-local copy
-    (define-key eat-semi-char-mode-map (kbd "RET") #'claudemacs--meta-ret-key)
-    (define-key eat-semi-char-mode-map (kbd "M-RET") #'claudemacs--ret-key)))
+
+  ;; This was a pain to make work.
+  ;; Use the nuclear option - force override in minor mode maps
+  (when (boundp 'minor-mode-map-alist)
+    (setq-local minor-mode-map-alist
+                (cons `(t . ,(let ((map (make-sparse-keymap)))
+                               (define-key map (kbd "RET") #'claudemacs--meta-ret-key)
+                               (define-key map (kbd "M-RET") #'claudemacs--ret-key)
+                               map))
+                      minor-mode-map-alist))))
 
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
