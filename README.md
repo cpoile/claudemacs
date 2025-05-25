@@ -51,6 +51,10 @@ Clone this repository and add to your Emacs configuration:
 (claudemacs-mode 1)
 ```
 
+## Setup
+
+<!-- TODO: add setup instructions -->
+
 ## Usage
 
 ### Basic Commands

@@ -62,7 +62,7 @@ If nil, show the buffer but don't switch focus to it."
   :type 'boolean
   :group 'claudemacs)
 
-(defcustom claudemacs-m-enter-is-submit nil
+(defcustom claudemacs-m-return-is-submit nil
   "Swap the behavior of RET and M-RET in claudemacs buffers.
 If nil (default): RET submits input, M-RET creates new line (standard behavior).
 If non-nil: M-RET submits input, RET creates new line (swapped behavior).
@@ -190,17 +190,14 @@ Applies consistent styling to all eat-mode terminal faces."
 
 (defun claudemacs--ret-key ()
   "Send return key event to eat terminal."
-  (interactive)
   (eat-term-input-event eat-terminal 1 'return))
 
 (defun claudemacs--meta-ret-key ()
   "Send meta + return to eat terminal."
-  (interactive)
   (eat-term-send-string eat-terminal "\e\C-m"))
 
 (defun claudemacs--send-escape ()
   "Send ESC to eat terminal."
-  (interactive)
   (eat-term-send-string eat-terminal "\e"))
 
 (defun claudemacs--setup-buffer-keymap ()
@@ -210,7 +207,7 @@ Applies consistent styling to all eat-mode terminal faces."
 
   ;; This was a pain to make work.
   ;; Use the nuclear option - force override in minor mode maps
-  (when (boundp 'minor-mode-map-alist)
+  (when (and claudemacs-m-return-is-submit (boundp 'minor-mode-map-alist))
     (setq-local minor-mode-map-alist
                 (cons `(t . ,(let ((map (make-sparse-keymap)))
                                (define-key map (kbd "RET") #'claudemacs--meta-ret-key)
@@ -457,7 +454,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
 ;;;###autoload
 (defvar claudemacs-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-v") #'claudemacs-transient-menu)
+    (define-key map (kbd "C-c C-e") #'claudemacs-transient-menu)
     map)
   "Keymap for `claudemacs-mode'.")
 
