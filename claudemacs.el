@@ -240,6 +240,11 @@ Applies consistent styling to all eat-mode terminal faces."
       (setq-local scroll-margin 0)
       (setq-local maximum-scroll-margin 0)
       
+      ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
+      ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
+      (setq-local window-adjust-process-window-size-function 'ignore)
+      
+      
       ;; Set up custom key mappings for claudemacs buffers
       (claudemacs--setup-buffer-keymap))
     
