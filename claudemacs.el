@@ -81,6 +81,13 @@ This provides an alternative way to create newlines without using M-RET."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-switch-to-buffer-on-file-add nil
+  "Whether to switch to the Claudemacs buffer when adding file references.
+If non-nil, automatically switch to the Claude buffer after adding files.
+If nil, add the file reference but don't switch focus to it."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -464,15 +471,17 @@ Returns a plist with :file-path, :project-root, and :relative-path."
           :project-root project-root
           :relative-path relative-path)))
 
-(defun claudemacs--send-message-to-claude (message &optional no-return)
+(defun claudemacs--send-message-to-claude (message &optional no-return no-switch)
   "Send MESSAGE to the active Claudemacs session.
-If NO-RETURN is non-nil, don't send a return/newline."
+If NO-RETURN is non-nil, don't send a return/newline.
+If NO-SWITCH is non-nil, don't switch to the Claude buffer."
   (let ((claude-buffer (claudemacs--get-buffer)))
     (with-current-buffer claude-buffer
       (eat-term-send-string eat-terminal message)
       (unless no-return
         (eat-term-send-string eat-terminal (kbd "RET"))))
-    (claudemacs--switch-to-buffer)))
+    (unless no-switch
+      (claudemacs--switch-to-buffer))))
 
 (defun claudemacs--format-context-line-range (relative-path start-line end-line)
   "Format context for a line range in RELATIVE-PATH from START-LINE to END-LINE."
@@ -558,7 +567,7 @@ Prompts for a file and sends @rel/path/to/file without newline."
          (relative-path (file-relative-name selected-file project-root))
          (reference-text (format "@%s " relative-path)))
     
-    (claudemacs--send-message-to-claude reference-text t)
+    (claudemacs--send-message-to-claude reference-text t (not claudemacs-switch-to-buffer-on-file-add))
     (message "Added file reference: @%s" relative-path)))
 
 ;;;###autoload
@@ -572,7 +581,7 @@ Sends @rel/path/to/current/file without newline."
          (relative-path (plist-get context :relative-path))
          (reference-text (format "@%s " relative-path)))
     
-    (claudemacs--send-message-to-claude reference-text t)
+    (claudemacs--send-message-to-claude reference-text t (not claudemacs-switch-to-buffer-on-file-add))
     (message "Added current file reference: @%s" relative-path)))
 
 

@@ -168,6 +168,9 @@ ClaudEmacs provides several customization variables to tailor the experience to 
 
 ;; Whether to switch to ClaudEmacs buffer when toggling visibility (default: t)
 (setq claudemacs-switch-to-buffer-on-toggle nil)
+
+;; Whether to switch to ClaudEmacs buffer when adding file references (default: nil)
+(setq claudemacs-switch-to-buffer-on-file-add t)
 ```
 
 #### Key Bindings
