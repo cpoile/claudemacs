@@ -211,7 +211,7 @@ Currently supports Doom Emacs workspaces and Perspective mode. If you use anothe
 When interacting with the eat-mode buffer, you are limited in what you can do in the default semi-char mode.
 
 Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text.
-Press `C-c C-l` to re-enter semi-char mode and continue typing to Claude.
+Press `C-c C-j` to re-enter semi-char mode and continue typing to Claude.
 
 ### Scroll-popping, input box sticking, input box border draw issues
 
