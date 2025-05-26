@@ -7,16 +7,16 @@ https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 ## Features
 
 - **Project-based sessions** - Each project gets its own Claude session rooted at its git root
-- **Workspace-aware naming** - Automatic buffer naming based on Doom/Perspective workspaces, or the git root dir
-- **Terminal fixes** - Use `u` to unstick input box and reset buffer issues (see [Tips](#tips) section)
-- **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
-- **Session resumption** - Resume previous Claude Code sessions
-- **Fix error at point** - Will send flycheck error to Claude
-- **Implement comment at point** - Extracts comment text and sends it to Claude for implementation, with context
-- **Execute request with context** - Send a request to Claude, will add file and line (or region) context
+- **Workspace-aware naming** - Buffer naming based on Doom/Perspective workspaces, or git root dir
+- **Terminal fixes** - Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks) section)
+- **Session resume** - Resume previous Claude Code sessions
+- **Execute request with context** - Send request to Claude, will add file and line/region context
+- **Fix error at point** - Will send flycheck error to Claude, with context
+- **Implement comment at point** - Extracts comment text and sends it to Claude, with context
 - **Add file or current file** - Will add file with Claude's @ symbol convention
-- **Option: Swap RET and M-RET** - Swap keys by preference (Claude maps RET to submit, and M-RET to newline)
-- **Option: S-RET as newline** - May be more typical (Claude maps S-RET to submit)
+- **Option: Swap RET and M-RET** - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
+- **Option: S-RET as newline** - May be more natural (Claude maps S-RET to submit)
+- **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
 
 ## Table of Contents
 
