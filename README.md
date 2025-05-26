@@ -14,6 +14,7 @@ https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 - **Fix error at point** - Will send flycheck error to Claude, with context
 - **Implement comment at point** - Extracts comment text and sends it to Claude, with context
 - **Add file or current file** - Will add file with Claude's @ symbol convention
+- **C-g sends esc**
 - **Option: Swap RET and M-RET** - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
 - **Option: S-RET as newline** - May be more natural (Claude maps S-RET to submit)
 - **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
@@ -122,7 +123,7 @@ Other useful tweaks:
              '("^\\*claudemacs"
                (display-buffer-in-side-window)
                (side . right)
-               (window-width . 0.40)))
+               (window-width . 0.33)))
 
 ;; Turn on autorevert because Claude modifies and saves buffers. Make it a habit to save
 ;; before asking Claude anything, because it uses the file on disk as its source of truth.
