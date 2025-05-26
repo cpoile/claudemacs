@@ -225,7 +225,7 @@ When toggling the ClaudEmacs buffer visibility, there's an edge case to be aware
 
 ## Requirements
 
-- Emacs 26.1+
+- Emacs 28.1+
 - [eat](https://github.com/kephale/emacs-eat) package
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview)
 
