@@ -1,14 +1,17 @@
-# Claudemacs
+# ClaudEmacs
 
 AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) in Emacs.
 
 ## Features
 
-- **Eat terminal integration** - Clean Claude Code interface using eat terminal emulator
 - **Workspace-aware sessions** - Automatic buffer naming based on Doom/Perspective workspaces
 - **Project-based sessions** - Each project gets its own Claude session
-- **Transient interface** - Easy-to-use menu system with `C-c C-v`
+- **Fixes for some of Eat-mode's issues** - Tendency for eat mode + Claude to cause "scroll-popping", and for the input box to get stuck. Use `u` to unstick input box and reset buffer issues. 
+- **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
 - **Session resumption** - Resume previous Claude Code sessions
+- **Fix error at point** - Will send flycheck error to Claude
+- **Execute request with context** - Will add file and line (or region) to your request
+- **Add file or current file** - Will add file with Claude's @ symbol convention
 
 ## Installation
 
@@ -53,32 +56,124 @@ Clone this repository and add to your Emacs configuration:
 
 ## Setup
 
-<!-- TODO: add setup instructions -->
+Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding to the relevant mode-maps (instead of using a `global-set-key`, since that will override the very useful `C-c C-e` keybind in the `eat-semi-char-mode-map` (see the section below on tips).
+
+Doom Emacs style:
+
+```elisp
+(load! "claudemacs/claudemacs.el")
+(map! :map prog-mode-map
+      "C-c C-e" #'claudemacs-transient-menu)
+(map! :map emacs-lisp-mode-map
+      "C-c C-e" #'claudemacs-transient-menu)
+(map! :map text-mode-map
+      "C-c C-e" #'claudemacs-transient-menu)
+
+;; Set a big buffer so we can search our history.
+(after! eat
+  (setq eat-term-scrollback-size 400000))
+```
+
+Regular Emacs style:
+
+```elisp
+(require 'claudemacs)
+(define-key prog-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
+(define-key emacs-lisp-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
+(define-key text-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
+```
+
+Other useful tweaks:
+
+```elisp
+;; if you want it to pop up as a new buffer. Otherwise, it will use "other buffer."
+(add-to-list 'display-buffer-alist
+             '("^\\*claudemacs"
+               (display-buffer-in-side-window)
+               (side . right)
+               (window-width . 0.40)))
+```
 
 ## Usage
 
 ### Basic Commands
 
-- `C-c C-v c` - Start Claude Code session
-- `C-c C-v r` - Start Claude Code with resume option
+ClaudEmacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
+
+#### Core Commands
+- `c` - Start Claude Code session (or switch to existing)
+- `r` - Start Claude Code with resume option (or switch to existing)
+- `k` - Kill active ClaudEmacs session
+- `t` - Toggle ClaudEmacs buffer visibility
+
+#### Action Commands
+- `e` - Fix error at point (using flycheck if available)
+- `x` - Execute request with file context (current line or region)
+- `f` - Add file reference (@file) to conversation
+- `F` - Add current file reference to conversation
+
+#### Maintenance Commands
+- `u` - Unstick Claude input box (reset buffer tracking)
+
+All commands are also available as `M-x claudemacs-<command>` (e.g., `M-x claudemacs-run`).
 
 ### Customization
 
+ClaudEmacs provides several customization variables to tailor the experience to your workflow:
+
+#### Basic Configuration
+
 ```elisp
-;; Custom Claude Code executable path
+;; Custom Claude Code executable path (default: "claude")
 (setq claudemacs-program "/usr/local/bin/claude")
 
-;; Add command line switches
+;; Add command line switches (default: nil)
 (setq claudemacs-program-switches '("--verbose" "--dangerously-skip-permissions"))
 ```
 
+#### Buffer Behavior
+
+```elisp
+;; Whether to switch to ClaudEmacs buffer when creating new session (default: t)
+(setq claudemacs-switch-to-buffer-on-create nil)
+
+;; Whether to switch to ClaudEmacs buffer when toggling visibility (default: t)
+(setq claudemacs-switch-to-buffer-on-toggle nil)
+```
+
+#### Key Bindings
+
+```elisp
+;; Swap RET and M-RET behavior in ClaudEmacs buffers (default: nil)
+;; When enabled: RET creates newline, M-RET submits
+(setq claudemacs-m-return-is-submit t)
+
+;; Enable Shift-Return to create newlines (default: t) 
+;; Provides alternative to M-RET for creating newlines
+(setq claudemacs-shift-return-newline t)
+```
+
+All variables can also be customized via `M-x customize-group RET claudemacs RET`.
+
 ## Buffer Naming
 
-Claudemacs creates workspace-aware buffer names:
+ClaudEmacs creates workspace-aware buffer names:
 - With workspace: `*claudemacs:workspace-name*`
 - Without workspace: `*claudemacs:/path/to/project*`
 
 Currently supports Doom Emacs workspaces and Perspective mode. If you use another workspace package and would like support added, please open an issue - I'm happy to add support for others.
+
+## Tips and Tricks
+
+### Using eat-mode effectively
+
+When interacting with the eat-mode buffer, you are limited in what you can do in the default semi-char mode. Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text. Press `C-c C-l` to re-enter semi-char mode and continue typing to Claude.
+
+### Scroll-popping and input box sticking
+
+There is a tricky interaction between Eat-mode and Claude Code, probably because Claude Code uses some input libraries that eat has trouble with. It was causing the eat-mode buffer to "scroll-pop" to the top whenever you change the other window's buffer. This is mostly fixed now, but a side effect is sometimes the Claude Clode input box gets stuck halfway up the buffer and won't move.
+
+If this happens, press `u` in the ClaudEmacs transient menu to "unstick" the buffer, and everything should get reset.
 
 ## Requirements
 
