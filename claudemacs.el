@@ -656,12 +656,11 @@ Hide if current, focus if visible elsewhere, show if hidden."
      ;; Case 3: Claude buffer visible in another window
      ((get-buffer-window claude-buffer)
       ;; Quit that window (automatically handles created vs reused)
-      ;; 
-      ;; Edge case: (note in the README) if the window was created for Claude,
-      ;; but in the meantime you have switched to another workspace and back,
-      ;; the window is no longer created just for claudemacs -- it has shown
-      ;; something previous, so it will no longer go away if you toggle. Them's
-      ;; the breaks.
+      ;;
+      ;; Edge case: the window was created for Claude, but in the meantime you
+      ;; have switched to another workspace and back, the window is no longer
+      ;; created just for claudemacs -- it has shown something previous, so it
+      ;; will no longer go away if you toggle. Them's the breaks.
       (with-selected-window (get-buffer-window claude-buffer)
         (quit-window)))
      

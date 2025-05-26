@@ -114,12 +114,19 @@ Regular Emacs style:
 Other useful tweaks:
 
 ```elisp
-;; If you want it to pop up as a new buffer. Otherwise, it will use "other buffer." I use the "other buffer" style, usually.
+;; If you want it to pop up as a new buffer. Otherwise, it will use "other buffer."
+;; Personally, I use the "other buffer" style.
 (add-to-list 'display-buffer-alist
              '("^\\*claudemacs"
                (display-buffer-in-side-window)
                (side . right)
                (window-width . 0.40)))
+
+;; Turn on autorevert because Claude modifies and saves buffers. Make it a habit to save
+;; before asking Claude anything, because it uses the file on disk as its source of truth.
+;; (And you don't want to lose edits after it modifies and saves the files.)
+(after! autorevert
+  (global-auto-revert-mode t))
 ```
 
 ## Usage
@@ -199,7 +206,10 @@ Currently supports Doom Emacs workspaces and Perspective mode. If you use anothe
 
 ### Using eat-mode effectively
 
-When interacting with the eat-mode buffer, you are limited in what you can do in the default semi-char mode. Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text. Press `C-c C-l` to re-enter semi-char mode and continue typing to Claude.
+When interacting with the eat-mode buffer, you are limited in what you can do in the default semi-char mode.
+
+Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text.
+Press `C-c C-l` to re-enter semi-char mode and continue typing to Claude.
 
 ### Scroll-popping, input box sticking, input box border draw issues
 
@@ -208,6 +218,10 @@ There is a tricky interaction between Eat-mode and Claude Code, probably because
 There are also issues with drawing the input box border after the window resizes, which is expected of terminal programs. 
 
 If you see these issues, press `u` in the ClaudEmacs transient menu to "unstick" the buffer, and everything should get reset.
+
+### Buffer Toggle Edge Case
+
+When toggling the ClaudEmacs buffer visibility, there's an edge case to be aware of: if a window was originally created for ClaudEmacs, but you've since switched to another workspace and back, that window may have shown other buffers in the meantime. In this case, the window is no longer considered "created just for ClaudEmacs" and won't automatically close when you toggle. This is due to Emacs' window management - once a window has been reused for other content, it loses its original "dedicated" status.
 
 ## Requirements
 
