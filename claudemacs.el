@@ -87,6 +87,156 @@ This provides an alternative way to create newlines without using M-RET."
   :group 'claudemacs)
 
 ;;;; Utility Functions
+(defun claudemacs--comment-syntax-info ()
+  "Get comment syntax information for the current buffer.
+Returns a plist with :start, :end, :start-skip, :end-skip, and :multi-line-p."
+  (list :start comment-start
+        :end comment-end
+        :start-skip comment-start-skip
+        :end-skip comment-end-skip
+        :multi-line-p (and comment-end (not (string-empty-p comment-end)))))
+
+;; no, the issue is (nth 4 (syntax-ppss)) does not detect a comment when the
+;; point is at the first char of the comment
+(defun claudemacs--point-in-comment-p ()
+  "Return non-nil if point is inside or before a comment."
+  (or (nth 4 (syntax-ppss))
+      (save-excursion
+        (skip-chars-forward " \t")
+        (forward-char 1)  ;; being at the start of a comment is not "in" a comment
+        (nth 4 (syntax-ppss)))))
+
+(defun claudemacs--find-comment-start ()
+  "Find the start of the comment block containing point.
+Returns the position of the comment start, or nil if not in a comment."
+  (save-excursion
+    (let ((syntax-info (claudemacs--comment-syntax-info)))
+      (cond
+       ;; Multi-line comment (/* ... */)
+       ((plist-get syntax-info :multi-line-p)
+        (let ((start-regex (plist-get syntax-info :start-skip)))
+          (when start-regex
+            (while (and (claudemacs--point-in-comment-p)
+                        (not (bobp)))
+              (forward-line -1)
+              (beginning-of-line))
+            ;; Find the actual comment start on this line or nearby
+            (while (and (not (bobp))
+                        (not (looking-at-p start-regex)))
+              (forward-line -1)
+              (beginning-of-line))
+            (when (looking-at-p start-regex)
+              (point)))))
+       
+       ;; Single-line comment (// or # or ;;)
+       (t
+        (let ((start-regex (plist-get syntax-info :start-skip)))
+          (when start-regex
+            ;; Find the first line of consecutive comment lines
+            (while (and (not (bobp))
+                        (save-excursion
+                          (forward-line -1)
+                          (beginning-of-line)
+                          (looking-at-p (concat "^[[:space:]]*" start-regex))))
+              (forward-line -1))
+            (beginning-of-line)
+            (when (looking-at-p (concat "^[[:space:]]*" start-regex))
+              (point)))))))))
+
+(defun claudemacs--find-comment-end ()
+  "Find the end of the comment block containing point.
+Returns the position of the comment end, or nil if not in a comment."
+  (save-excursion
+    (let ((syntax-info (claudemacs--comment-syntax-info)))
+      (cond
+       ;; Multi-line comment (/* ... */)
+       ((plist-get syntax-info :multi-line-p)
+        (let ((end-regex (plist-get syntax-info :end-skip)))
+          (when end-regex
+            ;; Move to end of comment
+            (while (and (claudemacs--point-in-comment-p)
+                        (not (eobp)))
+              (forward-char))
+            ;; Back up to find the actual comment end
+            (while (and (not (bobp))
+                        (not (looking-back end-regex (line-beginning-position))))
+              (backward-char))
+            (when (looking-back end-regex (line-beginning-position))
+              (point)))))
+       
+       ;; Single-line comment (// or # or ;;)
+       (t
+        (let ((start-regex (plist-get syntax-info :start-skip)))
+          (when start-regex
+            ;; Find the last line of consecutive comment lines
+            (while (and (not (eobp))
+                        (save-excursion
+                          (forward-line 1)
+                          (beginning-of-line)
+                          (looking-at-p (concat "^[[:space:]]*" start-regex))))
+              (forward-line 1))
+            (end-of-line)
+            (point))))))))
+
+(defun claudemacs--get-comment-bounds ()
+  "Get the bounds of the comment block at point.
+Returns (START . END) if point is in a comment, nil otherwise."
+  (when (claudemacs--point-in-comment-p)
+    (save-excursion
+      ;; If we're before a comment on the same line, move to the comment
+      (unless (nth 4 (syntax-ppss))
+        (skip-chars-forward " \t"))
+      
+      (let ((start (claudemacs--find-comment-start))
+            (end (claudemacs--find-comment-end)))
+        (when (and start end)
+          (cons start end))))))
+
+(defun claudemacs--extract-comment-text (start end)
+  "Extract and clean comment text between START and END positions.
+Removes comment markers and normalizes whitespace."
+  (let* ((raw-text (buffer-substring-no-properties start end))
+         (syntax-info (claudemacs--comment-syntax-info))
+         (comment-start (plist-get syntax-info :start))
+         (comment-end (plist-get syntax-info :end))
+         (cleaned-text raw-text))
+
+    ;; Handle multi-line comments (/* ... */)
+    (when (and comment-end (not (string-empty-p comment-end)))
+      ;; Remove opening comment marker
+      (when comment-start
+        (setq cleaned-text
+              (replace-regexp-in-string
+               (concat "^[[:space:]]*" (regexp-quote comment-start) "[[:space:]]*")
+               "" cleaned-text)))
+      ;; Remove closing comment marker
+      (setq cleaned-text
+            (replace-regexp-in-string
+             (concat "[[:space:]]*" (regexp-quote comment-end) "[[:space:]]*$")
+             "" cleaned-text)))
+
+    ;; Handle single-line comments (// or # or ;; etc.)
+    (when (and comment-start (or (not comment-end) (string-empty-p comment-end)))
+      ;; For single-char comment markers like #, remove all consecutive occurrences
+      (if (= 1 (length (string-trim comment-start)))
+          (let ((char (string-to-char (string-trim comment-start))))
+            (setq cleaned-text
+                  (replace-regexp-in-string
+                   (concat "^[[:space:]]*" (regexp-quote (char-to-string char)) "+[[:space:]]*")
+                   "" cleaned-text)))
+        ;; For multi-char comment markers like //, remove each occurrence
+        (setq cleaned-text
+              (replace-regexp-in-string
+               (concat "^[[:space:]]*" (regexp-quote comment-start) "[[:space:]]*")
+               "" cleaned-text))))
+
+    ;; Clean up whitespace and empty lines
+    (setq cleaned-text (string-trim cleaned-text))
+    (setq cleaned-text (replace-regexp-in-string "^[[:space:]]*\n" "" cleaned-text))
+    (setq cleaned-text (replace-regexp-in-string "\n[[:space:]]*$" "" cleaned-text))
+    
+    cleaned-text))
+
 (defun claudemacs--project-root (&optional dir)
   "Get the project root using VC-git, or fallback to current buffer's directory.
 If DIR is given, use the vc-git-root of DIR."
@@ -425,6 +575,59 @@ Sends @rel/path/to/current/file without newline."
     (claudemacs--send-message-to-claude reference-text t)
     (message "Added current file reference: @%s" relative-path)))
 
+
+;;;###autoload
+(defun claudemacs-implement-comment ()
+  "Send comment at point or region to Claude for implementation.
+If region is active, uses the exact region.
+If no region, finds the comment block at point.
+Extracts comment text and sends it to Claude with implementation instructions."
+  (interactive)
+  (claudemacs--validate-session)
+  
+  (let* ((context (claudemacs--get-file-context))
+         (relative-path (plist-get context :relative-path))
+         comment-bounds
+         comment-text
+         start-line
+         end-line)
+    
+    (cond
+     ;; Case 1: Region is active - use exact region (respect user's intentions)
+     ((use-region-p)
+      (let ((region-start (region-beginning))
+            (region-end (region-end)))
+        (setq start-line (line-number-at-pos region-start))
+        (setq end-line (line-number-at-pos region-end))
+        (setq comment-text (claudemacs--extract-comment-text region-start region-end))))
+     
+     ;; Case 2: No region - find comment at point
+     (t
+      (setq comment-bounds (claudemacs--get-comment-bounds))
+      
+      (unless comment-bounds
+        (error "Point is not inside a comment"))
+      
+      (setq start-line (line-number-at-pos (car comment-bounds)))
+      (setq end-line (line-number-at-pos (cdr comment-bounds)))
+      (setq comment-text (claudemacs--extract-comment-text 
+                         (car comment-bounds) 
+                         (cdr comment-bounds)))))
+    
+    ;; Validate we have comment text
+    (when (string-empty-p (string-trim comment-text))
+      (error "No comment text found to implement"))
+    
+    ;; Format the message with file context and implementation request
+    (let* ((context-text (claudemacs--format-context-line-range 
+                         relative-path start-line end-line))
+           (message-text (format "%sPlease implement this comment:\n\n%s"
+                                context-text comment-text)))
+      
+      (claudemacs--send-message-to-claude message-text)
+      (message "Sent comment implementation request to Claude (%d lines)" 
+               (1+ (- end-line start-line))))))
+
 ;;;###autoload
 (defun claudemacs-toggle-buffer ()
   "Toggle Claude buffer visibility.
@@ -477,6 +680,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
    ["Actions"
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
     ("x" "Execute Request with Context" claudemacs-execute-request)
+    ("i" "Implement Comment" claudemacs-implement-comment)
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)]
    ["Maintenance"

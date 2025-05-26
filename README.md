@@ -10,8 +10,11 @@ AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude
 - **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
 - **Session resumption** - Resume previous Claude Code sessions
 - **Fix error at point** - Will send flycheck error to Claude
-- **Execute request with context** - Will add file and line (or region) to your request
+- **Implement comment at point** - Extracts comment text and sends it to Claude for implementation, with context
+- **Execute request with context** - Send a request to Claude, will add file and line (or region) context
 - **Add file or current file** - Will add file with Claude's @ symbol convention
+- **Option: Swap RET and M-RET** - Swap keys by preference (Claude maps RET to submit, and M-RET to newline)
+- **Option: S-RET as newline** - May be more typical (Claude maps S-RET to submit)
 
 ## Table of Contents
 
@@ -134,6 +137,7 @@ ClaudEmacs provides a transient menu accessible via `C-c C-e` (or your own keybi
 #### Action Commands
 - `e` - Fix error at point (using flycheck if available)
 - `x` - Execute request with file context (current line or region)
+- `i` - Implement comment (extracts comment text and asks Claude to implement it)
 - `f` - Add file reference (@file) to conversation
 - `F` - Add current file reference to conversation
 
