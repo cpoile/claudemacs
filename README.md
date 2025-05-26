@@ -2,7 +2,7 @@
 
 AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) in Emacs.
 
-https://github.com/user-attachments/assets/ae31ee3a-69ea-438c-8500-1681159d09dc
+https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 
 ## Features
 
