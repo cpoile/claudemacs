@@ -166,10 +166,6 @@ Returns t if switched successfully, nil if no buffer exists."
 (declare-function eat-term-send-string "eat")
 (declare-function eat-term-input-event "eat")
 (declare-function eat-kill-process "eat")
-;; (defvar eat-terminal)
-;; (defvar eat-term-name)
-;; (defvar eat-mode-map)
-;; (defvar eat-semi-char-mode-map)
 
 (defun claudemacs--setup-repl-faces ()
   "Setup faces for the Claude REPL buffer.
@@ -484,7 +480,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)]
    ["Maintenance"
-    ("u" "Unstick Claude input box location" claudemacs-reset-buffer-tracking)]])
+    ("u" "Unstick Claude input box location" claudemacs-unstick-terminal)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
@@ -530,7 +526,25 @@ Hide if current, focus if visible elsewhere, show if hidden."
         ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
         (setq-local window-adjust-process-window-size-function 'ignore)))))
 
-(defun claudemacs-reset-buffer-tracking ()
+(defun claudemacs--eat-force-redraw ()
+  "Forces the eat terminal and the underlying program to redraw.
+
+This is useful if the display becomes corrupted after Emacs window
+resizes or other external changes that might not have been fully
+propagated. It attempts to resynchronize the PTY size, the
+eat emulator's internal dimensions, and trigger a redisplay."
+  (interactive)
+  (with-current-buffer (claudemacs--get-buffer)
+    (when (and (boundp 'eat-terminal) eat-terminal)
+        (let* ((process (eat-term-parameter eat-terminal 'eat--process))
+               (claude-window (get-buffer-window (claudemacs--get-buffer))))
+          (if (and process (process-live-p process) claude-window)
+              (eat--adjust-process-window-size process claude-window))))))
+
+;; You might want to bind this to a key, for example:
+;; (define-key eat-mode-map (kbd "C-c C-r") #'eat-force-redraw) ;; 'r' for redraw
+
+(defun claudemacs-unstick-terminal ()
   "Reset the claudemacs buffer's vertical rest point.
 Sometimes the input box gets stuck mid or top of the buffer because of
 the idiosyncracies of eat-mode. This will reset the input box to the
@@ -538,6 +552,7 @@ bottom of the buffer."
   (interactive)
   (when (claudemacs--is-claudemacs-buffer-p)
     (error "Reset buffer cannot be used while visiting the claudemacs buffer itself"))
+  (claudemacs--eat-force-redraw)
   (with-current-buffer (claudemacs--get-buffer)
     (setq-local window-adjust-process-window-size-function
                 'window-adjust-process-window-size-smallest))

@@ -4,21 +4,38 @@ AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude
 
 ## Features
 
-- **Workspace-aware sessions** - Automatic buffer naming based on Doom/Perspective workspaces
-- **Project-based sessions** - Each project gets its own Claude session
-- **Fixes for some of Eat-mode's issues** - Tendency for eat mode + Claude to cause "scroll-popping", and for the input box to get stuck. Use `u` to unstick input box and reset buffer issues. 
+- **Project-based sessions** - Each project gets its own Claude session rooted at its git root
+- **Workspace-aware naming** - Automatic buffer naming based on Doom/Perspective workspaces, or the git root dir
+- **Terminal fixes** - Use `u` to unstick input box and reset buffer issues (see [Tips](#tips) section)
 - **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
 - **Session resumption** - Resume previous Claude Code sessions
 - **Fix error at point** - Will send flycheck error to Claude
 - **Execute request with context** - Will add file and line (or region) to your request
 - **Add file or current file** - Will add file with Claude's @ symbol convention
 
+## Table of Contents
+
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Package Installation](#package-installation)
+    - [Doom Emacs](#doom-emacs)
+    - [Manual Installation](#manual-installation)
+- [Setup](#setup)
+- [Usage](#usage)
+  - [Basic Commands](#basic-commands)
+  - [Customization](#customization)
+- [Buffer Naming](#buffer-naming)
+- [Tips and Tricks](#tips-and-tricks)
+- [Requirements](#requirements)
+- [Credits](#credits)
+- [License](#license)
+
 ## Installation
 
 ### Prerequisites
 
 1. Install [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview)
-2. Install the `eat` package in Emacs
+2. Install the [eat](https://codeberg.org/akib/emacs-eat) package in Emacs
 
 ### Package Installation
 
@@ -34,9 +51,21 @@ Add to your `packages.el`:
 Then in your `config.el`:
 
 ```elisp
-(use-package! claudemacs
-  :config
-  (claudemacs-mode 1))
+(use-package! claudemacs)
+```
+
+#### use-package with :vc (Emacs 29+)
+
+```elisp
+(use-package claudemacs
+  :vc (:fetcher github :repo "cpoile/claudemacs"))
+```
+
+#### straight.el
+
+```elisp
+(straight-use-package
+ '(claudemacs :type git :host github :repo "cpoile/claudemacs"))
 ```
 
 #### Manual Installation
@@ -49,19 +78,15 @@ Clone this repository and add to your Emacs configuration:
 
 ;; Load the package
 (require 'claudemacs)
-
-;; Enable minor mode globally (optional)
-(claudemacs-mode 1)
 ```
 
 ## Setup
 
-Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding to the relevant mode-maps (instead of using a `global-set-key`, since that will override the very useful `C-c C-e` keybind in the `eat-semi-char-mode-map` (see the section below on tips).
+Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding to the relevant mode-maps (instead of using a `global-set-key`, since that will override the very useful `C-c C-e` keybind in the `eat-semi-char-mode-map` (see [Using Eat Mode](#using-eat-mode-effectively) section below).
 
 Doom Emacs style:
 
 ```elisp
-(load! "claudemacs/claudemacs.el")
 (map! :map prog-mode-map
       "C-c C-e" #'claudemacs-transient-menu)
 (map! :map emacs-lisp-mode-map
@@ -86,7 +111,7 @@ Regular Emacs style:
 Other useful tweaks:
 
 ```elisp
-;; if you want it to pop up as a new buffer. Otherwise, it will use "other buffer."
+;; If you want it to pop up as a new buffer. Otherwise, it will use "other buffer." I use the "other buffer" style, usually.
 (add-to-list 'display-buffer-alist
              '("^\\*claudemacs"
                (display-buffer-in-side-window)
@@ -169,11 +194,13 @@ Currently supports Doom Emacs workspaces and Perspective mode. If you use anothe
 
 When interacting with the eat-mode buffer, you are limited in what you can do in the default semi-char mode. Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text. Press `C-c C-l` to re-enter semi-char mode and continue typing to Claude.
 
-### Scroll-popping and input box sticking
+### Scroll-popping, input box sticking, input box border draw issues
 
 There is a tricky interaction between Eat-mode and Claude Code, probably because Claude Code uses some input libraries that eat has trouble with. It was causing the eat-mode buffer to "scroll-pop" to the top whenever you change the other window's buffer. This is mostly fixed now, but a side effect is sometimes the Claude Clode input box gets stuck halfway up the buffer and won't move.
 
-If this happens, press `u` in the ClaudEmacs transient menu to "unstick" the buffer, and everything should get reset.
+There are also issues with drawing the input box border after the window resizes, which is expected of terminal programs. 
+
+If you see these issues, press `u` in the ClaudEmacs transient menu to "unstick" the buffer, and everything should get reset.
 
 ## Requirements
 
