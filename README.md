@@ -14,7 +14,8 @@ https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 - **Fix error at point** - Will send flycheck error to Claude, with context
 - **Implement comment at point** - Extracts comment text and sends it to Claude, with context
 - **Add file or current file** - Will add file with Claude's @ symbol convention
-- **C-g sends esc**
+- **System notifications** - Growl notifications when waiting for input (see [System Notifications](#system-notifications) for setup)
+- **C-g sends Esc** - Habits die hard
 - **Option: Swap RET and M-RET** - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
 - **Option: S-RET as newline** - May be more natural (Claude maps S-RET to submit)
 - **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
@@ -131,6 +132,20 @@ Other useful tweaks:
 (after! autorevert
   (global-auto-revert-mode t))
 ```
+
+### System Notifications
+
+#### Mac
+
+For Mac, you need to do some setup to make notifications work.
+1. Run the built in `Script Editor` program, start a new script, and run `display notification "Test notification" with title "Test Title" sound name "Frog"`
+1. Accept the notification permissions. (Or go into System Settings -> Notifications -> Script Editor and allow notifications there.)
+
+Now you should receive System notifications when Claude Code is waiting for input. It **does not** seem to notify when it's done, unfortunately. Still working on seeing how to fix that. 
+
+#### Linux / Windows
+
+I have not tested on linux or windows, so would appreciate any help there (PRs welcome).
 
 ## Usage
 
