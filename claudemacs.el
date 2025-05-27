@@ -751,7 +751,7 @@ eat emulator's internal dimensions, and trigger a redisplay."
         (let* ((process (eat-term-parameter eat-terminal 'eat--process))
                (claude-window (get-buffer-window (claudemacs--get-buffer))))
           (if (and process (process-live-p process) claude-window)
-              (eat--adjust-process-window-size process claude-window))))))
+              (eat--adjust-process-window-size process (list claude-window)))))))
 
 ;; You might want to bind this to a key, for example:
 ;; (define-key eat-mode-map (kbd "C-c C-r") #'eat-force-redraw) ;; 'r' for redraw
