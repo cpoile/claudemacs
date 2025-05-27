@@ -88,6 +88,20 @@ If nil, add the file reference but don't switch focus to it."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-bell-function nil
+  "Function to call when Claude Code sends a bell signal.
+This function is called with the eat terminal as an argument when
+Claude Code finishes work and sends a bell (\\a or \\x07) character.
+If nil, the default bell behavior (ding) will be used.
+
+Example functions:
+- #'claudemacs-bell-notification: Show a notification
+- #'claudemacs-bell-sound: Play system bell sound
+- #'claudemacs-bell-flash: Flash the mode line"
+  :type '(choice (const :tag "Default (ding)" nil)
+                 (function :tag "Custom function"))
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -323,6 +337,125 @@ Returns t if switched successfully, nil if no buffer exists."
 (declare-function eat-term-send-string "eat")
 (declare-function eat-term-input-event "eat")
 (declare-function eat-kill-process "eat")
+(declare-function eat-term-parameter "eat")
+(declare-function eat-term-process-output "eat")
+(declare-function setf "cl-lib")
+
+;;;; Bell Handling
+(defun claudemacs--bell-handler (terminal)
+  "Handle bell events from Claude Code in TERMINAL.
+This function is called when Claude Code sends a bell character.
+It delegates to the user-configured bell function or uses default behavior."
+  (message "debug: claudemacs--bell-handler called")
+  (if claudemacs-bell-function
+      (funcall claudemacs-bell-function terminal)
+    ;; Default behavior: use system bell to bypass ring-bell-function
+    (claudemacs--system-bell)))
+
+(defun claudemacs--system-bell ()
+  "Play system bell sound, bypassing Emacs ring-bell-function.
+This works even when ring-bell-function is set to 'ignore."
+  (cond
+   ;; macOS
+   ((eq system-type 'darwin)
+    (call-process "osascript" nil nil nil "-e" "beep"))
+   ;; Linux with paplay (PulseAudio)
+   ((and (eq system-type 'gnu/linux)
+         (executable-find "paplay"))
+    (call-process "paplay" nil nil nil "/usr/share/sounds/alsa/Front_Left.wav"))
+   ;; Linux with aplay (ALSA)
+   ((and (eq system-type 'gnu/linux)
+         (executable-find "aplay"))
+    (call-process "aplay" nil nil nil "/usr/share/sounds/alsa/Front_Left.wav"))
+   ;; Fallback to standard ding
+   (t (ding t))))
+
+(defun claudemacs-bell-notification (terminal)
+  "Show a notification when Claude Code bells.
+TERMINAL is the eat terminal that received the bell."
+  (ignore terminal)
+  (message "Claude Code finished work")
+  ;; Use system bell to bypass ring-bell-function
+  (claudemacs--system-bell))
+
+(defun claudemacs-bell-sound (terminal)
+  "Play system bell sound when Claude Code bells.
+TERMINAL is the eat terminal that received the bell."
+  (ignore terminal)
+  ;; Use system bell to bypass ring-bell-function
+  (claudemacs--system-bell))
+
+(defun claudemacs-bell-flash (terminal)
+  "Flash the mode line when Claude Code bells.
+TERMINAL is the eat terminal that received the bell."
+  (ignore terminal)
+  (let ((mode-line-face (face-background 'mode-line)))
+    ;; Flash by temporarily changing mode line color
+    (set-face-background 'mode-line "red")
+    (sit-for 0.1)
+    (set-face-background 'mode-line mode-line-face))
+  ;; Use system bell to bypass ring-bell-function
+  (claudemacs--system-bell))
+
+;;;###autoload
+(defun claudemacs-test-bell ()
+  "Simulate Claude Code outputting a bell character.
+This tests if your bell handler is working correctly."
+  (interactive)
+  (claudemacs--validate-session)
+  (with-current-buffer (claudemacs--get-buffer)
+    (when (boundp 'eat-terminal)
+      (message "Testing bell handler: simulating Claude Code output...")
+      (eat-term-process-output eat-terminal "\a")
+      (message "Simulated bell output from Claude Code process"))))
+
+;;;###autoload  
+(defun claudemacs-send-test-input ()
+  "Send a bell character as INPUT to Claude Code.
+This is different from claudemacs-test-bell and won't trigger the bell handler.
+Use this to test sending actual input to Claude."
+  (interactive)
+  (claudemacs--validate-session)
+  (claudemacs--send-message-to-claude "\a" t t)
+  (message "Sent bell character as input to Claude Code"))
+
+;;;###autoload
+(defun claudemacs-setup-bell-handler ()
+  "Set up or re-setup the bell handler for the current claudemacs session."
+  (interactive)
+  (claudemacs--validate-session)
+  (with-current-buffer (claudemacs--get-buffer)
+    (when (boundp 'eat-terminal)
+      (let ((old-handler (eat-term-parameter eat-terminal 'ring-bell-function)))
+        (setf (eat-term-parameter eat-terminal 'ring-bell-function)
+              #'claudemacs--bell-handler)
+        (message "Bell handler set up for claudemacs session (was: %s, now: %s)" 
+                 old-handler #'claudemacs--bell-handler)))))
+
+;;;###autoload
+(defun claudemacs-debug-bell-settings ()
+  "Debug current bell settings and test bell functionality."
+  (interactive)
+  (message "=== Bell Debug Info ===")
+  (message "Global ring-bell-function: %s" ring-bell-function)
+  (message "Global visible-bell: %s" visible-bell)
+  (when (claudemacs--get-buffer)
+    (with-current-buffer (claudemacs--get-buffer)
+      (when (boundp 'eat-terminal)
+        (message "Claudemacs ring-bell-function: %s" 
+                 (eat-term-parameter eat-terminal 'ring-bell-function)))))
+  (message "Testing direct (ding)...")
+  (ding)
+  (message "Testing system bell...")
+  (claudemacs--system-bell)
+  (message "Testing bell handler via terminal...")
+  (when (claudemacs--get-buffer)
+    (with-current-buffer (claudemacs--get-buffer)
+      (when (boundp 'eat-terminal)
+        ;; Simulate Claude Code outputting a bell character
+        (eat-term-process-output eat-terminal "\a")
+        (message "Simulated bell output from process - check if debug message appears"))))
+  (message "=== End Debug ==="))
 
 (defun claudemacs--setup-repl-faces ()
   "Setup faces for the Claude REPL buffer.
@@ -411,7 +544,18 @@ Applies consistent styling to all eat-mode terminal faces."
       (setq-local scroll-preserve-screen-position t)  ; Preserve position during scrolling
       
       ;; Set up custom key mappings for claudemacs buffers
-      (claudemacs--setup-buffer-keymap))
+      (claudemacs--setup-buffer-keymap)
+      
+      ;; Set up bell handler to capture Claude Code completion signals
+      ;; This must be done AFTER eat has finished initialization
+      (run-with-timer 0.1 nil
+                      (lambda ()
+                        (when (and (buffer-live-p buffer)
+                                   (buffer-local-value 'eat-terminal buffer))
+                          (with-current-buffer buffer
+                            (setf (eat-term-parameter eat-terminal 'ring-bell-function)
+                                  #'claudemacs--bell-handler)
+                            (message "Bell handler setup completed for %s" (buffer-name buffer)))))))
     
     (let ((window (display-buffer buffer)))
       (when claudemacs-switch-to-buffer-on-create
@@ -692,7 +836,11 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)]
    ["Maintenance"
-    ("u" "Unstick Claude input box location" claudemacs-unstick-terminal)]])
+    ("u" "Unstick Claude input box location" claudemacs-unstick-terminal)
+    ("b" "Test Bell Handler (Output)" claudemacs-test-bell)
+    ("i" "Send Bell Input to Claude" claudemacs-send-test-input)
+    ("s" "Setup Bell Handler" claudemacs-setup-bell-handler)
+    ("d" "Debug Bell Settings" claudemacs-debug-bell-settings)]])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
@@ -775,7 +923,8 @@ bottom of the buffer."
   (with-current-buffer (claudemacs--get-buffer)
     ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
     ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
-    (setq-local window-adjust-process-window-size-function 'ignore)))
+    (setq-local window-adjust-process-window-size-function 'ignore)
+    (claudemacs--setup-buffer-keymap)))
 
 ;; Set up hooks when package is loaded
 (unless (memq 'claudemacs--check-and-disable-window-adjust window-buffer-change-functions)
