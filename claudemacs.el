@@ -385,17 +385,19 @@ This works across macOS, Linux, and Windows platforms."
   "Set up eat integration (keymap and bell handler) for BUFFER.
 Retries up to 10 times if eat is not ready yet."
   (let ((retry-count (or retry-count 0)))
-    (when (and (buffer-live-p buffer)
+    (if (and (buffer-live-p buffer)
              (with-current-buffer buffer
                (and (boundp 'eat-terminal) eat-terminal)))
-      ;; Eat is ready, set up integration
-      (message "Eat is ready, setting up integrations")
-      (with-current-buffer buffer
-        (message "DEBUG: About to call keymap setup in buffer: %s" (buffer-name))
-        (claudemacs--setup-buffer-keymap)
-        (claudemacs-setup-bell-handler))
+        ;; Eat is ready, set up integration
+        (progn
+          (message "Eat is ready, setting up integrations")
+          (with-current-buffer buffer
+            (message "DEBUG: About to call keymap setup in buffer: %s" (buffer-name))
+            (claudemacs--setup-buffer-keymap)
+            (claudemacs-setup-bell-handler)))
       ;; Eat not ready yet, retry if we haven't exceeded max attempts
       (when (< retry-count 10)
+        (message "Eat not ready yet, retrying in 0.5s (attempt %d/10)" (1+ retry-count))
         (run-with-timer 0.5 nil
                         (lambda ()
                           (claudemacs--setup-eat-integration buffer (1+ retry-count))))))))
@@ -455,28 +457,36 @@ Applies consistent styling to all eat-mode terminal faces."
   (eat-term-send-string eat-terminal "\e"))
 
 (defun claudemacs--setup-buffer-keymap ()
-  "Set up buffer-local keymap for claudemacs buffers with custom key bindings."
-  ;; Set up C-g binding
-  (message "Set up C-g binding, current buffer: %s" (current-buffer))
-  (local-set-key (kbd "C-g") #'claudemacs--send-escape)
-
-  (message "shift-ret set? %s  bound minor mode alist? %s" claudemacs-shift-return-newline (boundp 'minor-mode-map-alist))
-  ;; This was a pain to make work.
-  ;; Use the nuclear option - force override in minor mode maps
-  (when (and (or claudemacs-m-return-is-submit claudemacs-shift-return-newline)
-             (boundp 'minor-mode-map-alist))
-    (setq-local minor-mode-map-alist
-                (cons `(t . ,(let ((map (make-sparse-keymap)))
-                               ;; Swap RET and M-RET if enabled
-                               (when claudemacs-m-return-is-submit
-                                 (define-key map (kbd "RET") #'claudemacs--meta-ret-key)
-                                 (define-key map (kbd "M-RET") #'claudemacs--ret-key))
-                               ;; Bind S-RET to newline if enabled
-                               (when claudemacs-shift-return-newline
-                                 (message "defining S-ret = M-ret, current buffer: %s" (current-buffer))
-                                 (define-key map (kbd "S-RET") #'claudemacs--meta-ret-key))
-                               map))
-                      minor-mode-map-alist))))
+  "Set up truly buffer-local keymap for claudemacs buffers with custom key bindings."
+  (when (claudemacs--is-claudemacs-buffer-p)
+    (message "Setting up buffer-local keymap for claudemacs buffer: %s" (buffer-name))
+    
+    ;; Create a new keymap that inherits from the current local map (eat-mode)
+    (let ((map (make-sparse-keymap)))
+      ;; Inherit all eat functionality by setting parent keymap
+      (set-keymap-parent map (current-local-map))
+      
+      ;; Override specific keys for claudemacs functionality
+      (define-key map (kbd "C-g") #'claudemacs--send-escape)
+      (message "Defined C-g -> claudemacs--send-escape")
+      
+      ;; Handle return key swapping if enabled
+      (when claudemacs-m-return-is-submit
+        (define-key map (kbd "<return>") #'claudemacs--meta-ret-key)
+        (define-key map (kbd "<M-return>") #'claudemacs--ret-key)
+        (message "Swapped RET and M-RET"))
+      
+      ;; Handle shift-return newline if enabled
+      (when claudemacs-shift-return-newline
+        (define-key map (kbd "<S-return>") #'claudemacs--meta-ret-key)
+        ;; alternative key representations that eat might use:
+        ;(define-key map (kbd "S-RET") #'claudemacs--meta-ret-key)
+        ;(define-key map (kbd "<shift-return>") #'claudemacs--meta-ret-key)
+        (message "Defined S-RET -> newline"))
+      
+      ;; Apply the keymap as truly buffer-local
+      (use-local-map map)
+      (message "Applied buffer-local keymap successfully"))))
 
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
@@ -869,8 +879,7 @@ bottom of the buffer."
   (with-current-buffer (claudemacs--get-buffer)
     ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
     ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
-    (setq-local window-adjust-process-window-size-function 'ignore)
-    (claudemacs--setup-buffer-keymap)))
+    (setq-local window-adjust-process-window-size-function 'ignore)))
 
 ;; Set up hooks when package is loaded
 (unless (memq 'claudemacs--check-and-disable-window-adjust window-buffer-change-functions)
