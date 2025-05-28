@@ -370,7 +370,7 @@ This works across macOS, Linux, and Windows platforms."
      ;; Linux with kdialog (KDE)
      ((and (eq system-type 'gnu/linux)
            (executable-find "kdialog"))
-      (call-process "kdialog" nil nil nil "--passivepopup" 
+      (call-process "kdialog" nil nil nil "--passivepopup"
                     (format "%s: %s" title message) "3"))
      ;; Windows with PowerShell
      ((eq system-type 'windows-nt)
@@ -383,7 +383,7 @@ This works across macOS, Linux, and Windows platforms."
 
 (defun claudemacs--setup-eat-integration (buffer &optional retry-count)
   "Set up eat integration (keymap and bell handler) for BUFFER.
-Retries up to 10 times if eat is not ready yet."
+Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
   (let ((retry-count (or retry-count 0)))
     (if (and (buffer-live-p buffer)
              (with-current-buffer buffer
