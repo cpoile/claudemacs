@@ -119,8 +119,6 @@ Returns a plist with :start, :end, :start-skip, :end-skip, and :multi-line-p."
         :end-skip comment-end-skip
         :multi-line-p (and comment-end (not (string-empty-p comment-end)))))
 
-;; no, the issue is (nth 4 (syntax-ppss)) does not detect a comment when the
-;; point is at the first char of the comment
 (defun claudemacs--point-in-comment-p ()
   "Return non-nil if point is inside or before a comment."
   (or (nth 4 (syntax-ppss))
@@ -620,9 +618,9 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
          (errors (claudemacs--get-flycheck-errors-on-line))
          (error-message (claudemacs--format-flycheck-errors errors))
          (message-text (if (string-empty-p error-message)
-                          (format "Please fix any issues at @%s line %d"
+                          (format "Please fix any issues at %s:%d"
                                   relative-path line-number)
-                        (format "Please fix the error at @%s line %d: %s"
+                        (format "Please fix the error at %s:%d, error message: %s"
                                 relative-path line-number error-message))))
     
     (claudemacs--send-message-to-claude message-text)
