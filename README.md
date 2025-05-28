@@ -141,7 +141,9 @@ For Mac, you need to do some setup to make notifications work.
 1. Run the built in `Script Editor` program, start a new script, and run `display notification "Test notification" with title "Test Title" sound name "Frog"`
 1. Accept the notification permissions. (Or go into System Settings -> Notifications -> Script Editor and allow notifications there.)
 
-Now you should receive System notifications when Claude Code is waiting for input. It **does not** seem to notify when it's done, unfortunately. Still working on seeing how to fix that. 
+Now you should receive System notifications when Claude Code is waiting for input. It **does not** seem to notify when it's done, unfortunately. Maybe that's how it's designed?
+
+Also, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
 #### Linux / Windows
 
