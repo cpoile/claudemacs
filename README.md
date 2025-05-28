@@ -6,19 +6,18 @@ https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 
 ## Features
 
-- **Project-based sessions** - Each project gets its own Claude session rooted at its git root
-- **Workspace-aware naming** - Buffer naming based on Doom/Perspective workspaces, or git root dir
-- **Terminal fixes** - Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks) section)
-- **Session resume** - Resume previous Claude Code sessions
-- **Execute request with context** - Send request to Claude, will add file and line/region context
-- **Fix error at point** - Will send flycheck error to Claude, with context
-- **Implement comment at point** - Extracts comment text and sends it to Claude, with context
-- **Add file or current file** - Will add file with Claude's @ symbol convention
-- **System notifications** - Growl notifications when waiting for input (see [System Notifications](#system-notifications) for setup)
-- **C-g sends Esc** - Habits die hard
-- **Option: Swap RET and M-RET** - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
-- **Option: S-RET as newline** - May be more natural (Claude maps S-RET to submit)
-- **Transient interface** - Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
+- Project-based Claude Code cwd, with Workspace-aware sessions (see [Sessions](#workspace-and-project-aware-sessions))
+- System notifications: Growl notifications with sound when waiting for input (see [System Notifications](#system-notifications) for setup)
+- Terminal fixes: Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks) section)
+- Session resume: Resume previous Claude Code sessions
+- Execute request with context: Send request to Claude, will add file and line/region context
+- Fix error at point: Will send flycheck error to Claude, with context
+- Implement comment at point: Extracts all comment text and sends it to Claude, with context
+- Add file or current file: Will add file with Claude's @ symbol convention
+- C-g sends Esc: Old habits die hard
+- Option: Swap RET and M-RET - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
+- Option: S-RET as newline - May be more natural (Claude maps S-RET to submit)
+- Transient interface: Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
 
 ## Table of Contents
 
@@ -151,6 +150,13 @@ I have not tested on linux or windows, so would appreciate any help there (PRs w
 
 ## Usage
 
+### Workspace and Project-aware Sessions
+
+- The `claudemacs` session is based on Doom/Perspective workspace, and the Claude Code's cwd is the project's git-root. 
+- Why? This allows you to have multiple workspaces in a monorepo, and a separate `claudemacs` session per workspace, but each session will be correctly rooted to the project's git root.
+- If you don't use workspaces, the decision sequence is: Workspace name -> Perspective name -> project root dir name
+- Open to adding other workspace package support, or options for other logic
+
 ### Basic Commands
 
 ClaudEmacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
@@ -253,7 +259,9 @@ If you see these issues, press `u` in the ClaudEmacs transient menu to "unstick"
 
 ### Buffer Toggle Edge Case
 
-When toggling the ClaudEmacs buffer visibility, there's an edge case to be aware of: if a window was originally created for ClaudEmacs, but you've since switched to another workspace and back, that window may have shown other buffers in the meantime. In this case, the window is no longer considered "created just for ClaudEmacs" and won't automatically close when you toggle. This is due to Emacs' window management - once a window has been reused for other content, it loses its original "dedicated" status.
+Normally, toggling the ClaudEmacs buffer will close its window, if the window was created for the ClaudEmacs session. Toggling it again will recreate the window.
+
+But there's an edge case to be aware of: if a window was originally created for ClaudEmacs, but you've since switched to another workspace and back, that window may have shown other buffers in the meantime. In this case, the window is no longer considered "created just for ClaudEmacs" and won't automatically close when you toggle. This is due to Emacs' window management - once a window has been reused for other content, it loses its original "dedicated" status.
 
 ## Requirements
 
