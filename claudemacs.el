@@ -88,8 +88,8 @@ If nil, add the file reference but don't switch focus to it."
   :type 'boolean
   :group 'claudemacs)
 
-(defcustom claudemacs-notify-on-completion t
-  "Whether to show a system notification when Claude Code finishes work.
+(defcustom claudemacs-notify-on-await t
+  "Whether to show a system notification when Claude Code is awaiting the user.
 When non-nil, display an OS notification popup when Claude completes a task.
 When nil, no notification is shown (silent operation)."
   :type 'boolean
@@ -348,7 +348,7 @@ Returns t if switched successfully, nil if no buffer exists."
   "Handle bell events from Claude Code in TERMINAL.
 This function is called when Claude Code sends a bell character."
   (ignore terminal)
-  (when claudemacs-notify-on-completion
+  (when claudemacs-notify-on-await
     (claudemacs--system-notification "Claude Code finished and is awaiting your input")))
 
 

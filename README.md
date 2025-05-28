@@ -212,6 +212,18 @@ ClaudEmacs provides several customization variables to tailor the experience to 
 (setq claudemacs-shift-return-newline t)
 ```
 
+#### System Notifications
+
+```elisp
+;; Whether to show system notifications when Claude is awaiting input (default: t)
+(setq claudemacs-notify-on-await t)
+
+;; Sound to use for macOS notifications (default: "Submarine")
+;; Available sounds: Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, 
+;; Ping, Pop, Purr, Sosumi, Submarine, Tink
+(setq claudemacs-notification-sound-mac "Ping")
+```
+
 All variables can also be customized via `M-x customize-group RET claudemacs RET`.
 
 ## Buffer Naming
