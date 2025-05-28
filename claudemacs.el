@@ -392,7 +392,6 @@ Retries up to 10 times if eat is not ready yet."
         (progn
           (message "Eat is ready, setting up integrations")
           (with-current-buffer buffer
-            (message "DEBUG: About to call keymap setup in buffer: %s" (buffer-name))
             (claudemacs--setup-buffer-keymap)
             (claudemacs-setup-bell-handler)))
       ;; Eat not ready yet, retry if we haven't exceeded max attempts
@@ -407,7 +406,6 @@ Retries up to 10 times if eat is not ready yet."
   "Set up or re-setup the completion notification handler.
 Use this if system notifications aren't working after starting a session."
   (interactive)
-  (claudemacs--validate-session)
   (with-current-buffer (claudemacs--get-buffer)
     (when (boundp 'eat-terminal)
       (setf (eat-term-parameter eat-terminal 'ring-bell-function)
