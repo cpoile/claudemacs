@@ -1,4 +1,4 @@
-# ClaudEmacs
+# Claudemacs
 
 AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) in Emacs.
 
@@ -134,7 +134,7 @@ Other useful tweaks:
 
 ### System Notifications
 
-#### Mac
+#### -- Mac --
 
 For Mac, you need to do some setup to make notifications work.
 1. Run the built in `Script Editor` program, start a new script, and run `display notification "Test notification" with title "Test Title" sound name "Frog"`
@@ -144,28 +144,92 @@ Now you should receive System notifications when Claude Code is waiting for inpu
 
 Also, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
-#### Linux / Windows
+#### -- Linux / Windows --
 
 I have not tested on linux or windows, so would appreciate any help there (PRs welcome).
+
+### Fonts
+
+Claude Code uses many non-standard unicode characters during its thinking animations, and emojis for its summaries. They look nice, but some of them aren't included in a typical font set (even one patched with Nerd Fonts). So you'll need to add fallbacks.
+
+The fallbacks will differ based on your system.
+
+#### -- Mac --
+
+``` elisp
+;;
+;; font insanity for Claudemacs
+;;
+(defun my/setup-custom-font-fallbacks-mac ()
+  (interactive)
+  "Configure font fallbacks on mac for symbols and emojis.
+This will need to be called every time you change your font size,
+to load the new symbol and emoji fonts."
+
+  (setq use-default-font-for-symbols nil)
+
+  ;; --- Configure for 'symbol' script ---
+  ;; We add fonts one by one. Since we use 'prepend',
+  ;; the last one added here will be the first one Emacs tries.
+  ;; So, list them in reverse order of your preference.
+
+  ;; Least preferred among this list for symbols (will be at the end of our preferred list)
+  (set-fontset-font t 'symbol "Hiragino Sans" nil 'prepend)
+  (set-fontset-font t 'symbol "STIX Two Math" nil 'prepend)
+  (set-fontset-font t 'symbol "Zapf Dingbats" nil 'prepend)
+  (set-fontset-font t 'symbol "Monaco" nil 'prepend)
+  (set-fontset-font t 'symbol "Menlo" nil 'prepend)
+  ;; Most preferred for symbols -- use your main font here
+  (set-fontset-font t 'symbol "JetBrainsMono Nerd Font Mono" nil 'prepend)
+
+
+  ;; --- Configure for 'emoji' script ---
+  ;; Add fonts one by one, in reverse order of preference.
+
+  ;; Least preferred among this list for emojis
+  (set-fontset-font t 'emoji "Hiragino Sans" nil 'prepend)
+  (set-fontset-font t 'emoji "STIX Two Math" nil 'prepend)
+  (set-fontset-font t 'emoji "Zapf Dingbats" nil 'prepend)
+  (set-fontset-font t 'emoji "Monaco" nil 'prepend)
+  (set-fontset-font t 'emoji "Menlo" nil 'prepend)
+  ;; (set-fontset-font t 'emoji "Noto Emoji" nil 'prepend) ;; If you install Noto Emoji
+  ;; Most preferred for emojis -- use your main font here
+  (set-fontset-font t 'emoji "JetBrainsMono Nerd Font Mono" nil 'prepend))
+  
+;; to test if you have a font family installed:
+;   (find-font (font-spec :family "Menlo"))
+
+;; Then, add the fonts after your setup is complete:
+(add-hook 'emacs-startup-hook
+          (lambda ()
+            (progn
+              (when (string-equal system-type "darwin")
+                (my/setup-custom-font-fallbacks-mac)))))
+```
+
+#### -- Linux / Windows --
+
+I'm not sure of the built in fonts for these systems, or which ones should be used as fallbacks for Claude Code. PRs welcome.
+
 
 ## Usage
 
 ### Workspace and Project-aware Sessions
 
-- The `claudemacs` session is based on Doom/Perspective workspace, and the Claude Code's cwd is the project's git-root. 
-- Why? This allows you to have multiple workspaces in a monorepo, and a separate `claudemacs` session per workspace, but each session will be correctly rooted to the project's git root.
+- The Claudemacs session is based on Doom/Perspective workspace, and the Claude Code's cwd is the project's git-root. 
+- Why? This allows you to have multiple workspaces in a monorepo, and a separate Claudemacs session per workspace, but each session will be correctly rooted to the project's git root.
 - If you don't use workspaces, the decision sequence is: Workspace name -> Perspective name -> project root dir name
 - Open to adding other workspace package support, or options for other logic
 
 ### Basic Commands
 
-ClaudEmacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
+Claudemacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
 
 #### Core Commands
 - `c` - Start Claude Code session (or switch to existing)
 - `r` - Start Claude Code with resume option (or switch to existing)
-- `k` - Kill active ClaudEmacs session
-- `t` - Toggle ClaudEmacs buffer visibility
+- `k` - Kill active Claudemacs session
+- `t` - Toggle Claudemacs buffer visibility
 
 #### Action Commands
 - `e` - Fix error at point (using flycheck if available)
@@ -181,7 +245,7 @@ All commands are also available as `M-x claudemacs-<command>` (e.g., `M-x claude
 
 ### Customization
 
-ClaudEmacs provides several customization variables to tailor the experience to your workflow:
+Claudemacs provides several customization variables to tailor the experience to your workflow:
 
 #### Basic Configuration
 
@@ -196,20 +260,20 @@ ClaudEmacs provides several customization variables to tailor the experience to 
 #### Buffer Behavior
 
 ```elisp
-;; Whether to switch to ClaudEmacs buffer when creating new session (default: t)
+;; Whether to switch to Claudemacs buffer when creating new session (default: t)
 (setq claudemacs-switch-to-buffer-on-create nil)
 
-;; Whether to switch to ClaudEmacs buffer when toggling visibility (default: t)
+;; Whether to switch to Claudemacs buffer when toggling visibility (default: t)
 (setq claudemacs-switch-to-buffer-on-toggle nil)
 
-;; Whether to switch to ClaudEmacs buffer when adding file references (default: nil)
+;; Whether to switch to Claudemacs buffer when adding file references (default: nil)
 (setq claudemacs-switch-to-buffer-on-file-add t)
 ```
 
 #### Key Bindings
 
 ```elisp
-;; Swap RET and M-RET behavior in ClaudEmacs buffers (default: nil)
+;; Swap RET and M-RET behavior in Claudemacs buffers (default: nil)
 ;; When enabled: RET creates newline, M-RET submits
 (setq claudemacs-m-return-is-submit t)
 
@@ -234,7 +298,7 @@ All variables can also be customized via `M-x customize-group RET claudemacs RET
 
 ## Buffer Naming
 
-ClaudEmacs creates workspace-aware buffer names:
+Claudemacs creates workspace-aware buffer names:
 - With workspace: `*claudemacs:workspace-name*`
 - Without workspace: `*claudemacs:/path/to/project*`
 
@@ -255,13 +319,13 @@ There is a tricky interaction between Eat-mode and Claude Code, probably because
 
 There are also issues with drawing the input box border after the window resizes, which is expected of terminal programs. 
 
-If you see these issues, press `u` in the ClaudEmacs transient menu to "unstick" the buffer, and everything should get reset.
+If you see these issues, press `u` in the Claudemacs transient menu to "unstick" the buffer, and everything should get reset.
 
 ### Buffer Toggle Edge Case
 
-Normally, toggling the ClaudEmacs buffer will close its window, if the window was created for the ClaudEmacs session. Toggling it again will recreate the window.
+Normally, toggling the Claudemacs buffer will close its window, if the window was created for the Claudemacs session. Toggling it again will recreate the window.
 
-But there's an edge case to be aware of: if a window was originally created for ClaudEmacs, but you've since switched to another workspace and back, that window may have shown other buffers in the meantime. In this case, the window is no longer considered "created just for ClaudEmacs" and won't automatically close when you toggle. This is due to Emacs' window management - once a window has been reused for other content, it loses its original "dedicated" status.
+But there's an edge case to be aware of: if a window was originally created for Claudemacs, but you've since switched to another workspace and back, that window may have shown other buffers in the meantime. In this case, the window is no longer considered "created just for Claudemacs" and won't automatically close when you toggle. This is due to Emacs' window management - once a window has been reused for other content, it loses its original "dedicated" status.
 
 ## Requirements
 
