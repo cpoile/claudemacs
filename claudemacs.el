@@ -88,6 +88,14 @@ If nil, add the file reference but don't switch focus to it."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-switch-to-buffer-on-send-error nil
+  "Whether to switch to the Claudemacs buffer when sending error fix requests.
+If non-nil, automatically switch to the Claude buffer after sending
+error fix requests. If nil, send the error fix request but don't switch
+focus to it."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defcustom claudemacs-notify-on-await t
   "Whether to show a system notification when Claude Code is awaiting the user.
 When non-nil, display an OS notification popup when Claude completes a task.
@@ -260,9 +268,10 @@ Removes comment markers and normalizes whitespace."
 
 (defun claudemacs--project-root (&optional dir)
   "Get the project root using VC-git, or fallback to current buffer's directory.
-If DIR is given, use the vc-git-root of DIR."
+If DIR is given, use the vc-git-root of DIR (or DIR)."
   (let ((loc (or dir (file-name-directory (buffer-file-name)))))
-    (vc-git-root loc)))
+    (or (vc-git-root loc)
+        loc)))
 
 (defun claudemacs--session-id ()
   "Return an identifier for the current Claudemacs session.
@@ -623,7 +632,9 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
                         (format "Please fix the error at %s:%d, error message: %s"
                                 relative-path line-number error-message))))
     
-    (claudemacs--send-message-to-claude message-text)
+    (claudemacs--send-message-to-claude message-text
+                                        nil
+                                        (not claudemacs-switch-to-buffer-on-send-error))
     (message "Sent error fix request to Claude")))
 
 ;;;###autoload
