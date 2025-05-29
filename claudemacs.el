@@ -309,12 +309,19 @@ use its name, otherwise fall back to the project root."
     (and (buffer-live-p buf)
          (string-match-p "^\\*claudemacs:" (buffer-name buf)))))
 
-;; TODO: we need to check if process is alive
 (defun claudemacs--switch-to-buffer ()
   "Switch to the claudemacs buffer for current session.
 Returns t if switched successfully, nil if no buffer exists."
-  (if-let* ((buffer (claudemacs--get-buffer)))
+  (if-let* ((buffer (claudemacs--get-buffer))
+            (error-message "Claudemacs session exists but process is not running. Please kill *claudemacs:...* buffer and re-start"))
       (progn
+        (with-current-buffer buffer
+          (if (not eat-terminal)
+              (error error-message)
+            (let ((process (eat-term-parameter eat-terminal 'eat--process)))
+              (if (and process (process-live-p process))
+                (error error-message)))))
+        ;; we have a running eat-terminal
         (display-buffer buffer)
         (select-window (get-buffer-window buffer))
         t)
@@ -604,12 +611,12 @@ With prefix ARG, prompt for the project directory."
 
 (defun claudemacs--get-file-context ()
   "Get file context information for the current buffer.
-Returns a plist with :file-path, :project-root, and :relative-path."
+Returns a plist with :file-path, :project-cwd, and :relative-path."
   (let* ((file-path (buffer-file-name))
-         (project-root (claudemacs--get-session-cwd))
-         (relative-path (file-relative-name file-path project-root)))
+         (cwd (claudemacs--get-session-cwd))
+         (relative-path (file-relative-name file-path cwd)))
     (list :file-path file-path
-          :project-root project-root
+          :project-cwd cwd
           :relative-path relative-path)))
 
 (defun claudemacs--send-message-to-claude (message &optional no-return no-switch)
@@ -705,9 +712,9 @@ Prompts for a file and sends @rel/path/to/file without newline."
   (claudemacs--validate-session)
   
   (let* ((context (claudemacs--get-file-context))
-         (project-root (plist-get context :project-root))
-         (selected-file (read-file-name "Add file reference: " project-root))
-         (relative-path (file-relative-name selected-file project-root))
+         (cwd (plist-get context :project-cwd))
+         (selected-file (read-file-name "Add file reference: "))
+         (relative-path (file-relative-name selected-file cwd))
          (reference-text (format "@%s " relative-path)))
     
     (claudemacs--send-message-to-claude reference-text t (not claudemacs-switch-to-buffer-on-file-add))
