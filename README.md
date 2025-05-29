@@ -127,6 +127,8 @@ Other useful tweaks:
 
 ### System Notifications
 
+First, set `claude config set --global preferredNotifChannel terminal_bell`.
+
 #### -- Mac --
 
 For Mac, you need to do some setup to make notifications work.
