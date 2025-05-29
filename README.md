@@ -6,7 +6,7 @@ https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 
 ## Features
 
-- Project-based Claude Code cwd, with Workspace-aware sessions (see [Sessions](#workspace-and-project-aware-sessions))
+- Project-based Claude Code, with Workspace-aware sessions (see [Sessions](#workspace-and-project-aware-sessions))
 - System notifications: Growl notifications with sound when waiting for input (see [System Notifications](#system-notifications) for setup)
 - Terminal fixes: Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks) section)
 - Session resume: Resume previous Claude Code sessions
@@ -24,14 +24,20 @@ https://github.com/user-attachments/assets/f7bbd151-7eed-469b-89e8-dad752abb75c
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
   - [Package Installation](#package-installation)
-    - [Doom Emacs](#doom-emacs)
-    - [Manual Installation](#manual-installation)
-- [Setup](#setup)
+  - [Setup](#setup)
+  - [System Notifications](#system-notifications)
+  - [Fonts](#fonts)
 - [Usage](#usage)
-  - [Basic Commands](#basic-commands)
+  - [Workspace and Project-aware Sessions](#workspace-and-project-aware-sessions)
+  - [Commands](#commands)
   - [Customization](#customization)
+    - [Basic Configuration](#basic-configuration)
+    - [System Notifications](#system-notifications)
 - [Buffer Naming](#buffer-naming)
 - [Tips and Tricks](#tips-and-tricks)
+  - [Using eat-mode effectively](#using-eat-mode-effectively)
+  - [Scroll-popping, input box sticking, input box border draw issues](#scroll-popping-input-box-sticking-input-box-border-draw-issues)
+  - [Buffer Toggle Edge Case](#buffer-toggle-edge-case)
 - [Requirements](#requirements)
 - [Credits](#credits)
 - [License](#license)
@@ -88,37 +94,25 @@ Clone this repository and add to your Emacs configuration:
 
 ## Setup
 
-Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding to the relevant mode-maps (instead of using a `global-set-key`, since that will override the very useful `C-c C-e` keybind in the `eat-semi-char-mode-map` (see [Using Eat Mode](#using-eat-mode-effectively) section below).
-
-Doom Emacs style:
-
-```elisp
-(map! :map prog-mode-map
-      "C-c C-e" #'claudemacs-transient-menu)
-(map! :map emacs-lisp-mode-map
-      "C-c C-e" #'claudemacs-transient-menu)
-(map! :map text-mode-map
-      "C-c C-e" #'claudemacs-transient-menu)
-
-;; Set a big buffer so we can search our history.
-(after! eat
-  (setq eat-term-scrollback-size 400000))
-```
-
-Regular Emacs style:
+Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding it to the relevant mode-maps, instead of using a `global-set-key`, since that will override the very useful `C-c C-e` keybind in the `eat-semi-char-mode-map` (see [Using Eat Mode](#using-eat-mode-effectively) section below).
 
 ```elisp
 (require 'claudemacs)
 (define-key prog-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
 (define-key emacs-lisp-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
 (define-key text-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
+(define-key python-base-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
+
+;; Set a big buffer so we can search our history.
+(with-eval-after-load 'eat
+  (setq eat-term-scrollback-size 400000))
 ```
 
 Other useful tweaks:
 
 ```elisp
 ;; If you want it to pop up as a new buffer. Otherwise, it will use "other buffer."
-;; Personally, I use the "other buffer" style.
+;; Personally, I use the default "other buffer" style.
 (add-to-list 'display-buffer-alist
              '("^\\*claudemacs"
                (display-buffer-in-side-window)
@@ -128,8 +122,7 @@ Other useful tweaks:
 ;; Turn on autorevert because Claude modifies and saves buffers. Make it a habit to save
 ;; before asking Claude anything, because it uses the file on disk as its source of truth.
 ;; (And you don't want to lose edits after it modifies and saves the files.)
-(after! autorevert
-  (global-auto-revert-mode t))
+(global-auto-revert-mode t)
 ```
 
 ### System Notifications
@@ -221,27 +214,28 @@ I'm not sure of the built in fonts for these systems, or which ones should be us
 - If you don't use workspaces, the decision sequence is: Workspace name -> Perspective name -> project root dir name
 - Open to adding other workspace package support, or options for other logic
 
-### Basic Commands
+### Commands
 
 Claudemacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
 
-#### Core Commands
+Core Commands
 - `c` - Start Claude Code session (or switch to existing)
 - `r` - Start Claude Code with resume option (or switch to existing)
 - `k` - Kill active Claudemacs session
 - `t` - Toggle Claudemacs buffer visibility
 
-#### Action Commands
+Action Commands
 - `e` - Fix error at point (using flycheck if available)
 - `x` - Execute request with file context (current line or region)
 - `i` - Implement comment (extracts comment text and asks Claude to implement it)
 - `f` - Add file reference (@file) to conversation
 - `F` - Add current file reference to conversation
 
-#### Maintenance Commands
+Maintenance Commands
 - `u` - Unstick Claude input box (reset buffer tracking)
 
-All commands are also available as `M-x claudemacs-<command>` (e.g., `M-x claudemacs-run`).
+The following commands are available via `M-x` but not in the transient menu:
+- `M-x claudemacs-setup-bell-handler` - Re-setup system notification handler if notifications stop working
 
 ### Customization
 
@@ -257,8 +251,6 @@ Claudemacs provides several customization variables to tailor the experience to 
 (setq claudemacs-program-switches '("--verbose" "--dangerously-skip-permissions"))
 ```
 
-#### Buffer Behavior
-
 ```elisp
 ;; Whether to switch to Claudemacs buffer when creating new session (default: t)
 (setq claudemacs-switch-to-buffer-on-create nil)
@@ -268,9 +260,10 @@ Claudemacs provides several customization variables to tailor the experience to 
 
 ;; Whether to switch to Claudemacs buffer when adding file references (default: nil)
 (setq claudemacs-switch-to-buffer-on-file-add t)
-```
 
-#### Key Bindings
+;; Whether to switch to Claudemacs buffer when sending error fix requests (default: nil)
+(setq claudemacs-switch-to-buffer-on-send-error t)
+```
 
 ```elisp
 ;; Swap RET and M-RET behavior in Claudemacs buffers (default: nil)
