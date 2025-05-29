@@ -476,21 +476,19 @@ Applies consistent styling to all eat-mode terminal faces."
 (defun claudemacs-send-yes ()
   "Send yes (RET) to the active Claudemacs session."
   (interactive)
-  (if-let* ((buffer (claudemacs--get-buffer)))
-      (with-current-buffer buffer
-        (when (boundp 'eat-terminal)
-          (eat-term-send-string eat-terminal (kbd "RET"))))
-    (error "No active Claudemacs session")))
+  (claudemacs--validate-process)
+  (let ((buffer (claudemacs--get-buffer)))
+    (with-current-buffer buffer
+      (eat-term-send-string eat-terminal (kbd "RET")))))
 
 ;;;###autoload
 (defun claudemacs-send-no ()
   "Send no (ESC) to the active Claudemacs session."
   (interactive)
-  (if-let* ((buffer (claudemacs--get-buffer)))
-      (with-current-buffer buffer
-        (when (boundp 'eat-terminal)
-          (eat-term-send-string eat-terminal (kbd "ESC"))))
-    (error "No active Claudemacs session")))
+  (claudemacs--validate-process)
+  (let ((buffer (claudemacs--get-buffer)))
+    (with-current-buffer buffer
+      (eat-term-send-string eat-terminal (kbd "ESC")))))
 
 (defun claudemacs--setup-buffer-keymap ()
   "Set up truly buffer-local keymap for claudemacs buffers with custom key bindings."
@@ -594,14 +592,25 @@ With prefix ARG, prompt for the project directory."
         (message "Claudemacs session killed"))
     (error "There is no Claudemacs session in this workspace or project")))
 
+(defun claudemacs--validate-process ()
+  "Validate that the Claudemacs process is alive and running."
+  (let ((buffer (claudemacs--get-buffer)))
+    (unless buffer
+      (error "No Claudemacs session is active"))
+    (with-current-buffer buffer
+      (unless (and (boundp 'eat-terminal) eat-terminal)
+        (error "Claudemacs session exists but terminal is not initialized. Please restart"))
+      (let ((process (eat-term-parameter eat-terminal 'eat--process)))
+        (unless (and process (process-live-p process))
+          (error "Claudemacs session exists but process is not running. Please restart"))))))
+
 (defun claudemacs--validate-session ()
   "Validate that we have a file, project, and active Claudemacs session."
   (unless (buffer-file-name)
     (error "Buffer is not visiting a file"))
   (unless (claudemacs--project-root)
     (error "Not in a project"))
-  (unless (claudemacs--get-buffer)
-    (error "No Claudemacs session is active")))
+  (claudemacs--validate-process))
 
 (defun claudemacs--get-session-cwd ()
   "Get the stored cwd from the current session."
@@ -623,6 +632,7 @@ Returns a plist with :file-path, :project-cwd, and :relative-path."
   "Send MESSAGE to the active Claudemacs session.
 If NO-RETURN is non-nil, don't send a return/newline.
 If NO-SWITCH is non-nil, don't switch to the Claude buffer."
+  (claudemacs--validate-process)
   (let ((claude-buffer (claudemacs--get-buffer)))
     (with-current-buffer claude-buffer
       (eat-term-send-string eat-terminal message)
@@ -916,6 +926,7 @@ Sometimes the input box gets stuck mid or top of the buffer because of
 the idiosyncracies of eat-mode. This will reset the input box to the
 bottom of the buffer."
   (interactive)
+  (claudemacs--validate-process)
   (when (claudemacs--is-claudemacs-buffer-p)
     (error "Reset buffer cannot be used while visiting the claudemacs buffer itself"))
   (claudemacs--eat-force-redraw)
