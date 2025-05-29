@@ -652,10 +652,12 @@ With prefix ARG, prompt for the project directory."
           (error "Claudemacs session exists but process is not running. Please  kill buffer and restart")))))
   t)
 
-(defun claudemacs--validate-session ()
+(defun claudemacs--validate-file-and-session ()
   "Validate that we have a file, project, and active Claudemacs session."
-  (unless (buffer-file-name)  ;; TODO: is this needed? can't we have a session without a buffer file name? Check how its used. think
-    (error "Buffer is not visiting a file"))
+  ;; Buffer must be visiting a file because all calling functions use claudemacs--get-file-context
+  ;; which depends on buffer-file-name for relative path calculation and Claude context
+  (unless (buffer-file-name)
+    (error "Buffer is not visiting a file - save the buffer first or switch to a file buffer"))
   (unless (claudemacs--project-root)
     (error "Not in a project"))
   (claudemacs--validate-process))
@@ -717,7 +719,7 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
 (defun claudemacs-fix-error-at-point ()
   "Send a request to Claude to fix the error at point using flycheck."
   (interactive)
-  (claudemacs--validate-session)
+  (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
@@ -741,7 +743,7 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
 If a region is selected, use it as context with line range.
 Otherwise, use current line as context."
   (interactive)
-  (claudemacs--validate-session)
+  (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
@@ -767,7 +769,7 @@ Otherwise, use current line as context."
   "Add a file reference to the Claude conversation.
 Prompts for a file and sends @rel/path/to/file without newline."
   (interactive)
-  (claudemacs--validate-session)
+  (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (cwd (plist-get context :project-cwd))
@@ -783,7 +785,7 @@ Prompts for a file and sends @rel/path/to/file without newline."
   "Add current file reference to the Claude conversation.
 Sends @rel/path/to/current/file without newline."
   (interactive)
-  (claudemacs--validate-session)
+  (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
@@ -800,7 +802,7 @@ If region is active, uses the exact region.
 If no region, finds the comment block at point.
 Extracts comment text and sends it to Claude with implementation instructions."
   (interactive)
-  (claudemacs--validate-session)
+  (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
