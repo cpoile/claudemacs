@@ -270,23 +270,283 @@ The file is automatically cleaned up after BODY executes."
     (goto-char 17) ; On first "/" of "// This is a comment"
     (should (claudemacs--point-in-comment-p))))
 
-(ert-deftest claudemacs-test-comment-bounds-single-line ()
-  "Test comment boundary detection for single-line comments."
-  :tags '(:unit :comment)
+;;; Comprehensive Comment Bounds Tests
+
+(ert-deftest claudemacs-test-comment-bounds-basic-single-line ()
+  "Test basic comment boundary detection for single isolated comment."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; This is a single comment\n(defun foo () nil)\n")
+    
+    ;; Test point in middle of comment
+    (goto-char 10) ; In "single comment"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1)) ; Start of line
+      (should (= (cdr bounds) 28))) ; End of comment line (includes trailing content)
+    
+    ;; Test point at comment start markers
+    (goto-char 1) ; At first ";"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1))
+      (should (= (cdr bounds) 28)))
+    
+    ;; Test point at end of comment
+    (goto-char 25) ; At end of comment text
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1))
+      (should (= (cdr bounds) 28)))
+    
+    ;; Test outside comment
+    (goto-char 30) ; In function definition
+    (should-not (claudemacs--get-comment-bounds))))
+
+(ert-deftest claudemacs-test-comment-bounds-multi-line-block ()
+  "Test comment boundary detection for multi-line comment blocks."
+  :tags '(:unit :comment :bounds)
   (claudemacs-test-with-temp-buffer
     (emacs-lisp-mode)
     (insert ";; Line 1\n;; Line 2\n;; Line 3\n(defun foo () nil)\n")
     
-    ;; Test in middle of comment block
-    (goto-char 15) ; In second comment line
+    ;; Test in first line of block
+    (goto-char 5) ; In "Line 1"
     (let ((bounds (claudemacs--get-comment-bounds)))
       (should bounds)
       (should (= (car bounds) 1)) ; Should find start of comment block
-      (should (> (cdr bounds) 20))) ; Should find end of comment block
+      (should (> (cdr bounds) 25))) ; Should find end of comment block
+    
+    ;; Test in middle line of block
+    (goto-char 15) ; In "Line 2"  
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1)) ; Should find start of comment block
+      (should (> (cdr bounds) 25))) ; Should find end of comment block
+    
+    ;; Test in last line of block
+    (goto-char 25) ; In "Line 3"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1)) ; Should find start of comment block
+      (should (> (cdr bounds) 25))) ; Should find end of comment block
     
     ;; Test outside comment
-    (goto-char 40) ; In function body, avoiding end-of-buffer
+    (goto-char 40) ; In function body
     (should-not (claudemacs--get-comment-bounds))))
+
+(ert-deftest claudemacs-test-comment-bounds-mixed-code-comment ()
+  "Test comment boundary detection for mixed code+comment lines."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    (insert "(defun foo () nil) ;; This is a comment\n")
+    
+    ;; Test point in code part - should return nil
+    (goto-char 5) ; In "defun"
+    (should-not (claudemacs--get-comment-bounds))
+    
+    ;; Test point in whitespace before comment - should find comment bounds
+    (goto-char 19) ; In space before ";;"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      ;; Comment starts where the comment markers begin
+      (should (>= (car bounds) 20)) ; Around the ";;" 
+      (should (> (cdr bounds) 35))) ; End of comment
+    
+    ;; Test point at comment start
+    (goto-char 20) ; At first ";"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 20))
+      (should (> (cdr bounds) 35)))
+    
+    ;; Test point in comment text
+    (goto-char 30) ; In "comment"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 20))
+      (should (> (cdr bounds) 35)))))
+
+(ert-deftest claudemacs-test-comment-bounds-special-content ()
+  "Test comment boundary detection with special keywords like TODO."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    ;; Simulate the exact case from claudemacs.el:620
+    (insert "(unless (buffer-file-name)  ;; TODO: is this needed? Check how its used.\n")
+    
+    ;; Test point after "TODO: " - this is the failing case
+    (goto-char 35) ; After "TODO: "  
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 26)) ; Around the ";;"
+      (should (> (cdr bounds) 70))) ; End of comment line
+    
+    ;; Test point at "TODO"
+    (goto-char 30) ; At "T" in "TODO"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 26))
+      (should (> (cdr bounds) 70)))
+    
+    ;; Test other special keywords
+    (erase-buffer)
+    (insert "(some-code) ;; FIXME: this needs work\n")
+    (goto-char 20) ; In "FIXME"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 12))
+      (should (> (cdr bounds) 30)))
+    
+    (erase-buffer)
+    (insert "(more-code) ;; NOTE: important detail\n")
+    (goto-char 25) ; In "important"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 12))
+      (should (> (cdr bounds) 35)))))
+
+(ert-deftest claudemacs-test-comment-bounds-c-style-multiline ()
+  "Test comment boundary detection for C-style /* */ comments."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (c-mode)
+    (insert "/* This is a\n   multi-line comment\n   with multiple lines */\nint x = 42;\n")
+    
+    ;; Test point in first line of comment
+    (goto-char 5) ; In "This"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1)) ; Start of comment
+      (should (> (cdr bounds) 50))) ; End of comment block
+    
+    ;; Test point in middle line
+    (goto-char 30) ; In "multi-line"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1))
+      (should (> (cdr bounds) 50)))
+    
+    ;; Test point in last line of comment
+    (goto-char 60) ; Near "*/"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (= (car bounds) 1))
+      (should (> (cdr bounds) 50)))
+    
+    ;; Test outside comment
+    (goto-char 80) ; In "int x = 42"
+    (should-not (claudemacs--get-comment-bounds))))
+
+(ert-deftest claudemacs-test-comment-bounds-option-2-behavior ()
+  "Test Option 2 behavior: mixed line + adjacent comment-only lines after."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    ;; Test case: mixed line followed by comment-only lines
+    (insert "(unless (buffer-file-name)  ;; TODO: is this needed?\n;; Check how its used\n;; Think about it\n(other-code)\n")
+    
+    ;; Test point in TODO comment - should include all 3 comment lines
+    (goto-char 35) ; In "TODO" part
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      ;; Should start at the ";;" on first line
+      (should (>= (car bounds) 26))
+      ;; Should end after "Think about it" (around line 3)
+      (should (> (cdr bounds) 80)))
+    
+    ;; Test point in second comment line - should include all 3
+    (goto-char 55) ; In "Check how"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 26))
+      (should (> (cdr bounds) 80)))
+    
+    ;; Test point in third comment line - should include all 3
+    (goto-char 75) ; In "Think about"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 26))
+      (should (> (cdr bounds) 80)))))
+
+(ert-deftest claudemacs-test-comment-bounds-option-2-no-before ()
+  "Test Option 2: should NOT include comment-only lines before mixed line."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    ;; Test case: comment-only lines before mixed line
+    (insert ";; This is a comment\n;; Another comment\n(unless (buffer-file-name)  ;; TODO: is this needed?\n")
+    
+    ;; Test point in TODO comment - should NOT include the lines before
+    (goto-char 70) ; In "TODO" part  
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      ;; Should start at the ";;" on the mixed line (around pos 60)
+      (should (>= (car bounds) 60))
+      ;; Should end at end of that line
+      (should (< (cdr bounds) 95)))))
+
+(ert-deftest claudemacs-test-comment-bounds-option-2-mixed-scenarios ()
+  "Test Option 2 with various mixed scenarios."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    
+    ;; Test 1: Mixed line with gap before next comment (should not group)
+    (insert "(code) ;; comment\n\n;; separate comment\n")
+    (goto-char 12) ; In first comment
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 8))
+      ;; Should end at first line, not include separate comment
+      (should (< (cdr bounds) 20)))
+    
+    (erase-buffer)
+    
+    ;; Test 2: Mixed line followed immediately by comment-only lines
+    (insert "(code) ;; start\n;; continuation\n;; more\n(next-code)\n")
+    (goto-char 12) ; In "start"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 8))
+      ;; Should include all 3 comment lines
+      (should (> (cdr bounds) 35)))
+    
+    (erase-buffer)
+    
+    ;; Test 3: Mixed line at end (no lines after)
+    (insert "(code) ;; final comment")
+    (goto-char 15) ; In "final"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 8))
+      (should (< (cdr bounds) 25)))))
+
+(ert-deftest claudemacs-test-comment-bounds-indentation-variations ()
+  "Test comment bounds with various indentation levels."
+  :tags '(:unit :comment :bounds)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    
+    ;; Test mixed line with indented continuation comments
+    (insert "  (nested-code) ;; TODO: fix this\n  ;; It needs work\n    ;; More details\n")
+    (goto-char 25) ; In "TODO"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 17)) ; Around ";;"
+      (should (> (cdr bounds) 50))) ; Include all lines
+    
+    (erase-buffer)
+    
+    ;; Test varying indentation levels
+    (insert "(code) ;; start\n    ;; indented\n;; back to left\n")
+    (goto-char 12) ; In "start"
+    (let ((bounds (claudemacs--get-comment-bounds)))
+      (should bounds)
+      (should (>= (car bounds) 8))
+      (should (> (cdr bounds) 30)))))
 
 (ert-deftest claudemacs-test-comment-text-extraction ()
   "Test comment text extraction and cleaning."

@@ -155,36 +155,53 @@ Returns the position of the comment start, or nil if not in a comment."
   (save-excursion
     (let ((syntax-info (claudemacs--comment-syntax-info)))
       (cond
-       ;; Multi-line comment (/* ... */)
+       ;; Multi-line comment (/* ... */) - use syntax-ppss to find bounds
        ((plist-get syntax-info :multi-line-p)
-        (let ((start-regex (plist-get syntax-info :start-skip)))
-          (when start-regex
-            (while (and (claudemacs--point-in-comment-p)
-                        (not (bobp)))
-              (forward-line -1)
-              (beginning-of-line))
-            ;; Find the actual comment start on this line or nearby
-            (while (and (not (bobp))
-                        (not (looking-at-p start-regex)))
-              (forward-line -1)
-              (beginning-of-line))
-            (when (looking-at-p start-regex)
+        ;; Move to beginning of comment using syntax-ppss
+        ;; syntax-ppss returns (depth start-paren start-string start-comment ...)
+        ;; The 8th element (index 8) is the comment start position
+        (let ((comment-start-pos (nth 8 (syntax-ppss))))
+          (if comment-start-pos
+              comment-start-pos
+            ;; Fallback: scan backwards to find comment start
+            (while (and (nth 4 (syntax-ppss)) (not (bobp)))
+              (backward-char))
+            ;; Move forward to first char of comment
+            (when (nth 4 (syntax-ppss (1+ (point))))
               (point)))))
        
-       ;; Single-line comment (// or # or ;;)
+       ;; Single-line comment (// or # or ;;) - Option 2 behavior
        (t
         (let ((start-regex (plist-get syntax-info :start-skip)))
           (when start-regex
-            ;; Find the first line of consecutive comment lines
-            (while (and (not (bobp))
-                        (save-excursion
-                          (forward-line -1)
-                          (beginning-of-line)
-                          (looking-at-p (concat "^[[:space:]]*" start-regex))))
-              (forward-line -1))
+            ;; Check if current line is a comment-only line or mixed line
             (beginning-of-line)
-            (when (looking-at-p (concat "^[[:space:]]*" start-regex))
-              (point)))))))))
+            ;; Determine if this is a comment-only line by checking if comment starts at beginning
+            ;; vs a mixed line where comment starts after code
+            (let ((comment-pos (when (re-search-forward start-regex (line-end-position) t)
+                                 (match-beginning 0))))
+              (cond
+               ;; Case 1: True comment-only line (comment at or near start of line)
+               ((and comment-pos
+                     (save-excursion
+                       (goto-char comment-pos)
+                       (skip-chars-backward " \t")
+                       (bolp)))
+                ;; For comment-only lines, find the start of consecutive comment block
+                (while (and (not (bobp))
+                            (save-excursion
+                              (forward-line -1)
+                              (beginning-of-line)
+                              (looking-at-p (concat "^[[:space:]]*" start-regex))))
+                  (forward-line -1))
+                (beginning-of-line)
+                (point))
+               ;; Case 2: Mixed line (code + comment) 
+               (comment-pos
+                ;; For mixed lines, start from the comment marker position
+                comment-pos)
+               ;; Case 3: No comment found
+               (t nil))))))))))
 
 (defun claudemacs--find-comment-end ()
   "Find the end of the comment block containing point.
@@ -192,34 +209,54 @@ Returns the position of the comment end, or nil if not in a comment."
   (save-excursion
     (let ((syntax-info (claudemacs--comment-syntax-info)))
       (cond
-       ;; Multi-line comment (/* ... */)
+       ;; Multi-line comment (/* ... */) - use syntax-ppss to find end
        ((plist-get syntax-info :multi-line-p)
-        (let ((end-regex (plist-get syntax-info :end-skip)))
-          (when end-regex
-            ;; Move to end of comment
-            (while (and (claudemacs--point-in-comment-p)
-                        (not (eobp)))
-              (forward-char))
-            ;; Back up to find the actual comment end
-            (while (and (not (bobp))
-                        (not (looking-back end-regex (line-beginning-position))))
-              (backward-char))
-            (when (looking-back end-regex (line-beginning-position))
-              (point)))))
+        ;; Move forward while still in comment, then find exact end
+        (while (and (nth 4 (syntax-ppss)) (not (eobp)))
+          (forward-char))
+        ;; We're now just past the comment end
+        (point))
        
-       ;; Single-line comment (// or # or ;;)
+       ;; Single-line comment (// or # or ;;) - Option 2 behavior
        (t
         (let ((start-regex (plist-get syntax-info :start-skip)))
           (when start-regex
-            ;; Find the last line of consecutive comment lines
-            (while (and (not (eobp))
-                        (save-excursion
-                          (forward-line 1)
-                          (beginning-of-line)
-                          (looking-at-p (concat "^[[:space:]]*" start-regex))))
-              (forward-line 1))
-            (end-of-line)
-            (point))))))))
+            ;; Determine if current line is comment-only or mixed, similar to start function
+            (beginning-of-line)
+            (let* ((comment-pos (when (re-search-forward start-regex (line-end-position) t)
+                                  (match-beginning 0)))
+                   (is-comment-only (and comment-pos
+                                         (save-excursion
+                                           (goto-char comment-pos)
+                                           (skip-chars-backward " \t")
+                                           (bolp)))))
+              (cond
+               ;; Case 1: Comment-only line - find end of consecutive comment block  
+               (is-comment-only
+                (while (and (not (eobp))
+                            (save-excursion
+                              (forward-line 1)
+                              (beginning-of-line)
+                              (looking-at-p (concat "^[[:space:]]*" start-regex))))
+                  (forward-line 1))
+                (end-of-line)
+                (point))
+               ;; Case 2: Mixed line - Option 2: look ahead for comment-only lines after
+               (comment-pos
+                (end-of-line)
+                ;; Look ahead for consecutive comment-only lines (not mixed lines)
+                (while (and (not (eobp))
+                            (save-excursion
+                              (forward-line 1)
+                              (beginning-of-line)
+                              ;; Only include lines that start with whitespace + comment
+                              ;; This excludes mixed lines like "(code) ;; comment"
+                              (looking-at-p (concat "^[[:space:]]*" start-regex))))
+                  (forward-line 1)
+                  (end-of-line))
+                (point))
+               ;; Case 3: No comment found
+               (t nil))))))))))
 
 (defun claudemacs--get-comment-bounds ()
   "Get the bounds of the comment block at point.
