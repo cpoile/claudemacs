@@ -117,6 +117,10 @@ System sounds include: `Basso', `Blow', `Bottle', `Frog', `Funk',
   "Face for Claude REPL."
   :group 'claudemacs)
 
+;;;; Buffer-local Variables
+(defvar-local claudemacs--cwd nil
+  "Buffer-local variable storing the current working directory for this Claude session.")
+
 ;;;; Utility Functions
 (defun claudemacs--comment-syntax-info ()
   "Get comment syntax information for the current buffer.
@@ -529,6 +533,9 @@ Applies consistent styling to all eat-mode terminal faces."
             (switches (remove nil (append args claudemacs-program-switches))))
         (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches))
       
+      ;; Set buffer-local variables after eat-make to ensure they persist
+      (setq-local claudemacs--cwd work-dir)
+      
       (claudemacs--setup-repl-faces)
       ;; Optimize scrolling for terminal input - allows text to go to bottom
       (setq-local scroll-conservatively 10000)  ; Never recenter
@@ -589,11 +596,17 @@ With prefix ARG, prompt for the project directory."
   (unless (claudemacs--get-buffer)
     (error "No Claudemacs session is active")))
 
+(defun claudemacs--get-session-cwd ()
+  "Get the stored cwd from the current session."
+  (if-let* ((buffer (claudemacs--get-buffer)))
+      (with-current-buffer buffer
+        claudemacs--cwd)))
+
 (defun claudemacs--get-file-context ()
   "Get file context information for the current buffer.
 Returns a plist with :file-path, :project-root, and :relative-path."
   (let* ((file-path (buffer-file-name))
-         (project-root (claudemacs--project-root))
+         (project-root (claudemacs--get-session-cwd))
          (relative-path (file-relative-name file-path project-root)))
     (list :file-path file-path
           :project-root project-root
