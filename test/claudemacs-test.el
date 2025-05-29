@@ -128,6 +128,148 @@ The file is automatically cleaned up after BODY executes."
     (goto-char (- (point-max) 2)) ; Before the final newline
     (should-not (claudemacs--point-in-comment-p))))
 
+(ert-deftest claudemacs-test-point-in-comment-mixed-line-elisp ()
+  "Test detection of point in mixed code+comment lines - Emacs Lisp part."
+  :tags '(:unit :comment)
+  (claudemacs-test-with-temp-buffer
+    (emacs-lisp-mode)
+    ;; Test Emacs Lisp style: code ;; comment
+    (insert "(defun foo () nil) ;; This is a comment\n")
+    ;; Ensure syntax parsing is complete
+    (font-lock-ensure)
+    (syntax-ppss (point-max))
+    
+    ;; Test point in code part - should NOT be in comment
+    (goto-char 2) ; On "d" in "defun"
+    (should-not (claudemacs--point-in-comment-p))
+    
+    (goto-char 7) ; On "f" in "foo"  
+    (should-not (claudemacs--point-in-comment-p))
+    
+    (goto-char 16) ; On ")" at end of function
+    (should-not (claudemacs--point-in-comment-p))
+    
+    ;; Test point in whitespace before comment - SHOULD be "before comment"
+    (goto-char 19) ; On space before ";;"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point at start of comment markers - should be in comment
+    (goto-char 20) ; On first ";" 
+    (should (claudemacs--point-in-comment-p))
+    
+    (goto-char 21) ; On second ";"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point in comment text - should be in comment
+    (goto-char 26) ; On "T" in "This"
+    (should (claudemacs--point-in-comment-p))
+    
+    (goto-char 36) ; On "c" in "comment"
+    (should (claudemacs--point-in-comment-p))))
+
+(ert-deftest claudemacs-test-point-in-comment-mixed-line-c ()
+  "Test detection of point in mixed code+comment lines - C style part."
+  :tags '(:unit :comment)
+  ;; Test with C-style comments
+  (claudemacs-test-with-temp-buffer
+    (c-mode)
+    ;; Test C style: code // comment  
+    (insert "int x = 42; // This is a comment\n")
+    ;; Ensure syntax parsing is complete
+    (font-lock-ensure)
+    (syntax-ppss (point-max))
+    
+    ;; Test point in code part - should NOT be in comment
+    (goto-char 1) ; On "i" in "int"
+    (should-not (claudemacs--point-in-comment-p))
+    
+    (goto-char 5) ; On "x"
+    (should-not (claudemacs--point-in-comment-p))
+    
+    (goto-char 11) ; On ";" at end of statement
+    (should-not (claudemacs--point-in-comment-p))
+    
+    ;; Test point in whitespace before comment - SHOULD be "before comment"
+    (goto-char 12) ; On space before "//"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point at start of comment markers - should be in comment
+    (goto-char 13) ; On first "/"
+    (should (claudemacs--point-in-comment-p))
+    
+    (goto-char 14) ; On second "/"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point in comment text - should be in comment
+    (goto-char 19) ; On "T" in "This"
+    (should (claudemacs--point-in-comment-p))
+    
+    (goto-char 29) ; On "c" in "comment"
+    (should (claudemacs--point-in-comment-p))))
+
+(ert-deftest claudemacs-test-point-in-comment-edge-case-line-boundary ()
+  "Test edge case: point at first slash of '//' at end of line with next line being comment."
+  :tags '(:unit :comment)
+  (claudemacs-test-with-temp-buffer
+    (c-mode)
+    ;; Create scenario: "//" at end of line, next line starts with comment at col 1
+    (insert "int x = 42; //\n// Next line comment\n")
+    ;; Ensure syntax parsing is complete
+    (font-lock-ensure)
+    (syntax-ppss (point-max))
+    
+    ;; Test point at first "/" of "//" at end of first line - should be TRUE 
+    ;; because point is at start of comment marker
+    (goto-char 13) ; On first "/" of "//" 
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point at second "/" of "//" at end of first line - should be TRUE
+    (goto-char 14) ; On second "/" of "//"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point at newline after "//" - should be TRUE (still in comment context)
+    (goto-char 15) ; At newline after "//"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Test point at start of next line (on first "/" of "// Next line") - should be TRUE
+    (goto-char 16) ; On first "/" of next line's "//"
+    (should (claudemacs--point-in-comment-p))
+    
+    ;; Additional test: point right before the "//" on first line
+    (goto-char 12) ; On space before "//"
+    (should (claudemacs--point-in-comment-p))))
+
+(ert-deftest claudemacs-test-point-in-comment-false-positive-prevention ()
+  "Test prevention of false positives with single slash not followed by comment."
+  :tags '(:unit :comment)
+  (claudemacs-test-with-temp-buffer
+    (c-mode)
+    ;; Test single "/" not forming a comment, with comment on next line
+    (insert "int x = 42 / 2;\n// This is a comment\n")
+    ;; Ensure syntax parsing is complete
+    (font-lock-ensure)
+    (syntax-ppss (point-max))
+    
+    ;; Test point at "/" (division operator) - should be FALSE
+    (goto-char 12) ; On "/" (division operator)
+    (should-not (claudemacs--point-in-comment-p))
+    
+    ;; Test point in whitespace after division - should be FALSE
+    (goto-char 14) ; On space after "2"
+    (should-not (claudemacs--point-in-comment-p))
+    
+    ;; Test point at ";" - should be FALSE
+    (goto-char 15) ; On ";" 
+    (should-not (claudemacs--point-in-comment-p))
+    
+    ;; Test point at newline after first line - should be FALSE
+    (goto-char 16) ; At newline
+    (should-not (claudemacs--point-in-comment-p))
+    
+    ;; Test point at start of actual comment on second line - should be TRUE
+    (goto-char 17) ; On first "/" of "// This is a comment"
+    (should (claudemacs--point-in-comment-p))))
+
 (ert-deftest claudemacs-test-comment-bounds-single-line ()
   "Test comment boundary detection for single-line comments."
   :tags '(:unit :comment)
@@ -236,8 +378,8 @@ The file is automatically cleaned up after BODY executes."
             ;; Mock buffer-file-name to return our test file
             (cl-letf (((symbol-function 'buffer-file-name) 
                        (lambda () test-file)))
-              ;; Should return nil since there's no git repo
-              (should-not (claudemacs--project-root)))))
+              ;; Should return buffer dir since there's no git repo
+              (should (string= (file-name-directory (buffer-file-name)) (claudemacs--project-root))))))
       
       ;; Cleanup
       (when (file-exists-p test-dir)

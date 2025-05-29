@@ -132,12 +132,22 @@ Returns a plist with :start, :end, :start-skip, :end-skip, and :multi-line-p."
         :multi-line-p (and comment-end (not (string-empty-p comment-end)))))
 
 (defun claudemacs--point-in-comment-p ()
-  "Return non-nil if point is inside or before a comment."
-  (or (nth 4 (syntax-ppss))
-      (save-excursion
-        (skip-chars-forward " \t")
-        (forward-char 1)  ;; being at the start of a comment is not "in" a comment
-        (nth 4 (syntax-ppss)))))
+  "Return non-nil if point is inside or before a comment.
+This includes:
+- Being inside a comment
+- Being at comment start markers like ';' or '//'  
+- Being in whitespace immediately before a comment on the same line"
+  (or 
+   ;; Already in a comment
+   (nth 4 (syntax-ppss))
+   ;; In whitespace immediately before a comment on the same line  
+   (save-excursion
+     (skip-chars-forward " \t")
+     ;; Move forward enough to get inside the comment (handle // and /* styles)
+     ;; Only advance if we're not at end of line and have room to move forward
+     (when (and (not (eolp)) (< (point) (line-end-position)))
+       (forward-char (min 2 (- (line-end-position) (point)))))
+     (nth 4 (syntax-ppss)))))
 
 (defun claudemacs--find-comment-start ()
   "Find the start of the comment block containing point.
