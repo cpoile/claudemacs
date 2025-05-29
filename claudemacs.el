@@ -312,15 +312,14 @@ use its name, otherwise fall back to the project root."
 (defun claudemacs--switch-to-buffer ()
   "Switch to the claudemacs buffer for current session.
 Returns t if switched successfully, nil if no buffer exists."
-  (if-let* ((buffer (claudemacs--get-buffer))
-            (error-message "Claudemacs session exists but process is not running. Please kill *claudemacs:...* buffer and re-start"))
+  (if-let* ((buffer (claudemacs--get-buffer)))
       (progn
         (with-current-buffer buffer
           (if (not eat-terminal)
-              (error error-message)
+              (error "Claudemacs session exists but no eat-terminal found. Please kill *claudemacs:...* buffer and re-start")
             (let ((process (eat-term-parameter eat-terminal 'eat--process)))
-              (if (and process (process-live-p process))
-                (error error-message)))))
+              (if (not (and process (process-live-p process)))
+                (error "Claudemacs session exists but process is not running. Please kill *claudemacs:...* buffer and re-start")))))
         ;; we have a running eat-terminal
         (display-buffer buffer)
         (select-window (get-buffer-window buffer))
@@ -578,7 +577,8 @@ With prefix ARG, prompt for the project directory."
   "Start Claude Code with resume or switch to existing session.
 With prefix ARG, prompt for the project directory."
   (interactive "P")
-  (claudemacs--run-with-args arg "--resume"))
+  (let ((claudemacs-switch-to-buffer-on-create t))
+    (claudemacs--run-with-args arg "--resume")))
 
 ;;;###autoload
 (defun claudemacs-kill ()
@@ -599,14 +599,15 @@ With prefix ARG, prompt for the project directory."
       (error "No Claudemacs session is active"))
     (with-current-buffer buffer
       (unless (and (boundp 'eat-terminal) eat-terminal)
-        (error "Claudemacs session exists but terminal is not initialized. Please restart"))
+        (error "Claudemacs session exists but terminal is not initialized. Please kill buffer and restart"))
       (let ((process (eat-term-parameter eat-terminal 'eat--process)))
         (unless (and process (process-live-p process))
-          (error "Claudemacs session exists but process is not running. Please restart"))))))
+          (error "Claudemacs session exists but process is not running. Please  kill buffer and restart")))))
+  t)
 
 (defun claudemacs--validate-session ()
   "Validate that we have a file, project, and active Claudemacs session."
-  (unless (buffer-file-name)
+  (unless (buffer-file-name)  ;; TODO: is this needed? can't we have a session without a buffer file name? Check how its used. think
     (error "Buffer is not visiting a file"))
   (unless (claudemacs--project-root)
     (error "Not in a project"))
@@ -805,7 +806,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
   (let ((claude-buffer (claudemacs--get-buffer)))
     (cond
      ;; Case 1: No Claude session exists
-     ((not claude-buffer)
+     ((not (claudemacs--validate-process))
       (error "No Claudemacs session is active"))
      
      ;; Case 2: Current buffer IS the Claude buffer
