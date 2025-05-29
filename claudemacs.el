@@ -461,6 +461,26 @@ Applies consistent styling to all eat-mode terminal faces."
   (interactive)
   (eat-term-send-string eat-terminal "\e"))
 
+;;;###autoload
+(defun claudemacs-send-yes ()
+  "Send yes (RET) to the active Claudemacs session."
+  (interactive)
+  (if-let* ((buffer (claudemacs--get-buffer)))
+      (with-current-buffer buffer
+        (when (boundp 'eat-terminal)
+          (eat-term-send-string eat-terminal (kbd "RET"))))
+    (error "No active Claudemacs session")))
+
+;;;###autoload
+(defun claudemacs-send-no ()
+  "Send no (ESC) to the active Claudemacs session."
+  (interactive)
+  (if-let* ((buffer (claudemacs--get-buffer)))
+      (with-current-buffer buffer
+        (when (boundp 'eat-terminal)
+          (eat-term-send-string eat-terminal (kbd "ESC"))))
+    (error "No active Claudemacs session")))
+
 (defun claudemacs--setup-buffer-keymap ()
   "Set up truly buffer-local keymap for claudemacs buffers with custom key bindings."
   (when (claudemacs--is-claudemacs-buffer-p)
@@ -801,8 +821,11 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("i" "Implement Comment" claudemacs-implement-comment)
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)]
+   ["Quick Responses"
+    ("y" "Send Yes (RET)" claudemacs-send-yes)
+    ("n" "Send No (ESC)" claudemacs-send-no)]
    ["Maintenance"
-    ("u" "Unstick Claude input box location" claudemacs-unstick-terminal)
+    ("u" "Unstick Claude buffer" claudemacs-unstick-terminal)
 ]])
 
 ;;;###autoload
