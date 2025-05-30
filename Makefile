@@ -1,8 +1,10 @@
-.PHONY: test test-unit test-integration test-e2e test-all test-interactive clean-test
+.PHONY: test test-unit test-integration test-e2e test-all clean-test
 
 # Configuration
 EMACS ?= emacs
+EMACSCLIENT ?= emacsclient
 TEST_FILE = test/claudemacs-test.el
+ACTIONS_TEST_FILE = test/claudemacs-actions-test.el
 
 # Default target
 test: test-unit
@@ -12,17 +14,25 @@ test: test-unit
 test-unit:
 	@echo "Running unit tests..."
 	$(EMACS) -batch -l $(TEST_FILE) -f ert-run-tests-batch-and-exit "^claudemacs-test-.*" || exit 1
+	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :unit))" || exit 1
+
+# TDD tests - simple batch-mode tests for development
+test-tdd:
+	@echo "Running TDD batch-mode tests..."
+	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :tdd))" || exit 1
 
 # Integration tests - with mocked dependencies
 test-integration:
 	@echo "Running integration tests..."
 	$(EMACS) -batch -l $(TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
+	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 
 # End-to-end tests - requires Claude CLI
 test-e2e:
 	@echo "Running end-to-end tests..."
 	@if command -v claude >/dev/null 2>&1; then \
 		$(EMACS) -batch -l $(TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :e2e))"; \
+		$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :e2e))"; \
 	else \
 		echo "⚠ Skipping e2e tests (Claude CLI not found)"; \
 	fi
@@ -31,20 +41,16 @@ test-e2e:
 test-all: test-unit test-integration test-e2e
 	@echo "✓ All test categories completed"
 
-# Interactive testing for debugging
-test-interactive:
-	@echo "Starting interactive test session..."
-	$(EMACS) -l $(TEST_FILE) --eval "(ert 't)"
-
 # Run specific test pattern
 test-specific:
 	@echo "Running tests matching pattern: $(TEST_PATTERN)"
-	$(EMACS) -batch -l $(TEST_FILE) -f ert-run-tests-batch-and-exit "$(TEST_PATTERN)"
+	$(EMACS) -batch -l $(TEST_FILE) -l $(ACTIONS_TEST_FILE) -f ert-run-tests-batch-and-exit "$(TEST_PATTERN)"
 
 # Validate test file loads correctly
 test-load:
-	@echo "Validating test file loads without errors..."
+	@echo "Validating test files load without errors..."
 	$(EMACS) -batch -l $(TEST_FILE) --eval "(message \"✓ Test file loaded successfully\")"
+	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(message \"✓ Actions test file loaded successfully\")"
 
 # Clean up test artifacts
 clean-test:
@@ -60,7 +66,6 @@ help:
 	@echo "  test-integration- Run integration tests"
 	@echo "  test-e2e        - Run end-to-end tests (requires Claude CLI)"
 	@echo "  test-all        - Run all test categories"
-	@echo "  test-interactive- Start interactive test session"
 	@echo "  test-specific   - Run specific pattern (use TEST_PATTERN=...)"
 	@echo "  test-load       - Validate test file loads correctly"
 	@echo "  clean-test      - Clean up test artifacts"

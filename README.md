@@ -227,11 +227,16 @@ Core Commands
 - `t` - Toggle Claudemacs buffer visibility
 
 Action Commands
+- `a` - Ask Claude (no context) - Ask Claude a question without any file or location context
 - `e` - Fix error at point (using flycheck if available)
 - `x` - Execute request with file context (current line or region)
 - `i` - Implement comment (extracts comment text and asks Claude to implement it)
 - `f` - Add file reference (@file) to conversation
 - `F` - Add current file reference to conversation
+
+Quick Responses
+- `y` - Send Yes (RET)
+- `n` - Send No (ESC)
 
 Maintenance Commands
 - `u` - Unstick Claude input box (reset buffer tracking)

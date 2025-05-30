@@ -130,7 +130,10 @@ System sounds include: `Basso', `Blow', `Bottle', `Frog', `Funk',
 (defun claudemacs--project-root (&optional dir)
   "Get the project root using VC-git, or fallback to current buffer's directory.
 If DIR is given, use the vc-git-root of DIR (or DIR)."
-  (let ((loc (or dir (file-name-directory (buffer-file-name)))))
+  (let ((loc (or dir 
+                 (when (buffer-file-name)
+                   (file-name-directory (buffer-file-name)))
+                 default-directory)))
     (or (vc-git-root loc)
         loc)))
 
@@ -575,6 +578,21 @@ Otherwise, use current line as context."
     (message "Sent request to Claude with context")))
 
 ;;;###autoload
+(defun claudemacs-ask-without-context ()
+  "Ask Claude a question without file or line context.
+Prompts for a question and sends it directly to Claude without any 
+file location or context information."
+  (interactive)
+  (claudemacs--validate-process)
+  
+  (let ((request (read-string "Ask Claude: ")))
+    (when (string-empty-p (string-trim request))
+      (error "Request cannot be empty"))
+    
+    (claudemacs--send-message-to-claude request)
+    (message "Sent question to Claude")))
+
+;;;###autoload
 (defun claudemacs-add-file-reference ()
   "Add a file reference to the Claude conversation.
 Prompts for a file and sends @rel/path/to/file without newline."
@@ -706,8 +724,9 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("k" "Kill Session" claudemacs-kill)
     ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
    ["Actions"
+    ("a" "Ask Claude (no context)" claudemacs-ask-without-context)
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
-    ("x" "Execute Request with Context" claudemacs-execute-request)
+    ("x" "Execute Request (with context)" claudemacs-execute-request)
     ("i" "Implement Comment" claudemacs-implement-comment)
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)]
