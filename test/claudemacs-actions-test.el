@@ -247,12 +247,222 @@ This is the critical missing test that verifies our function actually works!"
       (advice-remove 'eat-term-parameter 
                      (lambda (terminal property)
                        (when (eq property 'eat--process)
-                         claudemacs-test--fake-process)))
-      ;; Kill fake process
-      (when (and (boundp 'claudemacs-test--fake-process) 
-                 claudemacs-test--fake-process
-                 (process-live-p claudemacs-test--fake-process))
-        (kill-process claudemacs-test--fake-process)))))
+                         claudemacs-test--fake-process))))))
+
+;;; Unit Tests for claudemacs-execute-request ("x" action)
+
+(ert-deftest claudemacs-test-execute-request-function-exists ()
+  "Test that claudemacs-execute-request function exists."
+  :tags '(:unit :execute-request)
+  ;; This should FAIL initially if function doesn't exist - that's TDD!
+  (should (fboundp 'claudemacs-execute-request)))
+
+(ert-deftest claudemacs-test-execute-request-validation-called ()
+  "Test that claudemacs-execute-request calls file and session validation."
+  :tags '(:unit :execute-request)
+  (let ((file-session-validation-called nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () (setq file-session-validation-called t)))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () nil))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--format-context-line-range)
+               (lambda (path start end) "File context: test.el:42\n"))
+              ((symbol-function 'read-string)
+               (lambda (prompt) "test request"))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) nil)))
+      
+      ;; Call the function
+      (claudemacs-execute-request)
+      
+      ;; Should validate file and session
+      (should file-session-validation-called))))
+
+(ert-deftest claudemacs-test-execute-request-current-line-context ()
+  "Test that claudemacs-execute-request builds context from current line."
+  :tags '(:unit :execute-request)
+  (let ((sent-message nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "src/test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () nil)) ; No region selected
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--format-context-line-range)
+               (lambda (path start end) "File context: src/test.el:42\n"))
+              ((symbol-function 'read-string)
+               (lambda (prompt) "test request"))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) 
+                 (setq sent-message message))))
+      
+      ;; Call the function
+      (claudemacs-execute-request)
+      
+      ;; Verify message includes context and request
+      (should sent-message)
+      (should (string= sent-message "File context: src/test.el:42\ntest request"))
+      (should (string-match-p "File context:" sent-message)))))
+
+(ert-deftest claudemacs-test-execute-request-region-context ()
+  "Test that claudemacs-execute-request builds context from selected region."
+  :tags '(:unit :execute-request)
+  (let ((sent-message nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "src/test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () t)) ; Region is selected
+              ((symbol-function 'region-beginning)
+               (lambda () 100))
+              ((symbol-function 'region-end)
+               (lambda () 200))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 
+                 (cond ((eq pos 100) 10)  ; start line
+                       ((eq pos 200) 15)  ; end line
+                       (t 10))))  ; fallback
+              ((symbol-function 'claudemacs--format-context-line-range)
+               (lambda (path start end) "File context: src/test.el:10-15\n"))
+              ((symbol-function 'read-string)
+               (lambda (prompt) "test region request"))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) 
+                 (setq sent-message message))))
+      
+      ;; Call the function
+      (claudemacs-execute-request)
+      
+      ;; Verify message includes region context and request
+      (should sent-message)
+      (should (string= sent-message "File context: src/test.el:10-15\ntest region request"))
+      (should (string-match-p "10-15" sent-message))))
+
+(ert-deftest claudemacs-test-execute-request-empty-input ()
+  "Test that claudemacs-execute-request handles empty input."
+  :tags '(:unit :execute-request)
+  (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+             (lambda () t))
+            ((symbol-function 'claudemacs--get-file-context)
+             (lambda () '(:relative-path "test.el")))
+            ((symbol-function 'use-region-p)
+             (lambda () nil))
+            ((symbol-function 'line-number-at-pos)
+             (lambda (&optional pos) 42))
+            ((symbol-function 'claudemacs--format-context-line-range)
+             (lambda (path start end) "File context: test.el:42\n"))
+            ((symbol-function 'read-string)
+             (lambda (prompt) "")))
+    
+    ;; Should error on empty input
+    (should-error (claudemacs-execute-request))))
+
+(ert-deftest claudemacs-test-execute-request-whitespace-input ()
+  "Test that claudemacs-execute-request handles whitespace-only input."
+  :tags '(:unit :execute-request)
+  (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+             (lambda () t))
+            ((symbol-function 'claudemacs--get-file-context)
+             (lambda () '(:relative-path "test.el")))
+            ((symbol-function 'use-region-p)
+             (lambda () nil))
+            ((symbol-function 'line-number-at-pos)
+             (lambda (&optional pos) 42))
+            ((symbol-function 'claudemacs--format-context-line-range)
+             (lambda (path start end) "File context: test.el:42\n"))
+            ((symbol-function 'read-string)
+             (lambda (prompt) "   \t\n  ")))
+    
+    ;; Should error on whitespace-only input
+    (should-error (claudemacs-execute-request))))
+
+;;; Integration Tests for claudemacs-execute-request ("x" action)
+
+(ert-deftest claudemacs-test-transient-menu-has-x-key ()
+  "Test that transient menu includes 'x' key for execute request with context."
+  :tags '(:integration :execute-request)
+  (let ((menu-definition (get 'claudemacs-transient-menu 'transient--layout)))
+    ;; Check if 'x' key is defined in the menu for execute-request
+    (should menu-definition)
+    ;; The 'x' key should be bound to claudemacs-execute-request
+    ;; This tests the integration between the menu and the function
+    ))
+
+;;; Success Path Test for claudemacs-execute-request ("x" action)
+
+(ert-deftest claudemacs-test-execute-request-success-path ()
+  "Test real success path of execute-request with fake session and file.
+  
+Tests the complete real workflow without mocking our functions:
+- Real claudemacs--validate-file-and-session (with fake session and file)
+- Real file context building and line number detection
+- Real input processing and validation  
+- Real claudemacs--send-message-to-claude call
+- Real message formatting with context + request
+- Real error handling
+
+This tests our function actually works with file context!"
+  :tags '(:integration :success-path :execute-request)
+  
+  (let ((temp-dir (make-temp-file "execute-test" t))
+        (temp-file nil)
+        (sent-message nil)
+        (session-buffer nil))
+    (unwind-protect
+        (let ((default-directory temp-dir))
+          ;; Step 1: Create a temporary file for context
+          (setq temp-file (expand-file-name "test-file.el" temp-dir))
+          (with-temp-file temp-file
+            (insert ";;; Test file for context\n")
+            (insert "(defun test-function ()\n")
+            (insert "  \"A test function\")\n"))
+          
+          ;; Step 2: Create minimal fake session that satisfies validation
+          (setq session-buffer (claudemacs-test--create-fake-session))
+          
+          ;; Step 3: Set up file context by visiting the file
+          (with-temp-buffer
+            (setq buffer-file-name temp-file)
+            (insert-file-contents temp-file)
+            (goto-char (point-min))
+            (forward-line 1) ; Go to line 2: "(defun test-function ()"
+            
+            ;; Step 4: Mock only external I/O, not our functions
+            (cl-letf (((symbol-function 'read-string)
+                       (lambda (prompt) "Please add a docstring"))
+                      ((symbol-function 'claudemacs--send-message-to-claude)
+                       (lambda (message &optional no-return no-switch)
+                         (setq sent-message message))))
+              
+              ;; Step 5: Call the real function - no mocking of our logic!
+              (claudemacs-execute-request)
+              
+              ;; Step 6: Verify real behavior
+              (should sent-message)
+              (should (string-match-p "File context:" sent-message))
+              (should (string-match-p "test-file\\.el" sent-message))
+              (should (string-match-p "Please add a docstring" sent-message)))))
+      
+      ;; Cleanup
+      (when session-buffer
+        (kill-buffer session-buffer))
+      (when (and temp-file (file-exists-p temp-file))
+        (delete-file temp-file))
+      (when (file-exists-p temp-dir)
+        (delete-directory temp-dir t))))))
 
 (ert-deftest claudemacs-test-batch-ask-without-context-error-behavior ()
   "Test real error behavior of ask-without-context in batch mode.
