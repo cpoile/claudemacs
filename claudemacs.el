@@ -362,7 +362,7 @@ Applies consistent styling to all eat-mode terminal faces."
       ;; Override specific keys for claudemacs functionality
       (define-key map (kbd "C-g") #'claudemacs--send-escape)
       (message "Defined C-g -> claudemacs--send-escape")
-      
+
       ;; Handle return key swapping if enabled
       (when claudemacs-m-return-is-submit
         (define-key map (kbd "<return>") #'claudemacs--meta-ret-key)
@@ -376,7 +376,7 @@ Applies consistent styling to all eat-mode terminal faces."
         ;(define-key map (kbd "S-RET") #'claudemacs--meta-ret-key)
         ;(define-key map (kbd "<shift-return>") #'claudemacs--meta-ret-key)
         (message "Defined S-RET -> newline"))
-      
+
       ;; Apply the keymap as truly buffer-local
       (use-local-map map)
       (message "Applied buffer-local keymap successfully"))))
@@ -406,6 +406,29 @@ Applies consistent styling to all eat-mode terminal faces."
       (setq-local scroll-margin 0)              ; No margin so text goes to edge
       (setq-local maximum-scroll-margin 0)      ; No maximum margin
       (setq-local scroll-preserve-screen-position t)  ; Preserve position during scrolling
+      
+      ;; Additional stabilization for blinking character height changes
+      (setq-local auto-window-vscroll nil)      ; Disable automatic scrolling adjustments
+      (setq-local scroll-step 1)                ; Scroll one line at a time
+      (setq-local hscroll-step 1)               ; Horizontal scroll one column at a time
+      (setq-local hscroll-margin 0)             ; No horizontal scroll margin
+      
+      ;; Force consistent line spacing to prevent height fluctuations
+      (setq-local line-spacing 0)               ; No extra line spacing
+      
+      ;; Disable eat's text blinking to reduce display changes
+      (when (bound-and-true-p eat-enable-blinking-text)
+        (setq-local eat-enable-blinking-text nil))
+      
+      ;; Force consistent character metrics for blinking symbols
+      ;;(setq-local char-width-table nil)         ; causes emacs to crash!
+      (setq-local vertical-scroll-bar nil)      ; Disable scroll bar
+      (setq-local fringe-mode 0)                ; Disable fringes that can cause reflow
+      
+      ;; Replace problematic blinking character with consistent asterisk
+      (let ((display-table (make-display-table)))
+        (aset display-table #x23fa [?✽])  ; Replace ⏺ (U+23FA) with ✽
+        (setq-local buffer-display-table display-table))
       
       ;; Set up custom key mappings & completion notifications after eat initialization
       (run-with-timer 0.1 nil

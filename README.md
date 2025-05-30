@@ -313,6 +313,8 @@ When interacting with the eat-mode buffer, you are limited in what you can do in
 Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text.
 Press `C-c C-j` to re-enter semi-char mode and continue typing to Claude.
 
+Press `C-v` to paste an image from the clipboard.
+
 ### Scroll-popping, input box sticking, input box border draw issues
 
 There is a tricky interaction between Eat-mode and Claude Code, probably because Claude Code uses some input libraries that eat has trouble with. It was causing the eat-mode buffer to "scroll-pop" to the top whenever you change the other window's buffer. This is mostly fixed now, but a side effect is sometimes the Claude Clode input box gets stuck halfway up the buffer and won't move.
