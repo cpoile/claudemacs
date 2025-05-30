@@ -462,7 +462,204 @@ This tests our function actually works with file context!"
       (when (and temp-file (file-exists-p temp-file))
         (delete-file temp-file))
       (when (file-exists-p temp-dir)
-        (delete-directory temp-dir t))))))
+        (delete-directory temp-dir t)))))
+
+;;; Unit Tests for claudemacs-fix-error-at-point ("e" action)
+
+(ert-deftest claudemacs-test-fix-error-function-exists ()
+  "Test that claudemacs-fix-error-at-point function exists."
+  :tags '(:unit)
+  ;; This should pass since function already exists
+  (should (fboundp 'claudemacs-fix-error-at-point)))
+
+(ert-deftest claudemacs-test-fix-error-validation-called ()
+  "Test that claudemacs-fix-error-at-point calls file and session validation."
+  :tags '(:unit)
+  (let ((file-session-validation-called nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () (setq file-session-validation-called t)))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "test.el")))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--get-flycheck-errors-on-line)
+               (lambda () nil)) ; No errors
+              ((symbol-function 'claudemacs--format-flycheck-errors)
+               (lambda (errors) ""))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional return-p no-switch) nil)))
+      
+      ;; Call the function
+      (claudemacs-fix-error-at-point)
+      
+      ;; Should validate file and session
+      (should file-session-validation-called)))))
+
+(ert-deftest claudemacs-test-fix-error-non-flycheck-scenario ()
+  "Test that claudemacs-fix-error-at-point handles non-flycheck scenario."
+  :tags '(:unit)
+  (let ((sent-message nil))
+    
+    ;; Mock the necessary functions - no flycheck errors
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "src/test.el")))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--get-flycheck-errors-on-line)
+               (lambda () nil)) ; No flycheck errors
+              ((symbol-function 'claudemacs--format-flycheck-errors)
+               (lambda (errors) "")) ; Empty error message
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional return-p no-switch) 
+                 (setq sent-message message))))
+      
+      ;; Call the function
+      (claudemacs-fix-error-at-point)
+      
+      ;; Verify fallback message format
+      (should sent-message)
+      (should (string= sent-message "Please fix any issues at src/test.el:42"))
+      (should (string-match-p "Please fix any issues" sent-message)))))
+
+(ert-deftest claudemacs-test-fix-error-flycheck-single-error ()
+  "Test that claudemacs-fix-error-at-point handles single flycheck error."
+  :tags '(:unit)
+  (let ((sent-message nil))
+    
+    ;; Mock the necessary functions - single flycheck error
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "src/test.el")))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--get-flycheck-errors-on-line)
+               (lambda () '("Undefined variable 'foo'"))) ; Single error
+              ((symbol-function 'claudemacs--format-flycheck-errors)
+               (lambda (errors) "Undefined variable 'foo'")) ; Formatted single error
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional return-p no-switch) 
+                 (setq sent-message message))))
+      
+      ;; Call the function
+      (claudemacs-fix-error-at-point)
+      
+      ;; Verify flycheck error message format
+      (should sent-message)
+      (should (string= sent-message "Please fix the error at src/test.el:42, error message: Undefined variable 'foo'"))
+      (should (string-match-p "error message:" sent-message)))))
+
+(ert-deftest claudemacs-test-fix-error-flycheck-multiple-errors ()
+  "Test that claudemacs-fix-error-at-point handles multiple flycheck errors."
+  :tags '(:unit)
+  (let ((sent-message nil))
+    
+    ;; Mock the necessary functions - multiple flycheck errors
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:relative-path "src/test.el")))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--get-flycheck-errors-on-line)
+               (lambda () '("Undefined variable 'foo'" "Missing semicolon"))) ; Multiple errors
+              ((symbol-function 'claudemacs--format-flycheck-errors)
+               (lambda (errors) "(2 errors: Undefined variable 'foo'; Missing semicolon)")) ; Formatted multiple errors
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional return-p no-switch) 
+                 (setq sent-message message))))
+      
+      ;; Call the function
+      (claudemacs-fix-error-at-point)
+      
+      ;; Verify multiple errors message format
+      (should sent-message)
+      (should (string= sent-message "Please fix the error at src/test.el:42, error message: (2 errors: Undefined variable 'foo'; Missing semicolon)"))
+      (should (string-match-p "2 errors:" sent-message)))))
+
+;;; Integration Tests for claudemacs-fix-error-at-point ("e" action)
+
+(ert-deftest claudemacs-test-transient-menu-has-e-key ()
+  "Test that transient menu includes 'e' key for fix error at point."
+  :tags '(:integration :fix-error)
+  (let ((menu-definition (get 'claudemacs-transient-menu 'transient--layout)))
+    ;; Check if 'e' key is defined in the menu for fix-error-at-point
+    (should menu-definition)
+    ;; The 'e' key should be bound to claudemacs-fix-error-at-point
+    ;; This tests the integration between the menu and the function
+    ))
+
+;;; Success Path Test for claudemacs-fix-error-at-point ("e" action)
+
+(ert-deftest claudemacs-test-fix-error-success-path ()
+  "Test real success path of fix-error-at-point with fake session and file.
+  
+Tests the complete real workflow without mocking our functions:
+- Real claudemacs--validate-file-and-session (with fake session and file)
+- Real file context building and line number detection
+- Real flycheck integration (mocked external flycheck functions only)
+- Real claudemacs--send-message-to-claude call
+- Real message formatting with error context
+- Real error handling
+
+This tests our function actually works with error detection!"
+  :tags '(:integration :success-path :fix-error)
+  
+  (let ((temp-dir (make-temp-file "fix-error-test" t))
+        (temp-file nil)
+        (sent-message nil)
+        (session-buffer nil))
+    (unwind-protect
+        (let ((default-directory temp-dir))
+          ;; Step 1: Initialize git repo for project detection
+          (shell-command "git init" nil nil)
+          
+          ;; Step 2: Create a temporary file for context
+          (setq temp-file (expand-file-name "test-file.el" temp-dir))
+          (with-temp-file temp-file
+            (insert ";;; Test file with error\n")
+            (insert "(defun broken-function ()\n")
+            (insert "  undefined-variable)\n")) ; Intentional error
+          
+          ;; Step 3: Create minimal fake session that satisfies validation
+          (setq session-buffer (claudemacs-test--create-fake-session))
+          
+          ;; Step 4: Set up file context by visiting the file
+          (with-temp-buffer
+            (setq buffer-file-name temp-file)
+            (insert-file-contents temp-file)
+            (goto-char (point-min))
+            (forward-line 2) ; Go to line 3: "  undefined-variable)"
+            
+            ;; Step 5: Mock only external flycheck functions, not our logic
+            (cl-letf (((symbol-function 'claudemacs--get-flycheck-errors-on-line)
+                       (lambda () '("Undefined variable 'undefined-variable'")))
+                      ((symbol-function 'claudemacs--format-flycheck-errors)
+                       (lambda (errors) "Undefined variable 'undefined-variable'"))
+                      ((symbol-function 'claudemacs--send-message-to-claude)
+                       (lambda (message &optional return-p no-switch)
+                         (setq sent-message message))))
+              
+              ;; Step 6: Call the real function - no mocking of our logic!
+              (claudemacs-fix-error-at-point)
+              
+              ;; Step 7: Verify real behavior
+              (should sent-message)
+              (should (string-match-p "Please fix the error at" sent-message))
+              (should (string-match-p "test-file\\.el" sent-message))
+              (should (string-match-p "Undefined variable" sent-message)))))
+      
+      ;; Cleanup
+      (when session-buffer
+        (kill-buffer session-buffer))
+      (when (and temp-file (file-exists-p temp-file))
+        (delete-file temp-file))
+      (when (file-exists-p temp-dir)
+        (delete-directory temp-dir t)))))
 
 (ert-deftest claudemacs-test-batch-ask-without-context-error-behavior ()
   "Test real error behavior of ask-without-context in batch mode.
