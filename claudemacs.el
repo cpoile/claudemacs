@@ -742,14 +742,14 @@ Hide if current, focus if visible elsewhere, show if hidden."
   "Claude Code AI Pair Programming Interface."
   ["Claudemacs: AI Pair Programming"
    ["Core"
-    ("c" "Start/Open Session" claudemacs-run)
+    ("s" "Start/Open Session" claudemacs-run)
     ("r" "Start with Resume" claudemacs-resume)
     ("k" "Kill Session" claudemacs-kill)
     ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
    ["Actions"
-    ("a" "Ask Claude (no context)" claudemacs-ask-without-context)
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
     ("x" "Execute Request (with context)" claudemacs-execute-request)
+    ("X" "Execute Request (no context)" claudemacs-ask-without-context)
     ("i" "Implement Comment" claudemacs-implement-comment)
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)]
