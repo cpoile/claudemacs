@@ -221,15 +221,15 @@ I'm not sure of the built in fonts for these systems, or which ones should be us
 Claudemacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
 
 Core Commands
-- `c` - Start Claude Code session (or switch to existing)
+- `s` - Start Claude Code session (or switch to existing)
 - `r` - Start Claude Code with resume option (or switch to existing)
 - `k` - Kill active Claudemacs session
 - `t` - Toggle Claudemacs buffer visibility
 
 Action Commands
-- `a` - Ask Claude (no context) - Ask Claude a question without any file or location context
 - `e` - Fix error at point (using flycheck if available)
-- `x` - Execute request with file context (current line or region)
+- `x` - eXecute request with file context (current line or region)
+- `X` - eXecute request with no context
 - `i` - Implement comment (extracts comment text and asks Claude to implement it)
 - `f` - Add file reference (@file) to conversation
 - `F` - Add current file reference to conversation
