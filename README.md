@@ -149,6 +149,13 @@ For Linux systems using `notify-send`, notifications will automatically dismiss 
 
 ;; Keep notifications in system tray
 (setq claudemacs-notification-auto-dismiss-linux nil)
+
+;; Play sound with notifications (requires canberra-gtk-play)
+;; Common sound IDs: "message-new-instant", "bell", "dialog-error", "dialog-warning"
+(setq claudemacs-notification-sound-linux "message-new-instant")
+
+;; Disable sound
+(setq claudemacs-notification-sound-linux "")
 ```
 
 #### -- Windows --
@@ -307,6 +314,10 @@ Claudemacs provides several customization variables to tailor the experience to 
 
 ;; Auto-dismiss Linux notifications instead of persisting to system tray (default: t)
 (setq claudemacs-notification-auto-dismiss-linux nil)
+
+;; Sound for Linux notifications using canberra-gtk-play (default: "bell")
+;; Common sound IDs: "message-new-instant", "bell", "dialog-error", "dialog-warning"
+(setq claudemacs-notification-sound-linux "message-new-instant")
 ```
 
 All variables can also be customized via `M-x customize-group RET claudemacs RET`.
