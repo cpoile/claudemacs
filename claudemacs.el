@@ -113,6 +113,22 @@ System sounds include: `Basso', `Blow', `Bottle', `Frog', `Funk',
   :type 'string
   :group 'claudemacs)
 
+(defcustom claudemacs-notification-auto-dismiss-linux t
+  "Whether to auto-dismiss notifications on Linux (don't persist to system tray).
+When non-nil, notifications will automatically disappear and not stay in the tray.
+When nil, notifications will persist in the system tray according to system defaults.
+This setting only affects Linux systems using notify-send."
+  :type 'boolean
+  :group 'claudemacs)
+
+(defcustom claudemacs-notification-sound-linux "bell"
+  "The sound to use when displaying system notifications on Linux.
+Uses canberra-gtk-play if available.  Common sound IDs include:
+`message-new-instant', `bell', `dialog-error', `dialog-warning'.
+When empty string, no sound is played."
+  :type 'string
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -240,10 +256,17 @@ This works across macOS, Linux, and Windows platforms."
       (call-process "osascript" nil nil nil
                     "-e" (format "display notification \"%s\" with title \"%s\" sound name \"%s\""
                                 message title claudemacs-notification-sound-mac)))
-     ;; Linux with notify-send
+     ;; Linux with notify-send and canberra-gtk-play
      ((and (eq system-type 'gnu/linux)
            (executable-find "notify-send"))
-      (call-process "notify-send" nil nil nil title message))
+      (let ((args (if claudemacs-notification-auto-dismiss-linux
+                      (list "--hint=int:transient:1" title message)
+                    (list title message))))
+        (apply #'call-process "notify-send" nil nil nil args))
+      (when (and (not (string-empty-p claudemacs-notification-sound-linux))
+                 (executable-find "canberra-gtk-play"))
+        (call-process "canberra-gtk-play" nil nil nil
+                      "--id" claudemacs-notification-sound-linux)))
      ;; Linux with kdialog (KDE)
      ((and (eq system-type 'gnu/linux)
            (executable-find "kdialog"))

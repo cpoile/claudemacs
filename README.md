@@ -139,9 +139,28 @@ Now you should receive System notifications when Claude Code is waiting for inpu
 
 Also, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
-#### -- Linux / Windows --
+#### -- Linux --
 
-I have not tested on linux or windows, so would appreciate any help there (PRs welcome).
+For Linux systems using `notify-send`, notifications will automatically dismiss by default instead of persisting in the system tray. You can control this behavior with:
+
+```elisp
+;; Auto-dismiss notifications (default: t)
+(setq claudemacs-notification-auto-dismiss-linux t)
+
+;; Keep notifications in system tray
+(setq claudemacs-notification-auto-dismiss-linux nil)
+
+;; Play sound with notifications (requires canberra-gtk-play)
+;; Common sound IDs: "message-new-instant", "bell", "dialog-error", "dialog-warning"
+(setq claudemacs-notification-sound-linux "message-new-instant")
+
+;; Disable sound
+(setq claudemacs-notification-sound-linux "")
+```
+
+#### -- Windows --
+
+I have not tested on windows, so would appreciate any help there (PRs welcome).
 
 ### Fonts
 
@@ -292,6 +311,13 @@ Claudemacs provides several customization variables to tailor the experience to 
 ;; Available sounds: Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, 
 ;; Ping, Pop, Purr, Sosumi, Submarine, Tink
 (setq claudemacs-notification-sound-mac "Ping")
+
+;; Auto-dismiss Linux notifications instead of persisting to system tray (default: t)
+(setq claudemacs-notification-auto-dismiss-linux nil)
+
+;; Sound for Linux notifications using canberra-gtk-play (default: "bell")
+;; Common sound IDs: "message-new-instant", "bell", "dialog-error", "dialog-warning"
+(setq claudemacs-notification-sound-linux "message-new-instant")
 ```
 
 All variables can also be customized via `M-x customize-group RET claudemacs RET`.
