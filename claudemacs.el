@@ -113,6 +113,14 @@ System sounds include: `Basso', `Blow', `Bottle', `Frog', `Funk',
   :type 'string
   :group 'claudemacs)
 
+(defcustom claudemacs-notification-auto-dismiss-linux t
+  "Whether to auto-dismiss notifications on Linux (don't persist to system tray).
+When non-nil, notifications will automatically disappear and not stay in the tray.
+When nil, notifications will persist in the system tray according to system defaults.
+This setting only affects Linux systems using notify-send."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -243,7 +251,10 @@ This works across macOS, Linux, and Windows platforms."
      ;; Linux with notify-send
      ((and (eq system-type 'gnu/linux)
            (executable-find "notify-send"))
-      (call-process "notify-send" nil nil nil title message))
+      (let ((args (if claudemacs-notification-auto-dismiss-linux
+                      (list "--hint=int:transient:1" title message)
+                    (list title message))))
+        (apply #'call-process "notify-send" nil nil nil args)))
      ;; Linux with kdialog (KDE)
      ((and (eq system-type 'gnu/linux)
            (executable-find "kdialog"))
