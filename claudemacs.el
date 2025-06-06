@@ -31,6 +31,7 @@
 (declare-function get-current-persp "perspective")
 (declare-function flycheck-error-message "flycheck")
 (declare-function flycheck-overlay-errors-in "flycheck")
+(declare-function projectile-project-root "projectile")
 
 ;;;; Customization
 (defgroup claudemacs nil
@@ -47,6 +48,15 @@
 These are passed as SWITCHES parameters to `eat-make`.
 E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
   :type '(repeat string)
+  :group 'claudemacs)
+
+(defcustom claudemacs-prefer-projectile-root nil
+  "Whether to prefer projectile root over git root when available.
+If non-nil and projectile is loaded, use `projectile-project-root' to
+determine the project root instead of `vc-git-root'. If projectile is
+not available or fails to find a project root, falls back to git root
+detection. This option has no effect if projectile is not installed."
+  :type 'boolean
   :group 'claudemacs)
 
 (defcustom claudemacs-switch-to-buffer-on-create t
@@ -138,20 +148,33 @@ When empty string, no sound is played."
 (defvar-local claudemacs--cwd nil
   "Buffer-local variable storing the current working directory for this Claude session.")
 
+;;;;
 ;;;; Utility Functions
-
-
-
+;;;;
 
 (defun claudemacs--project-root (&optional dir)
-  "Get the project root using VC-git, or fallback to current buffer's directory.
-If DIR is given, use the vc-git-root of DIR (or DIR)."
+  "Get the project root, optionally preferring projectile if enabled.
+If DIR is given, use it as the starting location.
+When `claudemacs-prefer-projectile-root' is enabled and projectile is 
+available, tries `projectile-project-root' first. Falls back to 
+`vc-git-root', then to the directory itself."
   (let ((loc (or dir 
                  (when (buffer-file-name)
                    (file-name-directory (buffer-file-name)))
                  default-directory)))
-    (or (vc-git-root loc)
-        loc)))
+    (or 
+     ;; Try projectile first if enabled and available
+     (when (and claudemacs-prefer-projectile-root
+                (fboundp 'projectile-project-root))
+       (condition-case nil
+         (let ((proj-root (projectile-project-root)))
+           (when (and proj-root (file-directory-p proj-root))
+             proj-root))
+         (error nil)))
+     ;; Fallback to vc-git-root
+     (vc-git-root loc)
+     ;; Final fallback to location itself
+     loc)))
 
 (defun claudemacs--session-id ()
   "Return an identifier for the current Claudemacs session.

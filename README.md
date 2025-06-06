@@ -230,10 +230,52 @@ I'm not sure of the built in fonts for these systems, or which ones should be us
 
 ### Workspace and Project-aware Sessions
 
-- The Claudemacs session is based on Doom/Perspective workspace, and the Claude Code's cwd is the project's git-root. 
-- Why? This allows you to have multiple workspaces in a monorepo, and a separate Claudemacs session per workspace, but each session will be correctly rooted to the project's git root.
+--- Session Names ---
+
+- The Claudemacs session is based on Doom/Perspective workspace, and the Claude Code's `cwd` is the project's git-root (by default -- see below). 
+- Why?
+  - This allows you to have multiple workspaces in a monorepo, and a separate Claudemacs session per workspace, but each session will be correctly rooted to the project's git root.
 - If you don't use workspaces, the decision sequence is: Workspace name -> Perspective name -> project root dir name
 - Open to adding other workspace package support, or options for other logic
+
+--- Claude Code CWD ---
+
+- You can make Claude Code use your projectile root as it's `cwd` by setting:
+
+``` elisp
+(setq claudemacs-prefer-projectile-root t)
+```
+
+- Why?
+  - Claude Code is forbidden to auto-edit or auto-read files outside its `cwd`. This is annoying if you have the following repo structure:
+  
+```
+monorepo/
+├── backend/
+│   ├── .git/
+│   └── api/
+│       └── server.py
+└── frontend/
+    ├── .git/
+    └── src/
+        └── app.tsx
+```
+
+By putting a `.projectile` file in the parent, Claude Code will be able to read and edit all files, like so:
+
+```
+monorepo/
+├── .projectile
+├── backend/
+│   ├── .git/
+│   └── api/
+│       └── server.py
+└── frontend/
+    ├── .git/
+    └── src/
+        └── app.tsx
+```
+
 
 ### Commands
 
@@ -289,6 +331,9 @@ Claudemacs provides several customization variables to tailor the experience to 
 
 ;; Whether to switch to Claudemacs buffer when sending error fix requests (default: nil)
 (setq claudemacs-switch-to-buffer-on-send-error t)
+
+;; Whether to prefer projectile root over git root when available (default: nil)
+(setq claudemacs-prefer-projectile-root t)
 ```
 
 ```elisp

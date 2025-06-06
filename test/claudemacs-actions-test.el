@@ -709,8 +709,8 @@ Tests real menu integration without mocking:
     
     ;; Convert layout to string for inspection
     (let ((layout-str (format "%S" layout)))
-      ;; Verify "a" key is bound to claudemacs-ask-without-context
-      (should (string-match-p "\"a\"" layout-str))
+      ;; Verify "X" key is bound to claudemacs-ask-without-context
+      (should (string-match-p "\"X\"" layout-str))
       (should (string-match-p "claudemacs-ask-without-context" layout-str)))))
 
 (provide 'claudemacs-actions-test)

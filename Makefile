@@ -5,6 +5,7 @@ EMACS ?= emacs
 EMACSCLIENT ?= emacsclient
 TEST_FILE = test/claudemacs-test.el
 ACTIONS_TEST_FILE = test/claudemacs-actions-test.el
+PROJECTILE_INTEGRATION_TEST_FILE = test/claudemacs-projectile-integration-test.el
 
 # Default target
 test: test-unit
@@ -15,6 +16,7 @@ test-unit:
 	@echo "Running unit tests..."
 	$(EMACS) -batch -l $(TEST_FILE) -f ert-run-tests-batch-and-exit "^claudemacs-test-.*" || exit 1
 	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :unit))" || exit 1
+	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 
 # TDD tests - simple batch-mode tests for development
 test-tdd:
@@ -26,6 +28,7 @@ test-integration:
 	@echo "Running integration tests..."
 	$(EMACS) -batch -l $(TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
+	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 
 # End-to-end tests - requires Claude CLI
 test-e2e:
@@ -44,13 +47,14 @@ test-all: test-unit test-integration test-e2e
 # Run specific test pattern
 test-specific:
 	@echo "Running tests matching pattern: $(TEST_PATTERN)"
-	$(EMACS) -batch -l $(TEST_FILE) -l $(ACTIONS_TEST_FILE) -f ert-run-tests-batch-and-exit "$(TEST_PATTERN)"
+	$(EMACS) -batch -l $(TEST_FILE) -l $(ACTIONS_TEST_FILE) -l $(PROJECTILE_INTEGRATION_TEST_FILE) -f ert-run-tests-batch-and-exit "$(TEST_PATTERN)"
 
 # Validate test file loads correctly
 test-load:
 	@echo "Validating test files load without errors..."
 	$(EMACS) -batch -l $(TEST_FILE) --eval "(message \"✓ Test file loaded successfully\")"
 	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(message \"✓ Actions test file loaded successfully\")"
+	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(message \"✓ Projectile integration test file loaded successfully\")"
 
 # Clean up test artifacts
 clean-test:
