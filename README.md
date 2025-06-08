@@ -294,6 +294,7 @@ Action Commands
 - `i` - Implement comment (extracts comment text and asks Claude to implement it)
 - `f` - Add file reference (@file) to conversation
 - `F` - Add current file reference to conversation
+- `a` - Add context (sends file:line or file:line-range without newline)
 
 Quick Responses
 - `y` - Send Yes (RET)

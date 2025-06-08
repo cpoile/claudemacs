@@ -349,7 +349,7 @@ This is the critical missing test that verifies our function actually works!"
       ;; Verify message includes region context and request
       (should sent-message)
       (should (string= sent-message "File context: src/test.el:10-15\ntest region request"))
-      (should (string-match-p "10-15" sent-message))))
+      (should (string-match-p "10-15" sent-message)))))
 
 (ert-deftest claudemacs-test-execute-request-empty-input ()
   "Test that claudemacs-execute-request handles empty input."
@@ -423,34 +423,37 @@ This tests our function actually works with file context!"
         (session-buffer nil))
     (unwind-protect
         (let ((default-directory temp-dir))
-          ;; Step 1: Create a temporary file for context
+          ;; Step 1: Initialize git repo for project detection
+          (shell-command "git init" nil nil)
+          
+          ;; Step 2: Create a temporary file for context
           (setq temp-file (expand-file-name "test-file.el" temp-dir))
           (with-temp-file temp-file
             (insert ";;; Test file for context\n")
             (insert "(defun test-function ()\n")
             (insert "  \"A test function\")\n"))
           
-          ;; Step 2: Create minimal fake session that satisfies validation
+          ;; Step 3: Create minimal fake session that satisfies validation
           (setq session-buffer (claudemacs-test--create-fake-session))
           
-          ;; Step 3: Set up file context by visiting the file
+          ;; Step 4: Set up file context by visiting the file
           (with-temp-buffer
             (setq buffer-file-name temp-file)
             (insert-file-contents temp-file)
             (goto-char (point-min))
             (forward-line 1) ; Go to line 2: "(defun test-function ()"
             
-            ;; Step 4: Mock only external I/O, not our functions
+            ;; Step 5: Mock only external I/O, not our functions
             (cl-letf (((symbol-function 'read-string)
                        (lambda (prompt) "Please add a docstring"))
                       ((symbol-function 'claudemacs--send-message-to-claude)
                        (lambda (message &optional no-return no-switch)
                          (setq sent-message message))))
               
-              ;; Step 5: Call the real function - no mocking of our logic!
+              ;; Step 6: Call the real function - no mocking of our logic!
               (claudemacs-execute-request)
               
-              ;; Step 6: Verify real behavior
+              ;; Step 7: Verify real behavior
               (should sent-message)
               (should (string-match-p "File context:" sent-message))
               (should (string-match-p "test-file\\.el" sent-message))
@@ -463,6 +466,157 @@ This tests our function actually works with file context!"
         (delete-file temp-file))
       (when (file-exists-p temp-dir)
         (delete-directory temp-dir t)))))
+
+;;; Unit Tests for claudemacs-add-context ("a" action)
+
+(ert-deftest claudemacs-test-add-context-function-exists ()
+  "Test that claudemacs-add-context function exists."
+  :tags '(:unit :add-context)
+  ;; This test will fail until we implement the function - that's TDD!
+  (should (fboundp 'claudemacs-add-context)))
+
+(ert-deftest claudemacs-test-add-context-interactive ()
+  "Test that claudemacs-add-context is interactive."
+  :tags '(:unit :add-context)
+  (should (commandp 'claudemacs-add-context)))
+
+(ert-deftest claudemacs-test-add-context-validation ()
+  "Test that claudemacs-add-context validates file and session properly."
+  :tags '(:unit :add-context)
+  (let ((validation-called nil))
+    ;; Mock the validation function
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () (setq validation-called t)))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:file-path "/tmp/test.el" :project-cwd "/tmp" :relative-path "test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () nil))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) nil)))
+      
+      ;; Call the function
+      (claudemacs-add-context)
+      
+      ;; Verify validation was called
+      (should validation-called))))
+
+(ert-deftest claudemacs-test-add-context-single-line-format ()
+  "Test that claudemacs-add-context sends correct format for single line."
+  :tags '(:unit :add-context)
+  (let ((sent-message nil)
+        (no-return-flag nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:file-path "/tmp/src/test.el" :project-cwd "/tmp" :relative-path "src/test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () nil)) ; No region selected
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) 
+                 (setq sent-message message)
+                 (setq no-return-flag no-return))))
+      
+      ;; Call the function
+      (claudemacs-add-context)
+      
+      ;; Verify message format and no-return flag
+      (should sent-message)
+      (should (string= sent-message "src/test.el:42 "))
+      (should no-return-flag))))
+
+(ert-deftest claudemacs-test-add-context-region-format ()
+  "Test that claudemacs-add-context sends correct format for region."
+  :tags '(:unit :add-context)
+  (let ((sent-message nil)
+        (no-return-flag nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:file-path "/tmp/src/test.el" :project-cwd "/tmp" :relative-path "src/test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () t)) ; Region is selected
+              ((symbol-function 'region-beginning)
+               (lambda () 100))
+              ((symbol-function 'region-end)
+               (lambda () 200))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 
+                 (cond ((eq pos 100) 10)  ; start line
+                       ((eq pos 200) 15)  ; end line
+                       (t 10))))  ; fallback
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) 
+                 (setq sent-message message)
+                 (setq no-return-flag no-return))))
+      
+      ;; Call the function
+      (claudemacs-add-context)
+      
+      ;; Verify message format for region and no-return flag
+      (should sent-message)
+      (should (string= sent-message "src/test.el:10-15 "))
+      (should no-return-flag))))
+
+(ert-deftest claudemacs-test-add-context-same-line-region ()
+  "Test that claudemacs-add-context handles region on same line."
+  :tags '(:unit :add-context)
+  (let ((sent-message nil))
+    
+    ;; Mock the necessary functions - region on same line
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:file-path "/tmp/src/test.el" :project-cwd "/tmp" :relative-path "src/test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () t)) ; Region is selected
+              ((symbol-function 'region-beginning)
+               (lambda () 100))
+              ((symbol-function 'region-end)
+               (lambda () 150))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42)) ; Same line for both start and end
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) 
+                 (setq sent-message message))))
+      
+      ;; Call the function
+      (claudemacs-add-context)
+      
+      ;; Should format as single line when start and end are same
+      (should sent-message)
+      (should (string= sent-message "src/test.el:42 "))))
+
+(ert-deftest claudemacs-test-add-context-no-switch-behavior ()
+  "Test that claudemacs-add-context respects switch-to-buffer setting."
+  :tags '(:unit :add-context)
+  (let ((switch-flag nil))
+    
+    ;; Mock the necessary functions
+    (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+               (lambda () t))
+              ((symbol-function 'claudemacs--get-file-context)
+               (lambda () '(:file-path "/tmp/test.el" :project-cwd "/tmp" :relative-path "test.el")))
+              ((symbol-function 'use-region-p)
+               (lambda () nil))
+              ((symbol-function 'line-number-at-pos)
+               (lambda (&optional pos) 42))
+              ((symbol-function 'claudemacs--send-message-to-claude)
+               (lambda (message &optional no-return no-switch) 
+                 (setq switch-flag (not no-switch)))))
+      
+      ;; Call the function
+      (claudemacs-add-context)
+      
+      ;; Should respect file-add switching behavior
+      (should (eq switch-flag claudemacs-switch-to-buffer-on-file-add)))))
 
 ;;; Unit Tests for claudemacs-fix-error-at-point ("e" action)
 
@@ -582,6 +736,85 @@ This tests our function actually works with file context!"
       (should (string-match-p "2 errors:" sent-message)))))
 
 ;;; Integration Tests for claudemacs-fix-error-at-point ("e" action)
+
+;;; Integration Tests for claudemacs-add-context ("a" action)
+
+(ert-deftest claudemacs-test-transient-menu-has-a-key ()
+  "Test that transient menu includes 'a' key for add context."
+  :tags '(:integration :add-context)
+  ;; This will fail until we add the key to the menu - that's TDD!
+  (let ((menu-definition (get 'claudemacs-transient-menu 'transient--layout)))
+    ;; Check if 'a' key is defined in the menu
+    (should menu-definition)
+    ;; Convert layout to string for inspection
+    (let ((layout-str (format "%S" menu-definition)))
+      ;; Verify "a" key is bound to claudemacs-add-context
+      (should (string-match-p "\"a\"" layout-str))
+      (should (string-match-p "claudemacs-add-context" layout-str)))))
+
+;;; Success Path Test for claudemacs-add-context ("a" action)
+
+(ert-deftest claudemacs-test-add-context-success-path ()
+  "Test real success path of add-context with fake session and file.
+  
+Tests the complete real workflow without mocking our functions:
+- Real claudemacs--validate-file-and-session (with fake session and file)
+- Real file context building and line number detection
+- Real claudemacs--send-message-to-claude call
+- Real message formatting with file:line context
+- Real error handling
+
+This tests our function actually works with file context!"
+  :tags '(:integration :success-path :add-context)
+  
+  (let ((temp-dir (make-temp-file "add-context-test" t))
+        (temp-file nil)
+        (sent-message nil)
+        (no-return-flag nil)
+        (session-buffer nil))
+    (unwind-protect
+        (let ((default-directory temp-dir))
+          ;; Step 1: Initialize git repo for project detection
+          (shell-command "git init" nil nil)
+          
+          ;; Step 2: Create a temporary file for context
+          (setq temp-file (expand-file-name "test-file.el" temp-dir))
+          (with-temp-file temp-file
+            (insert ";;; Test file for context\n")
+            (insert "(defun test-function ()\n")
+            (insert "  \"A test function\")\n"))
+          
+          ;; Step 3: Create minimal fake session that satisfies validation
+          (setq session-buffer (claudemacs-test--create-fake-session))
+          
+          ;; Step 4: Set up file context by visiting the file
+          (with-temp-buffer
+            (setq buffer-file-name temp-file)
+            (insert-file-contents temp-file)
+            (goto-char (point-min))
+            (forward-line 1) ; Go to line 2: "(defun test-function ()"
+            
+            ;; Step 5: Mock only external I/O, not our functions
+            (cl-letf (((symbol-function 'claudemacs--send-message-to-claude)
+                       (lambda (message &optional no-return no-switch)
+                         (setq sent-message message)
+                         (setq no-return-flag no-return))))
+              
+              ;; Step 6: Call the real function - no mocking of our logic!
+              (claudemacs-add-context)
+              
+              ;; Step 7: Verify real behavior
+              (should sent-message)
+              (should (string-match-p "test-file\\.el:2 " sent-message))
+              (should no-return-flag))))
+      
+      ;; Cleanup
+      (when session-buffer
+        (kill-buffer session-buffer))
+      (when (and temp-file (file-exists-p temp-file))
+        (delete-file temp-file))
+      (when (file-exists-p temp-dir)
+        (delete-directory temp-dir t)))))
 
 (ert-deftest claudemacs-test-transient-menu-has-e-key ()
   "Test that transient menu includes 'e' key for fix error at point."

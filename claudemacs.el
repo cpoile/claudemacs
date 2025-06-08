@@ -691,6 +691,31 @@ Sends @rel/path/to/current/file without newline."
     (claudemacs--send-message-to-claude reference-text t (not claudemacs-switch-to-buffer-on-file-add))
     (message "Added current file reference: @%s" relative-path)))
 
+;;;###autoload
+(defun claudemacs-add-context ()
+  "Add file context with line number(s) to the Claude conversation.
+If a region is selected, uses line range (path:start-end).
+Otherwise, uses current line (path:line).
+Sends without newline so you can continue typing."
+  (interactive)
+  (claudemacs--validate-file-and-session)
+  
+  (let* ((context (claudemacs--get-file-context))
+         (relative-path (plist-get context :relative-path))
+         (has-region (use-region-p))
+         (start-line (if has-region
+                         (line-number-at-pos (region-beginning))
+                       (line-number-at-pos)))
+         (end-line (if has-region
+                       (line-number-at-pos (region-end))
+                     (line-number-at-pos)))
+         (context-text (if (and has-region (not (= start-line end-line)))
+                           (format "%s:%d-%d " relative-path start-line end-line)
+                         (format "%s:%d " relative-path start-line))))
+    
+    (claudemacs--send-message-to-claude context-text t (not claudemacs-switch-to-buffer-on-file-add))
+    (message "Added context: %s" (string-trim context-text))))
+
 
 ;;;###autoload
 (defun claudemacs-implement-comment ()
@@ -798,7 +823,8 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("X" "Execute Request (no context)" claudemacs-ask-without-context)
     ("i" "Implement Comment" claudemacs-implement-comment)
     ("f" "Add File Reference" claudemacs-add-file-reference)
-    ("F" "Add Current File" claudemacs-add-current-file-reference)]
+    ("F" "Add Current File" claudemacs-add-current-file-reference)
+    ("a" "Add Context" claudemacs-add-context)]
    ["Quick Responses"
     ("y" "Send Yes (RET)" claudemacs-send-yes)
     ("n" "Send No (ESC)" claudemacs-send-no)]
