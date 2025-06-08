@@ -107,6 +107,13 @@ focus to it."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-switch-to-buffer-on-add-context t
+  "Whether to switch to the Claudemacs buffer when adding context.
+If non-nil, automatically switch to the Claude buffer after adding context.
+If nil, add the context but don't switch focus to it."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defcustom claudemacs-notify-on-await t
   "Whether to show a system notification when Claude Code is awaiting the user.
 When non-nil, display an OS notification popup when Claude completes a task.
@@ -699,7 +706,7 @@ Otherwise, uses current line (path:line).
 Sends without newline so you can continue typing."
   (interactive)
   (claudemacs--validate-file-and-session)
-  
+
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
          (has-region (use-region-p))
@@ -713,7 +720,7 @@ Sends without newline so you can continue typing."
                            (format "%s:%d-%d " relative-path start-line end-line)
                          (format "%s:%d " relative-path start-line))))
     
-    (claudemacs--send-message-to-claude context-text t (not claudemacs-switch-to-buffer-on-file-add))
+    (claudemacs--send-message-to-claude context-text t (not claudemacs-switch-to-buffer-on-add-context))
     (message "Added context: %s" (string-trim context-text))))
 
 

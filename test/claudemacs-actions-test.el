@@ -615,8 +615,8 @@ This tests our function actually works with file context!"
       ;; Call the function
       (claudemacs-add-context)
       
-      ;; Should respect file-add switching behavior
-      (should (eq switch-flag claudemacs-switch-to-buffer-on-file-add)))))
+      ;; Should respect add-context switching behavior
+      (should (eq switch-flag claudemacs-switch-to-buffer-on-add-context)))))
 
 ;;; Unit Tests for claudemacs-fix-error-at-point ("e" action)
 

@@ -333,6 +333,9 @@ Claudemacs provides several customization variables to tailor the experience to 
 ;; Whether to switch to Claudemacs buffer when sending error fix requests (default: nil)
 (setq claudemacs-switch-to-buffer-on-send-error t)
 
+;; Whether to switch to Claudemacs buffer when adding context (default: t)
+(setq claudemacs-switch-to-buffer-on-add-context nil)
+
 ;; Whether to prefer projectile root over git root when available (default: nil)
 (setq claudemacs-prefer-projectile-root t)
 ```
