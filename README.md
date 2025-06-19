@@ -135,9 +135,9 @@ For Mac, you need to do some setup to make notifications work.
 1. Run the built in `Script Editor` program, start a new script, and run `display notification "Test notification" with title "Test Title" sound name "Frog"`
 1. Accept the notification permissions. (Or go into System Settings -> Notifications -> Script Editor and allow notifications there.)
 
-Now you should receive System notifications when Claude Code is waiting for input. It **does not** seem to notify when it's done, unfortunately. Maybe that's how it's designed?
+Now you should receive System notifications when Claude Code is waiting for input, or when done.
 
-Also, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
+Unfortunately, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
 #### -- Linux --
 
@@ -221,10 +221,61 @@ to load the new symbol and emoji fonts."
                 (my/setup-custom-font-fallbacks-mac)))))
 ```
 
-#### -- Linux / Windows --
+#### -- Linux --
 
-I'm not sure of the built in fonts for these systems, or which ones should be used as fallbacks for Claude Code. PRs welcome.
+``` elisp
+(defun my/setup-custom-font-fallbacks-linux ()
+  (interactive)
+  "Configure font fallbacks on linux for symbols and emojis.
+This will need to be called every time you change your font size,
+to load the new symbol and emoji fonts."
 
+  (setq use-default-font-for-symbols nil)
+
+  ;; --- Configure for 'symbol' script ---
+  ;; We add fonts one by one. Since we use 'prepend',
+  ;; the last one added here will be the first one Emacs tries.
+  ;; So, list them in reverse order of your preference.
+
+  ;; Least preferred among this list for symbols (will be at the end of our preferred list)
+  ;; (set-fontset-font t 'symbol "FreeSerif" nil 'prepend)
+  ;; (set-fontset-font t 'symbol "NotoSansSymbols2" nil 'prepend)
+  ;; (set-fontset-font t 'symbol "NotoSansCJKJP" nil 'prepend)
+  ;; (set-fontset-font t 'symbol "unifont" nil 'prepend)
+  (set-fontset-font t 'symbol "DejaVu Sans Mono" nil 'prepend)
+  ;; Most preferred for symbols -- use your main font here
+  (set-fontset-font t 'symbol "JetBrainsMono Nerd Font Mono" nil 'prepend)
+
+
+  ;; --- Configure for 'emoji' script ---
+  ;; Add fonts one by one, in reverse order of preference.
+
+  ;; Least preferred among this list for emojis
+  ;; (set-fontset-font t 'emoji "FreeSerif" nil 'prepend)
+  ;; (set-fontset-font t 'emoji "NotoSansSymbols2" nil 'prepend)
+  ;; (set-fontset-font t 'emoji "NotoSansCJKJP" nil 'prepend)
+  ;; (set-fontset-font t 'emoji "unifont" nil 'prepend)
+  (set-fontset-font t 'emoji "DejaVuSans" nil 'prepend)
+  ;; (set-fontset-font t 'emoji "Noto Emoji" nil 'prepend) ;; If you install Noto Emoji
+  ;; Most preferred for emojis -- use your main font here
+  (set-fontset-font t 'emoji "JetBrainsMono Nerd Font Mono" nil 'prepend)
+  )
+
+;; to test if you have a font family installed:
+;;   (find-font (font-spec :family "DejaVu Sans Mono"))
+
+;; Then, add the fonts after your setup is complete:
+(add-hook 'emacs-startup-hook
+          (lambda ()
+            (progn
+              (when (string-equal system-type "gnu/linux")
+                  (my/setup-custom-font-fallbacks-linux)))))
+
+```
+
+#### -- Windows --
+
+I'm not sure of the built in fonts for Windows, or which ones should be used as fallbacks for Claude Code. PRs welcome.
 
 ## Usage
 
@@ -275,6 +326,14 @@ monorepo/
     └── src/
         └── app.tsx
 ```
+
+🎉 NOTE: Since implementing this feature there was a new Claude Code improvement that let's you manually add directories to a project's safe list. You could add them like:
+
+``` elisp
+(setq claudemacs-program-switches '("--add-dir ../apps ../libs"))
+```
+
+You could also add them to a project's `.dir-locals.el` and have it customized per project.
 
 
 ### Commands
