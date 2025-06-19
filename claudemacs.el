@@ -818,7 +818,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()
   "Claude Code AI Pair Programming Interface."
-  ["Claudemacs: AI Pair Programming"
+  ["Claudemacs: AI pair programming with Claude Code"
    ["Core"
     ("s" "Start/Open Session" claudemacs-run)
     ("r" "Start with Resume" claudemacs-resume)
@@ -833,11 +833,10 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("F" "Add Current File" claudemacs-add-current-file-reference)
     ("a" "Add Context" claudemacs-add-context)]
    ["Quick Responses"
-    ("y" "Send Yes (RET)" claudemacs-send-yes)
-    ("n" "Send No (ESC)" claudemacs-send-no)]
+     ("y" "Send Yes (RET)" claudemacs-send-yes)
+     ("n" "Send No (ESC)" claudemacs-send-no)]]
    ["Maintenance"
-    ("u" "Unstick Claude buffer" claudemacs-unstick-terminal)
-]])
+     ("u" "Unstick Claude buffer" claudemacs-unstick-terminal)])
 
 ;;;###autoload
 (defvar claudemacs-mode-map
