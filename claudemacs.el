@@ -146,6 +146,14 @@ When empty string, no sound is played."
   :type 'string
   :group 'claudemacs)
 
+(defcustom claudemacs-startup-hook nil
+  "Hook run after a claudemacs session has finished starting up.
+This hook is called after the eat terminal is initialized, keymaps
+are set up, and bell handlers are configured. The hook functions
+are executed with the claudemacs buffer as the current buffer."
+  :type 'hook
+  :group 'claudemacs)
+
 (defface claudemacs-repl-face
   nil
   "Face for Claude REPL."
@@ -323,7 +331,9 @@ Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
           (message "Eat is ready, setting up integrations")
           (with-current-buffer buffer
             (claudemacs--setup-buffer-keymap)
-            (claudemacs-setup-bell-handler)))
+            (claudemacs-setup-bell-handler)
+            ;; Run startup hook after setup is complete
+            (run-hooks 'claudemacs-startup-hook)))
       ;; Eat not ready yet, retry if we haven't exceeded max attempts
       (when (< retry-count 10)
         (message "Eat not ready yet, retrying in 0.5s (attempt %d/10)" (1+ retry-count))

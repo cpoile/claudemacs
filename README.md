@@ -430,6 +430,19 @@ Claudemacs provides several customization variables to tailor the experience to 
 
 All variables can also be customized via `M-x customize-group RET claudemacs RET`.
 
+#### Startup Hook
+
+Claudemacs provides a startup hook that runs after a session has finished initializing. Hook functions execute with the claudemacs buffer as the current buffer.
+
+```elisp
+;; Example: Custom initialization based on project type
+(add-hook 'claudemacs-startup-hook
+          (lambda ()
+            (when (file-exists-p (expand-file-name "package.json" claudemacs--cwd))
+              (message "Node.js project detected in %s. Do stuff." claudemacs--cwd))))
+
+```
+
 ## Buffer Naming
 
 Claudemacs creates workspace-aware buffer names:

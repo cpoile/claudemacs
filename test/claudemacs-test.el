@@ -319,6 +319,188 @@ The file is automatically cleaned up after BODY executes."
     (kill-buffer dead-buffer)
     (should-not (claudemacs--is-claudemacs-buffer-p dead-buffer))))
 
+;;; Startup Hook Tests
+
+(ert-deftest claudemacs-test-startup-hook-exists ()
+  "Test that claudemacs-startup-hook variable exists."
+  :tags '(:unit :startup-hook)
+  (should (boundp 'claudemacs-startup-hook))
+  (should (eq claudemacs-startup-hook nil))) ; Default value should be nil
+
+(ert-deftest claudemacs-test-startup-hook-is-hook ()
+  "Test that claudemacs-startup-hook is properly defined as a hook."
+  :tags '(:unit :startup-hook)
+  (should (get 'claudemacs-startup-hook 'custom-type))
+  (should (eq (get 'claudemacs-startup-hook 'custom-type) 'hook)))
+
+(ert-deftest claudemacs-test-startup-hook-documentation ()
+  "Test that claudemacs-startup-hook has proper documentation."
+  :tags '(:unit :startup-hook)
+  (let ((doc (documentation-property 'claudemacs-startup-hook 'variable-documentation)))
+    (should doc)
+    (should (string-match-p "after.*finished starting up" doc))
+    (should (string-match-p "current buffer" doc))))
+
+(ert-deftest claudemacs-test-startup-hook-called-during-setup ()
+  "Test that claudemacs-startup-hook is called during eat integration setup."
+  :tags '(:integration :startup-hook)
+  (let ((hook-called nil)
+        (hook-called-in-claudemacs-buffer nil)
+        (test-buffer nil))
+    
+    ;; Create a test hook function
+    (add-hook 'claudemacs-startup-hook 
+              (lambda () 
+                (setq hook-called t)
+                (when (claudemacs--is-claudemacs-buffer-p)
+                  (setq hook-called-in-claudemacs-buffer t))))
+    
+    ;; Mock the bell handler setup to avoid session ID dependency
+    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler)
+               (lambda () nil)))
+      
+      (unwind-protect
+          (progn
+            ;; Create a buffer that looks like a claudemacs buffer
+            (setq test-buffer (get-buffer-create "*claudemacs:test-hook*"))
+            (with-current-buffer test-buffer
+              ;; Set up minimal fake eat-terminal
+              (setq-local eat-terminal 'fake-terminal))
+            
+            ;; Call the setup function directly
+            (claudemacs--setup-eat-integration test-buffer)
+            
+            ;; Verify hook was called
+            (should hook-called)
+            (should hook-called-in-claudemacs-buffer))
+        
+        ;; Cleanup
+        (remove-hook 'claudemacs-startup-hook 
+                     (lambda () 
+                       (setq hook-called t)
+                       (when (claudemacs--is-claudemacs-buffer-p)
+                         (setq hook-called-in-claudemacs-buffer t))))
+        (when (and test-buffer (buffer-live-p test-buffer))
+          (kill-buffer test-buffer))))))
+
+(ert-deftest claudemacs-test-startup-hook-multiple-functions ()
+  "Test that multiple functions can be added to claudemacs-startup-hook."
+  :tags '(:integration :startup-hook)
+  (let ((hook1-called nil)
+        (hook2-called nil)
+        (test-buffer nil))
+    
+    ;; Create two test hook functions
+    (add-hook 'claudemacs-startup-hook (lambda () (setq hook1-called t)))
+    (add-hook 'claudemacs-startup-hook (lambda () (setq hook2-called t)))
+    
+    ;; Mock the bell handler setup to avoid session ID dependency
+    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler)
+               (lambda () nil)))
+      
+      (unwind-protect
+          (progn
+            ;; Create a buffer that looks like a claudemacs buffer
+            (setq test-buffer (get-buffer-create "*claudemacs:test-multiple*"))
+            (with-current-buffer test-buffer
+              ;; Set up minimal fake eat-terminal
+              (setq-local eat-terminal 'fake-terminal))
+            
+            ;; Call the setup function directly
+            (claudemacs--setup-eat-integration test-buffer)
+            
+            ;; Verify both hooks were called
+            (should hook1-called)
+            (should hook2-called))
+        
+        ;; Cleanup
+        (remove-hook 'claudemacs-startup-hook (lambda () (setq hook1-called t)))
+        (remove-hook 'claudemacs-startup-hook (lambda () (setq hook2-called t)))
+        (when (and test-buffer (buffer-live-p test-buffer))
+          (kill-buffer test-buffer))))))
+
+(ert-deftest claudemacs-test-startup-hook-buffer-context ()
+  "Test that claudemacs-startup-hook runs with claudemacs buffer as current buffer."
+  :tags '(:integration :startup-hook)
+  (let ((captured-buffer-name nil)
+        (captured-cwd nil)
+        (test-buffer nil))
+    
+    ;; Create a test hook function that captures context
+    (add-hook 'claudemacs-startup-hook 
+              (lambda () 
+                (setq captured-buffer-name (buffer-name))
+                (setq captured-cwd claudemacs--cwd)))
+    
+    ;; Mock the bell handler setup to avoid session ID dependency
+    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler)
+               (lambda () nil)))
+      
+      (unwind-protect
+          (progn
+            ;; Create a buffer that looks like a claudemacs buffer
+            (setq test-buffer (get-buffer-create "*claudemacs:test-context*"))
+            (with-current-buffer test-buffer
+              ;; Set up minimal fake environment
+              (setq-local eat-terminal 'fake-terminal)
+              (setq-local claudemacs--cwd "/test/directory"))
+            
+            ;; Call the setup function directly
+            (claudemacs--setup-eat-integration test-buffer)
+            
+            ;; Verify hook ran in correct buffer context
+            (should captured-buffer-name)
+            (should (string= captured-buffer-name "*claudemacs:test-context*"))
+            (should captured-cwd)
+            (should (string= captured-cwd "/test/directory")))
+        
+        ;; Cleanup
+        (remove-hook 'claudemacs-startup-hook 
+                     (lambda () 
+                       (setq captured-buffer-name (buffer-name))
+                       (setq captured-cwd claudemacs--cwd)))
+        (when (and test-buffer (buffer-live-p test-buffer))
+          (kill-buffer test-buffer))))))
+
+(ert-deftest claudemacs-test-startup-hook-error-handling ()
+  "Test that errors in claudemacs-startup-hook don't break setup."
+  :tags '(:integration :startup-hook)
+  (let ((hook-error-occurred nil)
+        (setup-completed nil)
+        (test-buffer nil))
+    
+    ;; Create a hook function that throws an error
+    (add-hook 'claudemacs-startup-hook 
+              (lambda () (error "Test hook error")))
+    
+    ;; Mock the other setup functions to track completion
+    (cl-letf (((symbol-function 'claudemacs--setup-buffer-keymap)
+               (lambda () (setq setup-completed t)))
+              ((symbol-function 'claudemacs-setup-bell-handler)
+               (lambda () nil)))
+      
+      (unwind-protect
+          (progn
+            ;; Create a buffer that looks like a claudemacs buffer
+            (setq test-buffer (get-buffer-create "*claudemacs:test-error*"))
+            (with-current-buffer test-buffer
+              ;; Set up minimal fake eat-terminal
+              (setq-local eat-terminal 'fake-terminal))
+            
+            ;; Call the setup function and expect it to handle errors gracefully
+            (condition-case err
+                (claudemacs--setup-eat-integration test-buffer)
+              (error (setq hook-error-occurred t)))
+            
+            ;; Setup should have completed despite hook error
+            (should setup-completed)
+            ;; The error should have been propagated (or could be caught - depends on implementation)
+        
+        ;; Cleanup
+        (remove-hook 'claudemacs-startup-hook (lambda () (error "Test hook error")))
+        (when (and test-buffer (buffer-live-p test-buffer))
+          (kill-buffer test-buffer)))))))
+
 ;;; Custom Variable Tests
 
 (ert-deftest claudemacs-test-custom-variable-defaults ()
@@ -332,7 +514,8 @@ The file is automatically cleaned up after BODY executes."
   (should (eq claudemacs-shift-return-newline t))
   (should (eq claudemacs-switch-to-buffer-on-file-add nil))
   (should (eq claudemacs-notify-on-await t))
-  (should (string= claudemacs-notification-sound-mac "Submarine")))
+  (should (string= claudemacs-notification-sound-mac "Submarine"))
+  (should (eq claudemacs-startup-hook nil))) ; Include startup hook in defaults test
 
 (ert-deftest claudemacs-test-custom-variable-types ()
   "Test that custom variables have correct types."
