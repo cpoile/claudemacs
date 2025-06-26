@@ -312,7 +312,7 @@ monorepo/
         └── app.tsx
 ```
 
-By putting a `.projectile` file in the parent, Claude Code will be able to read and edit all files, like so:
+By putting a `.projectile` file in the parent and using `(setq claudemacs-prefer-projectile-root t)`, Claude Code will be able to read and edit all files, like so:
 
 ```
 monorepo/
