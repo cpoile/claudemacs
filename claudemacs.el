@@ -653,7 +653,9 @@ Otherwise, use current line as context."
          (start-line (line-number-at-pos start))
          (end-line (line-number-at-pos end))
          (context-text (claudemacs--format-context-line-range relative-path start-line end-line))
-         (request (read-string "Claude request: "))
+         (request (if has-region
+                      (buffer-substring-no-properties start end)
+                    (read-string "Claude request: ")))
          (message-text (concat context-text request)))
     
     (when (string-empty-p (string-trim request))
@@ -663,14 +665,21 @@ Otherwise, use current line as context."
     (message "Sent request to Claude with context")))
 
 ;;;###autoload
-(defun claudemacs-ask-without-context ()
+(defun claudemacs-ask-without-context (start end)
   "Ask Claude a question without file or line context.
-Prompts for a question and sends it directly to Claude without any 
-file location or context information."
-  (interactive)
+If a region is selected, uses the region text as the request.
+Otherwise, prompts for a question and sends it directly to Claude
+without any file location or context information."
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (point) (point))))
   (claudemacs--validate-process)
   
-  (let ((request (read-string "Ask Claude: ")))
+  (let* ((has-region (not (= start end)))
+         (request (if has-region
+                      (buffer-substring-no-properties start end)
+                    (read-string "Ask Claude: "))))
     (when (string-empty-p (string-trim request))
       (error "Request cannot be empty"))
     
