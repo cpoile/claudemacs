@@ -637,22 +637,21 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
     (message "Sent error fix request to Claude")))
 
 ;;;###autoload
-(defun claudemacs-execute-request ()
+(defun claudemacs-execute-request (start end)
   "Execute a Claude request with file context.
 If a region is selected, use it as context with line range.
 Otherwise, use current line as context."
-  (interactive)
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (point) (point))))
   (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
-         (has-region (use-region-p))
-         (start-line (if has-region
-                         (line-number-at-pos (region-beginning))
-                       (line-number-at-pos)))
-         (end-line (if has-region
-                       (line-number-at-pos (region-end))
-                     (line-number-at-pos)))
+         (has-region (not (= start end)))
+         (start-line (line-number-at-pos start))
+         (end-line (line-number-at-pos end))
          (context-text (claudemacs--format-context-line-range relative-path start-line end-line))
          (request (read-string "Claude request: "))
          (message-text (concat context-text request)))
