@@ -66,7 +66,14 @@ Then in your `config.el`:
 (use-package! claudemacs)
 ```
 
-#### use-package with :vc (Emacs 29+)
+#### use-package with built-in :vc (Emacs 30+)
+
+```elisp
+(use-package claudemacs
+  :vc (:url "https://github.com/cpoile/claudemacs"))
+```
+
+#### use-package with vc-use-package
 
 ```elisp
 (use-package claudemacs
