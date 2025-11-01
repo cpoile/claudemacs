@@ -4,6 +4,10 @@ AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude
 
 https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 
+## What makes this project different? Simplicity
+- Let Claude Code shine in the terminal
+- No agents, MCP, or IDE integration -- these eat up context
+
 ## Features
 
 - Project-based Claude Code, with Workspace-aware sessions (see [Sessions](#workspace-and-project-aware-sessions))
@@ -17,6 +21,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 - C-g sends Esc: Old habits die hard
 - Option: Swap RET and M-RET - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
 - Option: S-RET as newline - May be more natural (Claude maps S-RET to submit)
+- Option: Shell environment loading - Load shell rc files (.zshrc, .bashrc) for PATH and environment variables
 - Transient interface: Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
 
 ## Table of Contents
@@ -411,9 +416,19 @@ Claudemacs provides several customization variables to tailor the experience to 
 ;; When enabled: RET creates newline, M-RET submits
 (setq claudemacs-m-return-is-submit t)
 
-;; Enable Shift-Return to create newlines (default: t) 
+;; Enable Shift-Return to create newlines (default: t)
 ;; Provides alternative to M-RET for creating newlines
 (setq claudemacs-shift-return-newline t)
+```
+
+```elisp
+;; Run Claude through interactive shell to load shell environment (default: nil)
+;; When enabled, Claude is invoked through your shell (e.g., zsh -i -c "claude ...")
+;; which sources rc files like .zshrc or .bashrc, making shell-configured PATH
+;; and environment variables available to Claude.
+;; Useful if Claude can't find commands that are in your shell's PATH.
+;; NOTE: Changes only apply to new sessions - kill and restart to take effect.
+(setq claudemacs-use-shell-env t)
 ```
 
 #### System Notifications

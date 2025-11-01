@@ -99,6 +99,16 @@ If nil, add the file reference but don't switch focus to it."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-use-shell-env nil
+  "Whether to run Claude through an interactive shell to load shell environment.
+If non-nil, Claude is invoked through the user's interactive shell (e.g., zsh -i -c)
+which sources rc files like .zshrc or .bashrc, making shell-configured PATH and
+environment variables available to Claude.
+If nil (default), Claude is invoked directly without shell environment loading.
+This preserves backward compatibility for users whose existing setup works correctly."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defcustom claudemacs-switch-to-buffer-on-send-error nil
   "Whether to switch to the Claudemacs buffer when sending error fix requests.
 If non-nil, automatically switch to the Claude buffer after sending
@@ -444,6 +454,11 @@ Applies consistent styling to all eat-mode terminal faces."
       (use-local-map map)
       (message "Applied buffer-local keymap successfully"))))
 
+(defun claudemacs--get-shell-name ()
+  "Get the path to the user's shell (e.g., '/bin/zsh', '/bin/bash').
+Falls back to '/bin/sh' if SHELL environment variable is not set."
+  (or (getenv "SHELL") "/bin/sh"))
+
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
   (require 'eat)
@@ -458,7 +473,14 @@ Applies consistent styling to all eat-mode terminal faces."
       (setq-local eat-term-name "xterm-256color")
       (let ((process-adaptive-read-buffering nil)
             (switches (remove nil (append args claudemacs-program-switches))))
-        (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches))
+        (if claudemacs-use-shell-env
+            ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
+            (let* ((shell (claudemacs--get-shell-name))
+                   (claude-cmd (format "%s %s" claudemacs-program
+                                      (mapconcat 'shell-quote-argument switches " "))))
+              (eat-make (substring buffer-name 1 -1) shell nil "-c" claude-cmd))
+          ;; Original behavior: Run Claude directly without shell environment
+          (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches)))
       
       ;; Set buffer-local variables after eat-make to ensure they persist
       (setq-local claudemacs--cwd work-dir)
