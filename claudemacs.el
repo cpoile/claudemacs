@@ -659,24 +659,25 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
     (message "Sent error fix request to Claude")))
 
 ;;;###autoload
-(defun claudemacs-execute-request ()
+(defun claudemacs-execute-request (start end)
   "Execute a Claude request with file context.
 If a region is selected, use it as context with line range.
 Otherwise, use current line as context."
-  (interactive)
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (point) (point))))
   (claudemacs--validate-file-and-session)
   
   (let* ((context (claudemacs--get-file-context))
          (relative-path (plist-get context :relative-path))
-         (has-region (use-region-p))
-         (start-line (if has-region
-                         (line-number-at-pos (region-beginning))
-                       (line-number-at-pos)))
-         (end-line (if has-region
-                       (line-number-at-pos (region-end))
-                     (line-number-at-pos)))
+         (has-region (not (= start end)))
+         (start-line (line-number-at-pos start))
+         (end-line (line-number-at-pos end))
          (context-text (claudemacs--format-context-line-range relative-path start-line end-line))
-         (request (read-string "Claude request: "))
+         (request (if has-region
+                      (buffer-substring-no-properties start end)
+                    (read-string "Claude request: ")))
          (message-text (concat context-text request)))
     
     (when (string-empty-p (string-trim request))
@@ -686,14 +687,21 @@ Otherwise, use current line as context."
     (message "Sent request to Claude with context")))
 
 ;;;###autoload
-(defun claudemacs-ask-without-context ()
+(defun claudemacs-ask-without-context (start end)
   "Ask Claude a question without file or line context.
-Prompts for a question and sends it directly to Claude without any 
-file location or context information."
-  (interactive)
+If a region is selected, uses the region text as the request.
+Otherwise, prompts for a question and sends it directly to Claude
+without any file location or context information."
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (point) (point))))
   (claudemacs--validate-process)
   
-  (let ((request (read-string "Ask Claude: ")))
+  (let* ((has-region (not (= start end)))
+         (request (if has-region
+                      (buffer-substring-no-properties start end)
+                    (read-string "Ask Claude: "))))
     (when (string-empty-p (string-trim request))
       (error "Request cannot be empty"))
     
