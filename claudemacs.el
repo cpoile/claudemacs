@@ -465,6 +465,10 @@ Falls back to '/bin/sh' if SHELL environment variable is not set."
   (let* ((default-directory work-dir)
          (buffer-name (claudemacs--get-buffer-name))
          (buffer (get-buffer-create buffer-name))
+         ;; Capture buffer-local values before switching buffers
+         (program claudemacs-program)
+         (program-switches claudemacs-program-switches)
+         (use-shell-env claudemacs-use-shell-env)
          (process-environment
           (append '("TERM=xterm-256color")
                   process-environment)))
@@ -472,15 +476,15 @@ Falls back to '/bin/sh' if SHELL environment variable is not set."
       (cd work-dir)
       (setq-local eat-term-name "xterm-256color")
       (let ((process-adaptive-read-buffering nil)
-            (switches (remove nil (append args claudemacs-program-switches))))
-        (if claudemacs-use-shell-env
+            (switches (remove nil (append args program-switches))))
+        (if use-shell-env
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
             (let* ((shell (claudemacs--get-shell-name))
-                   (claude-cmd (format "%s %s" claudemacs-program
+                   (claude-cmd (format "%s %s" program
                                       (mapconcat 'shell-quote-argument switches " "))))
               (eat-make (substring buffer-name 1 -1) shell nil "-c" claude-cmd))
           ;; Original behavior: Run Claude directly without shell environment
-          (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches)))
+          (apply #'eat-make (substring buffer-name 1 -1) program nil switches)))
       
       ;; Set buffer-local variables after eat-make to ensure they persist
       (setq-local claudemacs--cwd work-dir)
