@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "claudemacs": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "claudemacs_mcp.server"],
+      "command": "/Users/chad.crawford/.emacs.d/claudemacs/claudemacs_mcp/.venv/bin/python",
+      "args": ["-m", "claudemacs_mcp.server"],
       "cwd": "/Users/chad.crawford/.emacs.d/claudemacs/claudemacs_mcp",
       "env": {
         "CLAUDEMACS_SOCKET": "/var/folders/tb/04bsctp95yj8j1r9g92grnhw0000gn/T/emacs501/server"

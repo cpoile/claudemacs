@@ -43,12 +43,13 @@ def update_mcp_config(config_path: Path, socket_path: str):
     """Update the MCP config file with the socket path."""
     # Get the directory containing the config
     mcp_dir = config_path.parent
+    venv_python = mcp_dir / ".venv" / "bin" / "python"
 
     config = {
         "mcpServers": {
             "claudemacs": {
-                "command": "uv",
-                "args": ["run", "python", "-m", "claudemacs_mcp.server"],
+                "command": str(venv_python),
+                "args": ["-m", "claudemacs_mcp.server"],
                 "cwd": str(mcp_dir),
                 "env": {"CLAUDEMACS_SOCKET": socket_path},
             }
