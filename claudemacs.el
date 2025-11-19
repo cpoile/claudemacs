@@ -472,11 +472,12 @@ Falls back to '/bin/sh' if SHELL environment variable is not set."
   (or (getenv "SHELL") "/bin/sh"))
 
 (defun claudemacs--get-auto-allow-permissions ()
-  "Generate list of --auto-allow-permission flags for read-only claudemacs-cli commands.
+  "Generate --allowedTools flag for read-only claudemacs-cli commands.
 Returns nil if `claudemacs-auto-allow-cli-reads' is nil."
   (when claudemacs-auto-allow-cli-reads
-    (mapcar (lambda (cmd) (format "--auto-allow-permission=Bash(claudemacs-cli %s:*)" cmd))
-            '("get-buffer-content" "get-region" "list-buffers" "buffer-info"))))
+    (let ((tools (mapcar (lambda (cmd) (format "Bash(claudemacs-cli %s:*)" cmd))
+                        '("get-buffer-content" "get-region" "list-buffers" "buffer-info"))))
+      (list "--allowedTools" (string-join tools " ")))))
 
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
