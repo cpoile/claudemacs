@@ -48,7 +48,7 @@ def update_mcp_config(config_path: Path, socket_path: str):
         "mcpServers": {
             "claudemacs": {
                 "command": "uv",
-                "args": ["run", "-m", "claudemacs_mcp.server"],
+                "args": ["run", "python", "-m", "claudemacs_mcp.server"],
                 "cwd": str(mcp_dir),
                 "env": {"CLAUDEMACS_SOCKET": socket_path},
             }
