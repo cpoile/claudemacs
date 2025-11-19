@@ -14,7 +14,23 @@ You (Claude) are running inside a special integration that connects Claude Code 
 
 ## Quick Start
 
-The `claudemacs-cli` tool is your main interface to Emacs. It's automatically configured and ready to use:
+You have **two ways** to interact with Emacs:
+
+### 1. MCP Tools (Preferred)
+
+If MCP is enabled, you'll have native tools available:
+- `get_buffer_content` - Read buffer content
+- `list_buffers` - List all buffers
+- `buffer_info` - Get buffer details
+- `get_region` - Read specific region
+- `insert_in_buffer` - Write to buffer (requires permission)
+- `replace_region` - Replace content (requires permission)
+- `send_input` - Send to REPL (requires permission)
+- `exec_in_terminal` - Run commands (requires permission)
+
+### 2. CLI Tool (Fallback)
+
+The `claudemacs-cli` bash tool is also available:
 
 ```bash
 # See what buffers are open
@@ -26,6 +42,8 @@ claudemacs-cli get-buffer-content "myfile.py"
 # Write to a buffer
 claudemacs-cli insert-in-buffer "*scratch*" "Hello from Claude!"
 ```
+
+**Note**: MCP tools are preferred when available as they integrate better with Claude's permission system.
 
 ## Core Concepts
 

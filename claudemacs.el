@@ -62,6 +62,15 @@ When nil, all claudemacs-cli commands will require explicit permission."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-use-mcp t
+  "Whether to use MCP (Model Context Protocol) for Emacs integration.
+When non-nil, claudemacs will load the MCP server for buffer operations,
+exposing tools like get_buffer_content, list_buffers, etc. as native MCP tools.
+
+When nil, falls back to bash-based claudemacs-cli tools."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defcustom claudemacs-prefer-projectile-root nil
   "Whether to prefer projectile root over git root when available.
 If non-nil and projectile is loaded, use `projectile-project-root' to
@@ -479,6 +488,18 @@ Returns nil if `claudemacs-auto-allow-cli-reads' is nil."
                         '("get-buffer-content" "get-region" "list-buffers" "buffer-info"))))
       (list "--allowedTools" (string-join tools " ")))))
 
+(defun claudemacs--get-mcp-config ()
+  "Generate --mcp-config flag if MCP is enabled.
+Returns nil if `claudemacs-use-mcp' is nil."
+  (when claudemacs-use-mcp
+    (let* ((this-file (or load-file-name buffer-file-name
+                         (locate-library "claudemacs")))
+           (this-dir (when this-file (file-name-directory this-file)))
+           (mcp-config (when this-dir
+                        (expand-file-name "claudemacs_mcp/mcp-config.json" this-dir))))
+      (when (and mcp-config (file-exists-p mcp-config))
+        (list "--mcp-config" mcp-config)))))
+
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
   (require 'eat)
@@ -505,7 +526,8 @@ Returns nil if `claudemacs-auto-allow-cli-reads' is nil."
       (let ((process-adaptive-read-buffering nil)
             (switches (remove nil (append args
                                          claudemacs-program-switches
-                                         (claudemacs--get-auto-allow-permissions)))))
+                                         (claudemacs--get-auto-allow-permissions)
+                                         (claudemacs--get-mcp-config)))))
         (if claudemacs-use-shell-env
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
             ;; Explicitly set environment variables in the shell command to survive shell config sourcing

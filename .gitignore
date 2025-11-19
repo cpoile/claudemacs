@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# uv
+.uv/
+uv.lock
+
+# Test files
+test_*.py
+test_*.el
+test-*.sh
+
+# Backup files
+*.old
+*.bak
+*~
+
