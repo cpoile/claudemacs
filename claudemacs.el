@@ -25,6 +25,7 @@
 (require 'vc-git)
 (require 'eat nil 'noerror)
 (require 'claudemacs-comment)
+(require 'claudemacs-ai)
 
 ;; Declare functions from optional packages
 (declare-function safe-persp-name "perspective")
@@ -48,6 +49,17 @@
 These are passed as SWITCHES parameters to `eat-make`.
 E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
   :type '(repeat string)
+  :group 'claudemacs)
+
+(defcustom claudemacs-auto-allow-cli-reads t
+  "Whether to automatically allow read-only claudemacs-cli commands.
+When non-nil, Claude Code will auto-approve permissions for read-only
+claudemacs-cli commands (get-buffer-content, get-region, list-buffers,
+buffer-info). This allows seamless integration without permission prompts
+for safe read operations.
+
+When nil, all claudemacs-cli commands will require explicit permission."
+  :type 'boolean
   :group 'claudemacs)
 
 (defcustom claudemacs-prefer-projectile-root nil
@@ -459,24 +471,52 @@ Applies consistent styling to all eat-mode terminal faces."
 Falls back to '/bin/sh' if SHELL environment variable is not set."
   (or (getenv "SHELL") "/bin/sh"))
 
+(defun claudemacs--get-auto-allow-permissions ()
+  "Generate list of --auto-allow-permission flags for read-only claudemacs-cli commands.
+Returns nil if `claudemacs-auto-allow-cli-reads' is nil."
+  (when claudemacs-auto-allow-cli-reads
+    (mapcar (lambda (cmd) (format "--auto-allow-permission=Bash(claudemacs-cli %s:*)" cmd))
+            '("get-buffer-content" "get-region" "list-buffers" "buffer-info"))))
+
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
   (require 'eat)
+  ;; Set up environment variables BEFORE spawning the Claude process
+  (claudemacs-ai-setup-claude-environment)
+
   (let* ((default-directory work-dir)
          (buffer-name (claudemacs--get-buffer-name))
          (buffer (get-buffer-create buffer-name))
+         (cli-dir (file-name-directory (claudemacs-ai-get-cli-path)))
+         (claudemacs-socket (when (and (boundp 'server-socket-dir)
+                                        server-socket-dir
+                                        (server-running-p))
+                              (expand-file-name "server" server-socket-dir)))
          (process-environment
-          (append '("TERM=xterm-256color")
+          (append (list (format "PATH=%s:%s" cli-dir (getenv "PATH"))
+                        "TERM=xterm-256color")
+                  (when claudemacs-socket
+                    (list (format "CLAUDEMACS_SOCKET=%s" claudemacs-socket)))
                   process-environment)))
     (with-current-buffer buffer
       (cd work-dir)
       (setq-local eat-term-name "xterm-256color")
       (let ((process-adaptive-read-buffering nil)
-            (switches (remove nil (append args claudemacs-program-switches))))
+            (switches (remove nil (append args
+                                         claudemacs-program-switches
+                                         (claudemacs--get-auto-allow-permissions)))))
         (if claudemacs-use-shell-env
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
+            ;; Explicitly set environment variables in the shell command to survive shell config sourcing
             (let* ((shell (claudemacs--get-shell-name))
-                   (claude-cmd (format "%s %s" claudemacs-program
+                   (env-vars (format "PATH=%s:$PATH%s"
+                                   cli-dir
+                                   (if claudemacs-socket
+                                       (format " CLAUDEMACS_SOCKET=%s" claudemacs-socket)
+                                     "")))
+                   (claude-cmd (format "%s %s %s"
+                                      env-vars
+                                      claudemacs-program
                                       (mapconcat 'shell-quote-argument switches " "))))
               (eat-make (substring buffer-name 1 -1) shell nil "-c" claude-cmd))
           ;; Original behavior: Run Claude directly without shell environment

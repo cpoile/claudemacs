@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo:*)",
+      "Bash(lsof:*)",
+      "Bash(emacsclient:*)",
+      "Bash(claudemacs-cli insert-in-buffer:*)",
+      "Bash(claudemacs-cli get-buffer-content:*)",
+      "Bash(claudemacs-cli get-region:*)",
+      "Bash(claudemacs-cli list-buffers:*)",
+      "Bash(claudemacs-cli buffer-info:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
