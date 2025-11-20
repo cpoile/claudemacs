@@ -226,13 +226,18 @@ Note: This function blocks but uses non-blocking waits to avoid freezing Emacs."
 
 (defun claudemacs-ai--get-memory-buffer-name ()
   "Get the name of the memory buffer for the current session.
-Uses CLAUDEMACS_SOCKET environment variable to create a unique buffer per session."
-  (let ((socket (or (getenv "CLAUDEMACS_SOCKET")
-                    (and (boundp 'server-socket-dir)
-                         server-socket-dir
-                         (expand-file-name "server" server-socket-dir))
-                    "default")))
-    (format "*claudemacs-memory:%s*" (file-name-nondirectory socket))))
+Uses the current buffer's working directory to create a unique buffer per session."
+  (let ((work-dir (cond
+                   ;; If in a claudemacs buffer, use its cwd
+                   ((and (boundp 'claudemacs--cwd) claudemacs--cwd)
+                    claudemacs--cwd)
+                   ;; Extract from buffer name pattern *claudemacs:/path/to/dir/*
+                   ((and (buffer-name)
+                         (string-match "^\\*claudemacs:\\(.*\\)\\*$" (buffer-name)))
+                    (match-string 1 (buffer-name)))
+                   ;; Fallback to default-directory
+                   (t default-directory))))
+    (format "*claudemacs-memory:%s*" (file-name-nondirectory (directory-file-name work-dir)))))
 
 (defun claudemacs-ai--ensure-memory-buffer ()
   "Ensure the memory buffer exists and return it."
