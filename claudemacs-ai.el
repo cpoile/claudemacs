@@ -222,6 +222,106 @@ Note: This function blocks but uses non-blocking waits to avoid freezing Emacs."
           (error "Buffer '%s' is not an eat terminal" buffer-name)))
     (error "Buffer '%s' does not exist" buffer-name)))
 
+;;;; Memory Buffer Operations
+
+(defun claudemacs-ai--get-memory-buffer-name ()
+  "Get the name of the memory buffer for the current session.
+Uses CLAUDEMACS_SOCKET environment variable to create a unique buffer per session."
+  (let ((socket (or (getenv "CLAUDEMACS_SOCKET")
+                    (and (boundp 'server-socket-dir)
+                         server-socket-dir
+                         (expand-file-name "server" server-socket-dir))
+                    "default")))
+    (format "*claudemacs-memory:%s*" (file-name-nondirectory socket))))
+
+(defun claudemacs-ai--ensure-memory-buffer ()
+  "Ensure the memory buffer exists and return it."
+  (let ((buffer-name (claudemacs-ai--get-memory-buffer-name)))
+    (or (get-buffer buffer-name)
+        (with-current-buffer (get-buffer-create buffer-name)
+          (text-mode)
+          (setq-local buffer-read-only nil)
+          (current-buffer)))))
+
+(defun claudemacs-ai-get-memory ()
+  "Get the content of the memory buffer for this session.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun claudemacs-ai-set-memory (content)
+  "Set the memory buffer content to CONTENT, replacing any existing content.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (erase-buffer)
+    (insert content)
+    (format "Memory updated: %d characters" (length content))))
+
+(defun claudemacs-ai-append-memory (content)
+  "Append CONTENT to the memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-max))
+    (unless (or (bobp) (eq (char-before) ?\n))
+      (insert "\n"))
+    (insert content)
+    (format "Appended %d characters to memory" (length content))))
+
+(defun claudemacs-ai-clear-memory ()
+  "Clear the memory buffer for this session.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (erase-buffer)
+    "Memory cleared"))
+
+;;;; Session Management
+
+(defun claudemacs-ai-restart-and-resume (&optional buffer-name)
+  "Restart the claudemacs session in BUFFER-NAME and resume the conversation.
+If BUFFER-NAME is not provided, uses the current buffer.
+This reloads the MCP server with any code changes.
+Designed to be called via emacsclient by Claude AI."
+  (let ((target-buffer (or buffer-name (buffer-name))))
+    ;; Check if this is a claudemacs buffer
+    (if (and (get-buffer target-buffer)
+             (string-match-p "^\\*claudemacs:" target-buffer))
+        (let ((work-dir (with-current-buffer target-buffer
+                         (or claudemacs--cwd
+                             ;; Fallback: extract directory from buffer name
+                             ;; *claudemacs:/path/to/dir/* -> /path/to/dir
+                             (when (string-match "^\\*claudemacs:\\(.*\\)\\*$" target-buffer)
+                               (match-string 1 target-buffer))))))
+          (unless work-dir
+            (error "Cannot determine working directory for buffer '%s'" target-buffer))
+          ;; Use run-at-time to defer execution so we can return a response first
+          (run-at-time 0.5 nil
+                       (lambda (buf dir)
+                         (when (get-buffer buf)
+                           (with-current-buffer buf
+                             ;; Kill the current session
+                             (eat-kill-process)
+                             (kill-buffer buf)
+                             ;; Wait a moment, then restart with resume in the same directory
+                             (run-at-time 0.3 nil
+                                         (lambda (work-dir)
+                                           (require 'claudemacs)
+                                           (claudemacs--start work-dir "--resume")
+                                           ;; Auto-select first session after resume prompt appears
+                                           (run-at-time 2.0 nil
+                                                       (lambda ()
+                                                         (let ((resume-buffer (get-buffer (format "*claudemacs:%s*" work-dir))))
+                                                           (when (and resume-buffer (buffer-live-p resume-buffer))
+                                                             (with-current-buffer resume-buffer
+                                                               (when (and (boundp 'eat-terminal) eat-terminal)
+                                                                 ;; Send "1" and Enter to select first session
+                                                                 (eat-term-send-string eat-terminal "1")
+                                                                 (eat-term-input-event eat-terminal 1 'return))))))))
+                                         dir))))
+                       target-buffer work-dir)
+          (format "Restart scheduled for buffer '%s' in directory '%s' - session will reload and resume shortly"
+                  target-buffer work-dir))
+      (error "Buffer '%s' is not a claudemacs buffer" target-buffer))))
+
 ;;;; Setup and Integration
 
 (defun claudemacs-ai-get-cli-path ()

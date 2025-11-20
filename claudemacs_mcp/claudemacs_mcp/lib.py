@@ -117,3 +117,41 @@ def exec_in_terminal(buffer_name: str, command: str, timeout: int = 30, socket: 
 def eval_elisp(expression: str, socket: Optional[str] = None) -> str:
     """Evaluate arbitrary elisp expression."""
     return call_emacs(expression, socket)
+
+
+# Memory buffer operations
+
+def get_memory(socket: Optional[str] = None) -> str:
+    """Get the memory buffer content for the current session."""
+    elisp = '(claudemacs-ai-get-memory)'
+    result = call_emacs(elisp, socket)
+    return unescape_elisp_string(result)
+
+
+def set_memory(content: str, socket: Optional[str] = None) -> str:
+    """Set the memory buffer content, replacing existing content."""
+    escaped_content = escape_elisp_string(content)
+    elisp = f'(claudemacs-ai-set-memory "{escaped_content}")'
+    return call_emacs(elisp, socket)
+
+
+def append_memory(content: str, socket: Optional[str] = None) -> str:
+    """Append content to the memory buffer."""
+    escaped_content = escape_elisp_string(content)
+    elisp = f'(claudemacs-ai-append-memory "{escaped_content}")'
+    return call_emacs(elisp, socket)
+
+
+def clear_memory(socket: Optional[str] = None) -> str:
+    """Clear the memory buffer."""
+    elisp = '(claudemacs-ai-clear-memory)'
+    return call_emacs(elisp, socket)
+
+
+# Session management
+
+def restart_and_resume(socket: Optional[str] = None) -> str:
+    """Restart the claudemacs session and resume the conversation.
+    This reloads the MCP server with any code changes."""
+    elisp = '(claudemacs-ai-restart-and-resume)'
+    return call_emacs(elisp, socket)

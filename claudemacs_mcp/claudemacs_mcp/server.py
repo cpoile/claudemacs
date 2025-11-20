@@ -181,6 +181,58 @@ async def list_tools() -> list[Tool]:
                 "required": ["buffer_name", "command"]
             }
         ),
+        Tool(
+            name="get_memory",
+            description="Get the content of the memory buffer for this Claude session. Memory persists between commands and can be used to track context, notes, todos, or any information you want to remember.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="set_memory",
+            description="Set the memory buffer content, replacing any existing content. Use this to store context, notes, or information you want to remember across commands.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Content to store in memory"
+                    }
+                },
+                "required": ["content"]
+            }
+        ),
+        Tool(
+            name="append_memory",
+            description="Append content to the memory buffer without replacing existing content. Useful for incrementally building up notes or context.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Content to append to memory"
+                    }
+                },
+                "required": ["content"]
+            }
+        ),
+        Tool(
+            name="clear_memory",
+            description="Clear all content from the memory buffer.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="restart_and_resume",
+            description="Restart the claudemacs session and resume the conversation. This reloads the MCP server to pick up any code changes to the MCP tools. Use this when you've made changes to the MCP server code and need the new tools to be available.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -242,6 +294,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             command = arguments["command"]
             timeout = arguments.get("timeout", 30)
             result = lib.exec_in_terminal(buffer_name, command, timeout)
+            return [TextContent(type="text", text=result)]
+
+        elif name == "get_memory":
+            result = lib.get_memory()
+            return [TextContent(type="text", text=result)]
+
+        elif name == "set_memory":
+            content = arguments["content"]
+            result = lib.set_memory(content)
+            return [TextContent(type="text", text=result)]
+
+        elif name == "append_memory":
+            content = arguments["content"]
+            result = lib.append_memory(content)
+            return [TextContent(type="text", text=result)]
+
+        elif name == "clear_memory":
+            result = lib.clear_memory()
+            return [TextContent(type="text", text=result)]
+
+        elif name == "restart_and_resume":
+            result = lib.restart_and_resume()
             return [TextContent(type="text", text=result)]
 
         else:
