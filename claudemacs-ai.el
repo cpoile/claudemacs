@@ -23,6 +23,12 @@
 
 (require 'comint nil 'noerror)
 
+;; Dynamic variable for session context (set by MCP server via let binding)
+(defvar claudemacs-session-cwd nil
+  "The working directory for the current claudemacs session.
+Set by the MCP server via a let binding to provide session context.
+This must be defvar'd to be dynamically scoped in lexical-binding mode.")
+
 ;;;; Buffer Content Operations
 
 (defun claudemacs-ai-insert-in-buffer (buffer-name text)
@@ -226,8 +232,13 @@ Note: This function blocks but uses non-blocking waits to avoid freezing Emacs."
 
 (defun claudemacs-ai--get-memory-buffer-name ()
   "Get the name of the memory buffer for the current session.
-Uses the current buffer's working directory to create a unique buffer per session."
+Uses the session's working directory to create a unique buffer per session.
+Checks for `claudemacs-session-cwd' (set by MCP server via let binding),
+then falls back to other methods."
   (let ((work-dir (cond
+                   ;; First priority: MCP server provides cwd via let binding
+                   ((and (boundp 'claudemacs-session-cwd) claudemacs-session-cwd)
+                    claudemacs-session-cwd)
                    ;; If in a claudemacs buffer, use its cwd
                    ((and (boundp 'claudemacs--cwd) claudemacs--cwd)
                     claudemacs--cwd)
@@ -240,11 +251,12 @@ Uses the current buffer's working directory to create a unique buffer per sessio
     (format "*claudemacs-memory:%s*" (file-name-nondirectory (directory-file-name work-dir)))))
 
 (defun claudemacs-ai--ensure-memory-buffer ()
-  "Ensure the memory buffer exists and return it."
+  "Ensure the memory buffer exists and return it.
+The buffer uses `org-mode' for structured note-taking."
   (let ((buffer-name (claudemacs-ai--get-memory-buffer-name)))
     (or (get-buffer buffer-name)
         (with-current-buffer (get-buffer-create buffer-name)
-          (text-mode)
+          (org-mode)
           (setq-local buffer-read-only nil)
           (current-buffer)))))
 
@@ -278,6 +290,304 @@ Designed to be called via emacsclient by Claude AI."
   (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
     (erase-buffer)
     "Memory cleared"))
+
+;;;; Org-mode Memory Operations
+
+(defun claudemacs-ai-memory-add-heading (level title)
+  "Add a heading with LEVEL stars and TITLE to the memory buffer.
+LEVEL should be 1-6. Adds at point-max.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-max))
+    (unless (or (bobp) (eq (char-before) ?\n))
+      (insert "\n"))
+    (insert (make-string level ?*) " " title "\n")
+    (format "Added level %d heading: %s" level title)))
+
+(defun claudemacs-ai-memory-add-todo (level title &optional priority)
+  "Add a TODO heading with LEVEL stars and TITLE to memory buffer.
+Optional PRIORITY should be A, B, or C.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-max))
+    (unless (or (bobp) (eq (char-before) ?\n))
+      (insert "\n"))
+    (insert (make-string level ?*) " TODO ")
+    (when priority
+      (insert (format "[#%s] " (upcase priority))))
+    (insert title "\n")
+    (format "Added TODO: %s" title)))
+
+(defun claudemacs-ai-memory-toggle-todo ()
+  "Toggle TODO state of the heading at point in memory buffer.
+Cycles through: unmarked -> TODO -> DONE -> unmarked.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-todo)
+    (let ((state (org-get-todo-state)))
+      (format "TODO state: %s" (or state "none")))))
+
+(defun claudemacs-ai-memory-set-todo-state (state)
+  "Set the TODO STATE of heading at point in memory buffer.
+STATE should be TODO, DONE, or empty string to clear.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-todo (if (string-empty-p state) 'none state))
+    (format "Set TODO state to: %s" (or state "none"))))
+
+(defun claudemacs-ai-memory-add-timestamp (&optional inactive)
+  "Add current timestamp at point-max in memory buffer.
+If INACTIVE is non-nil, use inactive timestamp [date] instead of <date>.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-max))
+    (let ((ts (format-time-string (if inactive "[%Y-%m-%d %a %H:%M]" "<%Y-%m-%d %a %H:%M>"))))
+      (insert ts)
+      (format "Added timestamp: %s" ts))))
+
+(defun claudemacs-ai-memory-get-headings ()
+  "Get all headings from the memory buffer as a structured list.
+Returns list of (level title todo-state) for each heading.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-map-entries
+     (lambda ()
+       (list (org-current-level)
+             (org-get-heading t t t t)
+             (org-get-todo-state)))
+     nil nil)))
+
+(defun claudemacs-ai-memory-goto-heading (title)
+  "Go to the first heading matching TITLE in memory buffer.
+Returns the position or nil if not found.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-min))
+    (if (re-search-forward (format org-complex-heading-regexp-format (regexp-quote title)) nil t)
+        (progn
+          (org-beginning-of-line)
+          (format "Moved to heading: %s at position %d" title (point)))
+      (format "Heading not found: %s" title))))
+
+(defun claudemacs-ai-memory-add-list-item (text &optional checkbox)
+  "Add a list item with TEXT to memory buffer at point-max.
+If CHECKBOX is non-nil, add a checkbox.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-max))
+    (unless (or (bobp) (eq (char-before) ?\n))
+      (insert "\n"))
+    (insert "- ")
+    (when checkbox
+      (insert "[ ] "))
+    (insert text "\n")
+    (format "Added list item: %s" text)))
+
+(defun claudemacs-ai-memory-toggle-checkbox ()
+  "Toggle checkbox at current line in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-toggle-checkbox)
+    "Toggled checkbox"))
+
+(defun claudemacs-ai-memory-schedule (timestamp)
+  "Add SCHEDULED timestamp to heading at point in memory buffer.
+TIMESTAMP should be org-compatible like '<2024-01-15 Mon>' or '+1d'.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-schedule nil timestamp)
+    (format "Scheduled: %s" timestamp)))
+
+(defun claudemacs-ai-memory-deadline (timestamp)
+  "Add DEADLINE timestamp to heading at point in memory buffer.
+TIMESTAMP should be org-compatible like '<2024-01-15 Mon>' or '+1d'.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-deadline nil timestamp)
+    (format "Deadline: %s" timestamp)))
+
+(defun claudemacs-ai-memory-set-property (property value)
+  "Set PROPERTY to VALUE on heading at point in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-set-property property value)
+    (format "Set property %s = %s" property value)))
+
+(defun claudemacs-ai-memory-set-tags (tags)
+  "Set TAGS on heading at point in memory buffer.
+TAGS should be a colon-separated string like ':tag1:tag2:'.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-set-tags tags)
+    (format "Set tags: %s" tags)))
+
+(defun claudemacs-ai-memory-clock-in ()
+  "Start clocking time on heading at point in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-clock-in)
+    "Clock started"))
+
+(defun claudemacs-ai-memory-clock-out ()
+  "Stop clocking time in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-clock-out)
+    "Clock stopped"))
+
+(defun claudemacs-ai-memory-add-note ()
+  "Add a note to heading at point in memory buffer (with timestamp).
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-add-note)
+    "Note drawer added - ready for input"))
+
+(defun claudemacs-ai-memory-set-effort (effort)
+  "Set effort estimate EFFORT on heading at point.
+EFFORT should be like '1:30' for 1 hour 30 minutes.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-set-effort nil effort)
+    (format "Effort set: %s" effort)))
+
+(defun claudemacs-ai-memory-archive-subtree ()
+  "Archive the subtree at point in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-archive-subtree)
+    "Subtree archived"))
+
+(defun claudemacs-ai-memory-insert-link (url &optional description)
+  "Insert an org link to URL with optional DESCRIPTION at point-max.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (goto-char (point-max))
+    (if description
+        (insert (format "[[%s][%s]]" url description))
+      (insert (format "[[%s]]" url)))
+    (format "Inserted link: %s" url)))
+
+(defun claudemacs-ai-memory-sparse-tree (query)
+  "Create a sparse tree in memory buffer matching QUERY.
+QUERY can be a tag match like '+work-urgent' or a property match.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-match-sparse-tree nil query)
+    (format "Sparse tree created for: %s" query)))
+
+(defun claudemacs-ai-memory-get-property (property)
+  "Get the value of PROPERTY from heading at point in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (or (org-entry-get (point) property)
+        "nil")))
+
+(defun claudemacs-ai-memory-promote ()
+  "Promote heading at point (decrease level) in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-promote-subtree)
+    "Heading promoted"))
+
+(defun claudemacs-ai-memory-demote ()
+  "Demote heading at point (increase level) in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-demote-subtree)
+    "Heading demoted"))
+
+(defun claudemacs-ai-memory-move-up ()
+  "Move subtree at point up in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-move-subtree-up)
+    "Subtree moved up"))
+
+(defun claudemacs-ai-memory-move-down ()
+  "Move subtree at point down in memory buffer.
+Designed to be called via emacsclient by Claude AI."
+  (with-current-buffer (claudemacs-ai--ensure-memory-buffer)
+    (org-move-subtree-down)
+    "Subtree moved down"))
+
+;;;; Buffer Watching and Streaming
+
+(defun claudemacs-ai-watch-buffer (buffer-name &optional timeout stable-time)
+  "Watch BUFFER-NAME until content stabilizes or TIMEOUT seconds.
+Returns buffer content after no changes for STABLE-TIME seconds (default 0.5).
+TIMEOUT defaults to 30 seconds.
+Designed to be called via emacsclient by Claude AI."
+  (if (get-buffer buffer-name)
+      (let ((timeout-secs (or timeout 30))
+            (stable-secs (or stable-time 0.5))
+            (start-time (current-time))
+            (last-content "")
+            (last-change-time (current-time)))
+        (catch 'done
+          (while (< (float-time (time-subtract (current-time) start-time)) timeout-secs)
+            (let ((current-content (with-current-buffer buffer-name
+                                     (buffer-substring-no-properties (point-min) (point-max)))))
+              (if (string= current-content last-content)
+                  ;; Content stable - check if stable long enough
+                  (when (>= (float-time (time-subtract (current-time) last-change-time)) stable-secs)
+                    (throw 'done current-content))
+                ;; Content changed - reset timer
+                (setq last-content current-content
+                      last-change-time (current-time))))
+            (accept-process-output nil 0.1)))
+        ;; Timeout - return current content
+        (with-current-buffer buffer-name
+          (buffer-substring-no-properties (point-min) (point-max))))
+    (error "Buffer '%s' does not exist" buffer-name)))
+
+(defun claudemacs-ai-watch-for-pattern (buffer-name pattern &optional timeout)
+  "Watch BUFFER-NAME until PATTERN appears or TIMEOUT seconds.
+Returns plist with :match, :line, and :pos, or nil if timeout.
+Designed to be called via emacsclient by Claude AI."
+  (if (get-buffer buffer-name)
+      (let ((timeout-secs (or timeout 30))
+            (start-time (current-time)))
+        (catch 'found
+          (while (< (float-time (time-subtract (current-time) start-time)) timeout-secs)
+            (with-current-buffer buffer-name
+              (save-excursion
+                (goto-char (point-min))
+                (when (re-search-forward pattern nil t)
+                  (throw 'found (list :match (match-string 0)
+                                      :line (thing-at-point 'line t)
+                                      :pos (match-beginning 0))))))
+            (accept-process-output nil 0.1))
+          nil))
+    (error "Buffer '%s' does not exist" buffer-name)))
+
+(defun claudemacs-ai-send-and-watch (buffer-name input &optional done-pattern timeout)
+  "Send INPUT to BUFFER-NAME and watch until DONE-PATTERN or stable.
+If DONE-PATTERN is provided, wait for it. Otherwise wait for stability.
+Returns new content added after sending input.
+Designed to be called via emacsclient by Claude AI."
+  (if (get-buffer buffer-name)
+      (let ((start-pos (with-current-buffer buffer-name (point-max))))
+        ;; Send input
+        (with-current-buffer buffer-name
+          (cond
+           ((and (boundp 'eat-terminal) eat-terminal)
+            (eat-term-send-string eat-terminal input)
+            (eat-term-input-event eat-terminal 1 'return))
+           ((derived-mode-p 'comint-mode)
+            (goto-char (point-max))
+            (insert input)
+            (comint-send-input))
+           (t
+            (goto-char (point-max))
+            (insert input "\n"))))
+        ;; Watch for completion
+        (if done-pattern
+            (claudemacs-ai-watch-for-pattern buffer-name done-pattern timeout)
+          ;; Return new content after stabilization
+          (claudemacs-ai-watch-buffer buffer-name timeout 1.0)
+          (with-current-buffer buffer-name
+            (buffer-substring-no-properties start-pos (point-max)))))
+    (error "Buffer '%s' does not exist" buffer-name)))
 
 ;;;; Session Management
 

@@ -1,0 +1,437 @@
+# Claudemacs MCP Tool Definitions
+# Each tool maps to an elisp function that will be called via emacsclient
+#
+# Flags:
+#   safe: true  - Tool will be auto-approved (no permission prompt)
+#                 Use for read-only operations and memory tools
+
+tools:
+  # Buffer reading operations (safe - read only)
+  get_buffer_content:
+    description: "Get the content of an Emacs buffer. Can optionally get only the last N lines."
+    elisp: claudemacs-ai-get-buffer-content
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer (e.g. 'main.py', '*scratch*')"
+        required: true
+      tail_lines:
+        type: integer
+        description: "Optional: get only the last N lines"
+
+  list_buffers:
+    description: "List all open buffers in Emacs."
+    elisp: claudemacs-ai-list-buffers
+    safe: true
+
+  buffer_info:
+    description: "Get detailed information about a buffer (file path, size, major mode, cursor position, etc.)."
+    elisp: claudemacs-ai-buffer-info
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+
+  get_region:
+    description: "Get content from a specific region in a buffer by character positions."
+    elisp: claudemacs-ai-get-region
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      start:
+        type: integer
+        description: "Start position (1-indexed)"
+        required: true
+      end:
+        type: integer
+        description: "End position (1-indexed)"
+        required: true
+
+  # Buffer modification operations
+  insert_in_buffer:
+    description: "[WRITE] Insert text into a buffer at the current point position."
+    elisp: claudemacs-ai-insert-in-buffer
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      text:
+        type: string
+        description: "Text to insert"
+        required: true
+
+  replace_region:
+    description: "[WRITE] Replace content in a specific region of a buffer."
+    elisp: claudemacs-ai-replace-region
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      start:
+        type: integer
+        description: "Start position (1-indexed)"
+        required: true
+      end:
+        type: integer
+        description: "End position (1-indexed)"
+        required: true
+      text:
+        type: string
+        description: "Replacement text"
+        required: true
+
+  goto_point:
+    description: "[WRITE] Move the cursor (point) to a specific position in a buffer."
+    elisp: claudemacs-ai-goto-point
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      position:
+        type: integer
+        description: "Position to move to (1-indexed)"
+        required: true
+
+  # REPL/Terminal operations
+  send_input:
+    description: "[EXECUTE] Send input to a REPL buffer (works with eat, comint, eshell)."
+    elisp: claudemacs-ai-send-input
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the REPL buffer (e.g. '*Python*', '*eshell*')"
+        required: true
+      text:
+        type: string
+        description: "Text/command to send"
+        required: true
+
+  exec_in_terminal:
+    description: "[EXECUTE] Execute a shell command in an eat terminal buffer and wait for completion."
+    elisp: claudemacs-ai-exec-in-eat-terminal
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the eat terminal buffer"
+        required: true
+      command:
+        type: string
+        description: "Shell command to execute"
+        required: true
+      timeout:
+        type: integer
+        description: "Timeout in seconds (default: 30)"
+
+  # Buffer watching/streaming operations (safe - read only, blocks until condition)
+  watch_buffer:
+    description: "Watch a buffer until its content stabilizes (stops changing). Useful for waiting on async processes."
+    elisp: claudemacs-ai-watch-buffer
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer to watch"
+        required: true
+      timeout:
+        type: integer
+        description: "Maximum seconds to wait (default: 30)"
+      stable_time:
+        type: number
+        description: "Seconds of no change before considered stable (default: 0.5)"
+
+  watch_for_pattern:
+    description: "Watch a buffer until a regex pattern appears. Returns match info or nil on timeout."
+    elisp: claudemacs-ai-watch-for-pattern
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer to watch"
+        required: true
+      pattern:
+        type: string
+        description: "Regex pattern to wait for"
+        required: true
+      timeout:
+        type: integer
+        description: "Maximum seconds to wait (default: 30)"
+
+  send_and_watch:
+    description: "[EXECUTE] Send input to a buffer and wait for completion. Returns new content after input."
+    elisp: claudemacs-ai-send-and-watch
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer (eat terminal, comint, or regular)"
+        required: true
+      input:
+        type: string
+        description: "Text/command to send"
+        required: true
+      done_pattern:
+        type: string
+        description: "Optional regex pattern that signals completion (otherwise waits for stability)"
+      timeout:
+        type: integer
+        description: "Maximum seconds to wait (default: 30)"
+
+  # Memory operations (all safe - isolated memory buffer)
+  get_memory:
+    description: "Get the content of the memory buffer for this Claude session."
+    elisp: claudemacs-ai-get-memory
+    safe: true
+
+  set_memory:
+    description: "Set the memory buffer content, replacing any existing content."
+    elisp: claudemacs-ai-set-memory
+    safe: true
+    args:
+      content:
+        type: string
+        description: "Content to store in memory"
+        required: true
+
+  append_memory:
+    description: "Append content to the memory buffer without replacing existing content."
+    elisp: claudemacs-ai-append-memory
+    safe: true
+    args:
+      content:
+        type: string
+        description: "Content to append to memory"
+        required: true
+
+  clear_memory:
+    description: "Clear all content from the memory buffer."
+    elisp: claudemacs-ai-clear-memory
+    safe: true
+
+  # Session management
+  restart_and_resume:
+    description: "Restart the claudemacs session and resume the conversation."
+    elisp: claudemacs-ai-restart-and-resume
+
+  # Generic elisp evaluation
+  eval_elisp:
+    description: "Evaluate arbitrary Emacs Lisp expression. Returns the result."
+    elisp: eval
+    args:
+      expression:
+        type: string
+        description: "The elisp expression to evaluate"
+        required: true
+
+  # Org-mode memory operations (all safe - isolated memory buffer)
+  memory_add_heading:
+    description: "Add an org heading to the memory buffer. Use this to organize notes and context."
+    elisp: claudemacs-ai-memory-add-heading
+    safe: true
+    args:
+      level:
+        type: integer
+        description: "Heading level (1-6, where 1 is top-level)"
+        required: true
+      title:
+        type: string
+        description: "The heading title"
+        required: true
+
+  memory_add_todo:
+    description: "Add a TODO item to the memory buffer. Great for tracking tasks."
+    elisp: claudemacs-ai-memory-add-todo
+    safe: true
+    args:
+      level:
+        type: integer
+        description: "Heading level (1-6)"
+        required: true
+      title:
+        type: string
+        description: "The TODO title"
+        required: true
+      priority:
+        type: string
+        description: "Priority A, B, or C (optional)"
+
+  memory_set_todo_state:
+    description: "Set the TODO state of heading at point. Use after goto_heading."
+    elisp: claudemacs-ai-memory-set-todo-state
+    safe: true
+    args:
+      state:
+        type: string
+        description: "TODO, DONE, or empty string to clear"
+        required: true
+
+  memory_add_timestamp:
+    description: "Add current timestamp to memory buffer."
+    elisp: claudemacs-ai-memory-add-timestamp
+    safe: true
+    args:
+      inactive:
+        type: boolean
+        description: "If true, use inactive [timestamp] instead of active <timestamp>"
+
+  memory_get_headings:
+    description: "Get all headings from memory buffer as structured list of (level, title, todo-state)."
+    elisp: claudemacs-ai-memory-get-headings
+    safe: true
+
+  memory_goto_heading:
+    description: "Move point to a heading by title. Use before toggle/set operations."
+    elisp: claudemacs-ai-memory-goto-heading
+    safe: true
+    args:
+      title:
+        type: string
+        description: "The heading title to find"
+        required: true
+
+  memory_add_list_item:
+    description: "Add a list item to memory buffer. Can include checkbox for task lists."
+    elisp: claudemacs-ai-memory-add-list-item
+    safe: true
+    args:
+      text:
+        type: string
+        description: "The list item text"
+        required: true
+      checkbox:
+        type: boolean
+        description: "If true, add a checkbox [ ]"
+
+  memory_toggle_checkbox:
+    description: "Toggle checkbox at current position in memory buffer."
+    elisp: claudemacs-ai-memory-toggle-checkbox
+    safe: true
+
+  memory_schedule:
+    description: "Add SCHEDULED timestamp to heading at point. Use after goto_heading."
+    elisp: claudemacs-ai-memory-schedule
+    safe: true
+    args:
+      timestamp:
+        type: string
+        description: "Org timestamp like '<2024-01-15 Mon>' or relative like '+1d', '+1w'"
+        required: true
+
+  memory_deadline:
+    description: "Add DEADLINE timestamp to heading at point. Use after goto_heading."
+    elisp: claudemacs-ai-memory-deadline
+    safe: true
+    args:
+      timestamp:
+        type: string
+        description: "Org timestamp like '<2024-01-15 Mon>' or relative like '+1d', '+1w'"
+        required: true
+
+  memory_set_property:
+    description: "Set a property on heading at point. Use after goto_heading."
+    elisp: claudemacs-ai-memory-set-property
+    safe: true
+    args:
+      property:
+        type: string
+        description: "Property name (e.g., 'URL', 'CATEGORY')"
+        required: true
+      value:
+        type: string
+        description: "Property value"
+        required: true
+
+  memory_get_property:
+    description: "Get a property value from heading at point."
+    elisp: claudemacs-ai-memory-get-property
+    safe: true
+    args:
+      property:
+        type: string
+        description: "Property name to retrieve"
+        required: true
+
+  memory_set_tags:
+    description: "Set tags on heading at point. Use after goto_heading."
+    elisp: claudemacs-ai-memory-set-tags
+    safe: true
+    args:
+      tags:
+        type: string
+        description: "Colon-separated tags like ':work:urgent:' or 'work:urgent'"
+        required: true
+
+  memory_clock_in:
+    description: "Start time tracking on heading at point."
+    elisp: claudemacs-ai-memory-clock-in
+    safe: true
+
+  memory_clock_out:
+    description: "Stop time tracking."
+    elisp: claudemacs-ai-memory-clock-out
+    safe: true
+
+  memory_set_effort:
+    description: "Set effort estimate on heading at point."
+    elisp: claudemacs-ai-memory-set-effort
+    safe: true
+    args:
+      effort:
+        type: string
+        description: "Effort like '1:30' for 1h30m, or '30' for 30 minutes"
+        required: true
+
+  memory_archive_subtree:
+    description: "Archive the subtree at point (moves to archive file)."
+    elisp: claudemacs-ai-memory-archive-subtree
+    safe: true
+
+  memory_insert_link:
+    description: "Insert an org link at point-max."
+    elisp: claudemacs-ai-memory-insert-link
+    safe: true
+    args:
+      url:
+        type: string
+        description: "The URL or link target"
+        required: true
+      description:
+        type: string
+        description: "Optional link description text"
+
+  memory_sparse_tree:
+    description: "Show only headings matching a query (tags, properties)."
+    elisp: claudemacs-ai-memory-sparse-tree
+    safe: true
+    args:
+      query:
+        type: string
+        description: "Match query like '+work-urgent' or 'PRIORITY=\"A\"'"
+        required: true
+
+  memory_promote:
+    description: "Promote heading at point (decrease level, e.g., ** -> *)."
+    elisp: claudemacs-ai-memory-promote
+    safe: true
+
+  memory_demote:
+    description: "Demote heading at point (increase level, e.g., * -> **)."
+    elisp: claudemacs-ai-memory-demote
+    safe: true
+
+  memory_move_up:
+    description: "Move subtree at point up (swap with previous sibling)."
+    elisp: claudemacs-ai-memory-move-up
+    safe: true
+
+  memory_move_down:
+    description: "Move subtree at point down (swap with next sibling)."
+    elisp: claudemacs-ai-memory-move-down
+    safe: true

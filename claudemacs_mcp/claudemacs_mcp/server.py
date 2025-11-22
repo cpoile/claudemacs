@@ -1,325 +1,158 @@
 #!/usr/bin/env python3
-"""Claudemacs MCP Server - Expose Emacs buffer operations to Claude via MCP."""
+"""Claudemacs MCP Server - Expose Emacs operations to Claude via MCP.
 
+Tools are defined in tools.yaml and dynamically loaded at startup.
+"""
+
+from pathlib import Path
+
+import yaml
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-# Import shared library functions
 from . import lib
 
 
 # Create the MCP server
 app = Server("claudemacs")
 
+# Load tool definitions from YAML
+TOOLS_FILE = Path(__file__).parent.parent / "tools.yaml"
+TOOL_DEFS: dict = {}
+
+
+def load_tools() -> dict:
+    """Load tool definitions from YAML file."""
+    global TOOL_DEFS
+    with open(TOOLS_FILE) as f:
+        data = yaml.safe_load(f)
+    TOOL_DEFS = data.get("tools", {})
+    return TOOL_DEFS
+
+
+def build_input_schema(tool_def: dict) -> dict:
+    """Build JSON schema from tool definition."""
+    args = tool_def.get("args", {})
+    if not args:
+        return {"type": "object", "properties": {}}
+
+    properties = {}
+    required = []
+
+    for arg_name, arg_def in args.items():
+        properties[arg_name] = {
+            "type": arg_def.get("type", "string"),
+            "description": arg_def.get("description", ""),
+        }
+        if arg_def.get("required", False):
+            required.append(arg_name)
+
+    schema = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available Emacs interaction tools."""
-    return [
-        Tool(
-            name="get_buffer_content",
-            description="Get the content of an Emacs buffer. Can optionally get only the last N lines using tail_lines parameter.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the buffer (e.g. 'main.py', '*scratch*')"
-                    },
-                    "tail_lines": {
-                        "type": "integer",
-                        "description": "Optional: get only the last N lines",
-                    }
-                },
-                "required": ["buffer_name"]
-            }
-        ),
-        Tool(
-            name="list_buffers",
-            description="List all open buffers in Emacs.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
-        ),
-        Tool(
-            name="buffer_info",
-            description="Get detailed information about a buffer (file path, size, major mode, cursor position, etc.).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the buffer"
-                    }
-                },
-                "required": ["buffer_name"]
-            }
-        ),
-        Tool(
-            name="get_region",
-            description="Get content from a specific region in a buffer by character positions.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the buffer"
-                    },
-                    "start": {
-                        "type": "integer",
-                        "description": "Start position (1-indexed)"
-                    },
-                    "end": {
-                        "type": "integer",
-                        "description": "End position (1-indexed)"
-                    }
-                },
-                "required": ["buffer_name", "start", "end"]
-            }
-        ),
-        Tool(
-            name="insert_in_buffer",
-            description="[WRITE] Insert text into a buffer at the current point position. This modifies the buffer content.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the buffer"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Text to insert"
-                    }
-                },
-                "required": ["buffer_name", "text"]
-            }
-        ),
-        Tool(
-            name="replace_region",
-            description="[WRITE] Replace content in a specific region of a buffer. This modifies the buffer content.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the buffer"
-                    },
-                    "start": {
-                        "type": "integer",
-                        "description": "Start position (1-indexed)"
-                    },
-                    "end": {
-                        "type": "integer",
-                        "description": "End position (1-indexed)"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Replacement text"
-                    }
-                },
-                "required": ["buffer_name", "start", "end", "text"]
-            }
-        ),
-        Tool(
-            name="goto_point",
-            description="[WRITE] Move the cursor (point) to a specific position in a buffer. This changes buffer state.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the buffer"
-                    },
-                    "position": {
-                        "type": "integer",
-                        "description": "Position to move to (1-indexed)"
-                    }
-                },
-                "required": ["buffer_name", "position"]
-            }
-        ),
-        Tool(
-            name="send_input",
-            description="[EXECUTE] Send input to a REPL buffer (works with eat, comint, eshell). The text will be inserted and executed. Use with caution as this runs code.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the REPL buffer (e.g. '*Python*', '*eshell*')"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Text/command to send"
-                    }
-                },
-                "required": ["buffer_name", "text"]
-            }
-        ),
-        Tool(
-            name="exec_in_terminal",
-            description="[EXECUTE] Execute a shell command in an eat terminal buffer and wait for it to complete, returning the output. Use with caution as this runs arbitrary commands.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "buffer_name": {
-                        "type": "string",
-                        "description": "Name of the eat terminal buffer"
-                    },
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute"
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Timeout in seconds (default: 30)"
-                    }
-                },
-                "required": ["buffer_name", "command"]
-            }
-        ),
-        Tool(
-            name="get_memory",
-            description="Get the content of the memory buffer for this Claude session. Memory persists between commands and can be used to track context, notes, todos, or any information you want to remember.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
-        ),
-        Tool(
-            name="set_memory",
-            description="Set the memory buffer content, replacing any existing content. Use this to store context, notes, or information you want to remember across commands.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "Content to store in memory"
-                    }
-                },
-                "required": ["content"]
-            }
-        ),
-        Tool(
-            name="append_memory",
-            description="Append content to the memory buffer without replacing existing content. Useful for incrementally building up notes or context.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "Content to append to memory"
-                    }
-                },
-                "required": ["content"]
-            }
-        ),
-        Tool(
-            name="clear_memory",
-            description="Clear all content from the memory buffer.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
-        ),
-        Tool(
-            name="restart_and_resume",
-            description="Restart the claudemacs session and resume the conversation. This reloads the MCP server to pick up any code changes to the MCP tools. Use this when you've made changes to the MCP server code and need the new tools to be available.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
-        ),
-    ]
+    """List available Emacs interaction tools from YAML definitions."""
+    # Reload tools on each list_tools call to pick up changes
+    load_tools()
+
+    tools = []
+    for name, tool_def in TOOL_DEFS.items():
+        tools.append(Tool(
+            name=name,
+            description=tool_def.get("description", ""),
+            inputSchema=build_input_schema(tool_def),
+        ))
+    return tools
+
+
+def escape_elisp_string(s: str) -> str:
+    """Escape a string for use in elisp."""
+    return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+
+
+def build_elisp_call(elisp_fn: str, args: dict, arg_defs: dict) -> str:
+    """Build an elisp function call from tool arguments."""
+    if not arg_defs:
+        return f"({elisp_fn})"
+
+    # Build argument list in definition order
+    elisp_args = []
+    for arg_name, arg_def in arg_defs.items():
+        if arg_name in args:
+            value = args[arg_name]
+            arg_type = arg_def.get("type", "string")
+
+            if arg_type == "string":
+                elisp_args.append(f'"{escape_elisp_string(str(value))}"')
+            elif arg_type == "integer":
+                elisp_args.append(str(int(value)))
+            elif arg_type == "boolean":
+                elisp_args.append("t" if value else "nil")
+            else:
+                elisp_args.append(f'"{escape_elisp_string(str(value))}"')
+        elif not arg_def.get("required", False):
+            # Optional arg not provided - skip (elisp will use default)
+            # But we need to stop here to avoid positional arg issues
+            break
+
+    if elisp_args:
+        return f"({elisp_fn} {' '.join(elisp_args)})"
+    return f"({elisp_fn})"
+
+
+def is_memory_tool(name: str) -> bool:
+    """Check if a tool operates on the memory buffer."""
+    return name.startswith("memory_") or name in {
+        "get_memory", "set_memory", "append_memory", "clear_memory"
+    }
+
+
+def wrap_with_cwd(elisp_expr: str, cwd: str) -> str:
+    """Wrap an elisp expression with a let binding for claudemacs-session-cwd."""
+    escaped_cwd = escape_elisp_string(cwd)
+    return f'(let ((claudemacs-session-cwd "{escaped_cwd}")) {elisp_expr})'
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool calls for Emacs operations."""
-
+    """Handle tool calls by invoking the corresponding elisp function."""
     try:
-        if name == "get_buffer_content":
-            buffer_name = arguments["buffer_name"]
-            tail_lines = arguments.get("tail_lines")
-            content = lib.get_buffer_content(buffer_name, tail_lines)
-            return [TextContent(type="text", text=content)]
-
-        elif name == "list_buffers":
-            result = lib.list_buffers()
-            return [TextContent(type="text", text=result)]
-
-        elif name == "buffer_info":
-            buffer_name = arguments["buffer_name"]
-            result = lib.buffer_info(buffer_name)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "get_region":
-            buffer_name = arguments["buffer_name"]
-            start = arguments["start"]
-            end = arguments["end"]
-            content = lib.get_region(buffer_name, start, end)
-            return [TextContent(type="text", text=content)]
-
-        elif name == "insert_in_buffer":
-            buffer_name = arguments["buffer_name"]
-            text = arguments["text"]
-            result = lib.insert_in_buffer(buffer_name, text)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "replace_region":
-            buffer_name = arguments["buffer_name"]
-            start = arguments["start"]
-            end = arguments["end"]
-            text = arguments["text"]
-            result = lib.replace_region(buffer_name, start, end, text)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "goto_point":
-            buffer_name = arguments["buffer_name"]
-            position = arguments["position"]
-            result = lib.goto_point(buffer_name, position)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "send_input":
-            buffer_name = arguments["buffer_name"]
-            text = arguments["text"]
-            result = lib.send_input(buffer_name, text)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "exec_in_terminal":
-            buffer_name = arguments["buffer_name"]
-            command = arguments["command"]
-            timeout = arguments.get("timeout", 30)
-            result = lib.exec_in_terminal(buffer_name, command, timeout)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "get_memory":
-            result = lib.get_memory()
-            return [TextContent(type="text", text=result)]
-
-        elif name == "set_memory":
-            content = arguments["content"]
-            result = lib.set_memory(content)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "append_memory":
-            content = arguments["content"]
-            result = lib.append_memory(content)
-            return [TextContent(type="text", text=result)]
-
-        elif name == "clear_memory":
-            result = lib.clear_memory()
-            return [TextContent(type="text", text=result)]
-
-        elif name == "restart_and_resume":
-            result = lib.restart_and_resume()
-            return [TextContent(type="text", text=result)]
-
-        else:
+        if name not in TOOL_DEFS:
             raise ValueError(f"Unknown tool: {name}")
+
+        tool_def = TOOL_DEFS[name]
+        elisp_fn = tool_def.get("elisp")
+
+        if not elisp_fn:
+            raise ValueError(f"Tool {name} has no elisp function defined")
+
+        # Special case for eval_elisp - pass expression directly
+        if elisp_fn == "eval" and "expression" in arguments:
+            elisp_expr = arguments["expression"]
+        else:
+            elisp_expr = build_elisp_call(
+                elisp_fn,
+                arguments,
+                tool_def.get("args", {})
+            )
+
+        # For memory tools, wrap with session cwd binding
+        session_cwd = lib.get_session_cwd()
+        if session_cwd and is_memory_tool(name):
+            elisp_expr = wrap_with_cwd(elisp_expr, session_cwd)
+
+        result = lib.call_emacs(elisp_expr)
+
+        # Unescape string results
+        if result.startswith('"') and result.endswith('"'):
+            result = lib.unescape_elisp_string(result)
+
+        return [TextContent(type="text", text=result)]
 
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {str(e)}")]
@@ -327,6 +160,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def main():
     """Run the MCP server."""
+    # Load tools on startup
+    load_tools()
+
     async with stdio_server() as (read_stream, write_stream):
         await app.run(
             read_stream,
@@ -335,6 +171,22 @@ async def main():
         )
 
 
+def get_safe_tools() -> list[str]:
+    """Return list of tool names marked as safe in the YAML."""
+    load_tools()
+    return [name for name, defn in TOOL_DEFS.items() if defn.get("safe", False)]
+
+
+def print_safe_tools():
+    """Print safe tool names, one per line. For use by elisp."""
+    for tool in get_safe_tools():
+        print(tool)
+
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--safe-tools":
+        print_safe_tools()
+    else:
+        import asyncio
+        asyncio.run(main())

@@ -20,6 +20,7 @@
 
 ;;;; Dependencies
 (require 'cl-lib)
+(require 'json)
 (require 'transient)
 (require 'project)
 (require 'vc-git)
@@ -480,25 +481,78 @@ Applies consistent styling to all eat-mode terminal faces."
 Falls back to '/bin/sh' if SHELL environment variable is not set."
   (or (getenv "SHELL") "/bin/sh"))
 
+(defun claudemacs--get-mcp-safe-tools ()
+  "Get list of safe MCP tools from the YAML configuration.
+Returns a list of tool names marked as safe."
+  (let* ((this-file (or load-file-name buffer-file-name
+                        (locate-library "claudemacs")))
+         (this-dir (when this-file (file-name-directory this-file)))
+         (mcp-dir (when this-dir
+                    (expand-file-name "claudemacs_mcp" this-dir))))
+    (when (and mcp-dir (file-directory-p mcp-dir))
+      (let ((output (shell-command-to-string
+                     (format "uv run --directory %s python -m claudemacs_mcp.server --safe-tools 2>/dev/null"
+                             (shell-quote-argument mcp-dir)))))
+        (when (and output (not (string-empty-p output)))
+          (split-string (string-trim output) "\n" t))))))
+
 (defun claudemacs--get-auto-allow-permissions ()
-  "Generate --allowedTools flag for read-only claudemacs-cli commands.
-Returns nil if `claudemacs-auto-allow-cli-reads' is nil."
-  (when claudemacs-auto-allow-cli-reads
-    (let ((tools (mapcar (lambda (cmd) (format "Bash(claudemacs-cli %s:*)" cmd))
-                        '("get-buffer-content" "get-region" "list-buffers" "buffer-info"))))
+  "Generate --allowedTools flag for safe tools.
+Includes both CLI commands (if enabled) and safe MCP tools."
+  (let ((tools '()))
+    ;; Add CLI tools if enabled
+    (when claudemacs-auto-allow-cli-reads
+      (setq tools (append tools
+                          (mapcar (lambda (cmd) (format "Bash(claudemacs-cli %s:*)" cmd))
+                                  '("get-buffer-content" "get-region" "list-buffers" "buffer-info")))))
+    ;; Add safe MCP tools
+    (when claudemacs-use-mcp
+      (let ((mcp-safe-tools (claudemacs--get-mcp-safe-tools)))
+        (when mcp-safe-tools
+          (setq tools (append tools
+                              (mapcar (lambda (tool) (format "mcp__claudemacs__%s" tool))
+                                      mcp-safe-tools))))))
+    (when tools
       (list "--allowedTools" (string-join tools " ")))))
 
-(defun claudemacs--get-mcp-config ()
+(defvar claudemacs--mcp-config-file nil
+  "Path to the dynamically generated MCP config file.")
+
+(defun claudemacs--generate-mcp-config (work-dir)
+  "Generate a temporary MCP config file with dynamic paths.
+WORK-DIR is the session's working directory, used to isolate memory buffers.
+Returns the path to the generated config file."
+  (let* ((this-file (or load-file-name buffer-file-name
+                        (locate-library "claudemacs")))
+         (this-dir (when this-file (file-name-directory this-file)))
+         (mcp-dir (when this-dir
+                    (expand-file-name "claudemacs_mcp" this-dir)))
+         (expanded-work-dir (expand-file-name work-dir))
+         (config-file (make-temp-file "claudemacs-mcp-config-" nil ".json"))
+         (config-json (json-encode
+                       `((mcpServers
+                          . ((claudemacs
+                              . ((command . "uv")
+                                 (args . ["run" "--directory" ,mcp-dir
+                                          "-m" "claudemacs_mcp.server"])
+                                 (env . ((CLAUDEMACS_CWD . ,expanded-work-dir)))))))))))
+    (with-temp-file config-file
+      (insert config-json))
+    (setq claudemacs--mcp-config-file config-file)
+    config-file))
+
+(defun claudemacs--get-mcp-config (work-dir)
   "Generate --mcp-config flag if MCP is enabled.
+WORK-DIR is the session's working directory for memory buffer isolation.
 Returns nil if `claudemacs-use-mcp' is nil."
   (when claudemacs-use-mcp
     (let* ((this-file (or load-file-name buffer-file-name
-                         (locate-library "claudemacs")))
+                          (locate-library "claudemacs")))
            (this-dir (when this-file (file-name-directory this-file)))
-           (mcp-config (when this-dir
-                        (expand-file-name "claudemacs_mcp/mcp-config.json" this-dir))))
-      (when (and mcp-config (file-exists-p mcp-config))
-        (list "--mcp-config" mcp-config)))))
+           (mcp-dir (when this-dir
+                      (expand-file-name "claudemacs_mcp" this-dir))))
+      (when (and mcp-dir (file-directory-p mcp-dir))
+        (list "--mcp-config" (claudemacs--generate-mcp-config work-dir))))))
 
 (defun claudemacs--start (work-dir &rest args)
   "Start Claude Code in WORK-DIR with ARGS."
@@ -527,7 +581,7 @@ Returns nil if `claudemacs-use-mcp' is nil."
             (switches (remove nil (append args
                                          claudemacs-program-switches
                                          (claudemacs--get-auto-allow-permissions)
-                                         (claudemacs--get-mcp-config)))))
+                                         (claudemacs--get-mcp-config work-dir)))))
         (if claudemacs-use-shell-env
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
             ;; Explicitly set environment variables in the shell command to survive shell config sourcing
@@ -814,9 +868,93 @@ Sends without newline so you can continue typing."
          (context-text (if (and has-region (not (= start-line end-line)))
                            (format "%s:%d-%d " relative-path start-line end-line)
                          (format "%s:%d " relative-path start-line))))
-    
+
     (claudemacs--send-message-to-claude context-text t (not claudemacs-switch-to-buffer-on-add-context))
     (message "Added context: %s" (string-trim context-text))))
+
+;;;###autoload
+(defun claudemacs-generate-commit-message ()
+  "Generate a commit message using Claude based on staged git changes.
+This runs a one-shot Claude session in the background and inserts the result.
+No interaction with the Claude buffer is needed."
+  (interactive)
+
+  ;; Check if we're in a commit buffer
+  (unless (or (and (buffer-file-name)
+                   (string-match-p "COMMIT_EDITMSG" (buffer-file-name)))
+              (and (boundp 'git-commit-mode) git-commit-mode)
+              (string-match-p "\\*magit.*commit\\*" (buffer-name)))
+    (error "This command should be run from a git commit message buffer"))
+
+  ;; Get the staged diff
+  (let* ((default-directory (or (vc-git-root default-directory)
+                                default-directory))
+         (diff-output (shell-command-to-string "git diff --staged")))
+
+    (when (string-empty-p (string-trim diff-output))
+      (error "No staged changes found. Stage some changes first with 'git add'"))
+
+    ;; Save current buffer to insert into later
+    (let ((target-buffer (current-buffer))
+          (temp-buffer (generate-new-buffer " *claude-commit-temp*")))
+
+      (message "Generating commit message with Claude...")
+
+      ;; Create the prompt
+      (let* ((prompt (format "Analyze these git staged changes and generate ONLY a commit message (no extra text, no markdown, no explanations).
+
+Format:
+- First line: Clear title in imperative mood, under 50 characters
+- Blank line
+- Description: Explain what changed and why (2-4 sentences)
+
+Staged changes:
+```
+%s
+```
+
+Return ONLY the commit message, nothing else." diff-output))
+             (prompt-file (make-temp-file "claude-commit-prompt-" nil ".txt" prompt)))
+
+        ;; Run Claude asynchronously
+        (set-process-sentinel
+         (start-process "claude-commit" temp-buffer
+                       claudemacs-program
+                       "--dangerously-skip-permissions"
+                       "--prompt" (format "@%s" prompt-file))
+         (lambda (process event)
+           (when (string-match-p "finished" event)
+             (with-current-buffer (process-buffer process)
+               ;; Extract commit message from Claude's output
+               (goto-char (point-min))
+               ;; Skip to the actual response (after prompt echo and thinking)
+               (let ((response-start (or (search-forward "\n\n" nil t)
+                                        (point-min))))
+                 (goto-char response-start)
+                 (let ((commit-msg (buffer-substring-no-properties (point) (point-max))))
+                   ;; Clean up the message
+                   (setq commit-msg (string-trim commit-msg))
+                   ;; Remove any markdown code blocks
+                   (setq commit-msg (replace-regexp-in-string "^```.*\n" "" commit-msg))
+                   (setq commit-msg (replace-regexp-in-string "\n```$" "" commit-msg))
+
+                   ;; Insert into target buffer
+                   (when (buffer-live-p target-buffer)
+                     (with-current-buffer target-buffer
+                       (goto-char (point-min))
+                       (insert commit-msg "\n\n")
+                       (goto-char (point-min))
+                       (message "Commit message generated!")))
+
+                   ;; Clean up
+                   (delete-file prompt-file)
+                   (kill-buffer (process-buffer process))))))
+
+           (when (string-match-p "\\(exited\\|failed\\)" event)
+             (delete-file prompt-file)
+             (kill-buffer temp-buffer)
+             (message "Failed to generate commit message: %s" event))))))))
+
 
 
 ;;;###autoload
@@ -924,6 +1062,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("x" "Execute Request (with context)" claudemacs-execute-request)
     ("X" "Execute Request (no context)" claudemacs-ask-without-context)
     ("i" "Implement Comment" claudemacs-implement-comment)
+    ("c" "Generate Commit Message" claudemacs-generate-commit-message)
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)
     ("a" "Add Context" claudemacs-add-context)]
