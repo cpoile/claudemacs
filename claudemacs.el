@@ -533,13 +533,29 @@ Returns the path to the generated config file."
                        `((mcpServers
                           . ((claudemacs
                               . ((command . "uv")
-                                 (args . ["run" "--directory" ,mcp-dir
+                                 (args . ["run" "--python-preference" "managed" "--directory" ,mcp-dir
                                           "-m" "claudemacs_mcp.server"])
                                  (env . ((CLAUDEMACS_CWD . ,expanded-work-dir)))))))))))
     (with-temp-file config-file
       (insert config-json))
     (setq claudemacs--mcp-config-file config-file)
     config-file))
+
+(defun claudemacs--get-custom-prompt ()
+  "Generate --append-system-prompt flag if custom prompt file exists.
+Looks for claudemacs-prompt.md in the claudemacs package directory.
+Returns nil if file doesn't exist."
+  (let* ((this-file (or load-file-name buffer-file-name
+                        (locate-library "claudemacs")))
+         (this-dir (when this-file (file-name-directory this-file)))
+         (prompt-file (when this-dir
+                        (expand-file-name "claudemacs-prompt.md" this-dir))))
+    (when (and prompt-file (file-exists-p prompt-file))
+      (let ((content (with-temp-buffer
+                       (insert-file-contents prompt-file)
+                       (buffer-string))))
+        (when (not (string-empty-p (string-trim content)))
+          (list "--append-system-prompt" content))))))
 
 (defun claudemacs--get-mcp-config (work-dir)
   "Generate --mcp-config flag if MCP is enabled.
@@ -581,6 +597,7 @@ Returns nil if `claudemacs-use-mcp' is nil."
             (switches (remove nil (append args
                                          claudemacs-program-switches
                                          (claudemacs--get-auto-allow-permissions)
+                                         (claudemacs--get-custom-prompt)
                                          (claudemacs--get-mcp-config work-dir)))))
         (if claudemacs-use-shell-env
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
@@ -676,6 +693,105 @@ With prefix ARG, prompt for the project directory."
           (kill-buffer claudemacs-buffer))
         (message "Claudemacs session killed"))
     (error "There is no Claudemacs session in this workspace or project")))
+
+(defun claudemacs--get-most-recent-session-id (work-dir)
+  "Get the most recent session ID for WORK-DIR.
+Returns the UUID of the most recently modified session file, or nil if none found."
+  (let* ((expanded-dir (expand-file-name work-dir))
+         ;; Convert /home/user/.path/to/dir to -home-user--path-to-dir
+         ;; Claude's format: replace / with -, replace . with -
+         (slug-with-slashes (replace-regexp-in-string "/" "-" expanded-dir))
+         (project-slug (replace-regexp-in-string "\\." "-" slug-with-slashes))
+         (sessions-dir (expand-file-name project-slug "~/.claude/projects/")))
+    (when (file-directory-p sessions-dir)
+      (let* ((files (directory-files sessions-dir t "\\.jsonl$"))
+             (sorted-files (sort files
+                                 (lambda (a b)
+                                   (time-less-p (nth 5 (file-attributes b))
+                                               (nth 5 (file-attributes a)))))))
+        (when sorted-files
+          ;; Extract UUID from filename (remove path and .jsonl extension)
+          (file-name-sans-extension (file-name-nondirectory (car sorted-files))))))))
+
+(defun claudemacs--send-message-when-ready (work-dir message timeout &optional attempt)
+  "Send MESSAGE to Claude when ready, polling up to TIMEOUT seconds.
+WORK-DIR identifies the session. ATTEMPT tracks retry count."
+  (let ((attempt (or attempt 0))
+        (buffer-name (format "*claudemacs:%s*" work-dir)))
+    (if (>= attempt timeout)
+        (message "Timed out waiting for Claude to be ready")
+      (run-with-timer
+       1.0 nil
+       (lambda (dir msg timeout-secs attempt-num)
+         (let* ((buffer (get-buffer (format "*claudemacs:%s*" dir)))
+                (has-terminal (and buffer
+                                   (with-current-buffer buffer
+                                     (and (boundp 'eat-terminal) eat-terminal))))
+                (has-prompt (and buffer
+                                 (with-current-buffer buffer
+                                   (save-excursion
+                                     (goto-char (point-max))
+                                     (search-backward "? for shortcuts" (max (point-min) (- (point-max) 1000)) t))))))
+           (if (and has-terminal has-prompt)
+               ;; Claude is ready - send the message
+               (with-current-buffer buffer
+                 (sit-for 0.5)  ;; Small delay to ensure terminal is stable
+                 (eat-term-send-string eat-terminal msg)
+                 (sit-for 0.1)
+                 (eat-term-send-string eat-terminal "\r")  ;; Carriage return to submit
+                 (message "Continuation message sent to Claude"))
+             ;; Not ready yet - retry
+             (claudemacs--send-message-when-ready dir msg timeout-secs (1+ attempt-num)))))
+       work-dir message timeout attempt))))
+
+;;;###autoload
+(defun claudemacs-restart (&optional target-work-dir)
+  "Restart Claudemacs session, reloading elisp files and MCP server.
+This kills the current session, reloads claudemacs elisp files,
+and starts a new session with --resume to continue the conversation.
+If TARGET-WORK-DIR is provided, restart the session for that directory.
+Otherwise, restart the session for the current project."
+  (interactive)
+  (let* ((work-dir (when-let ((dir (or target-work-dir
+                                       (when-let ((buf (claudemacs--get-buffer)))
+                                         (with-current-buffer buf claudemacs--cwd)))))
+                     (expand-file-name dir)))
+         (claudemacs-buffer (when work-dir
+                              (get-buffer (format "*claudemacs:%s*" work-dir))))
+         (session-id (when work-dir (claudemacs--get-most-recent-session-id work-dir)))
+         (this-file (or load-file-name
+                        (locate-library "claudemacs")))
+         (this-dir (when this-file (file-name-directory this-file))))
+    ;; Validate we have a session to restart
+    (unless work-dir
+      (error "No Claudemacs session to restart (no work-dir)"))
+    (unless claudemacs-buffer
+      (error "No Claudemacs session found for directory: %s" work-dir))
+
+    ;; Kill the target session
+    (message "Killing claudemacs session for %s..." work-dir)
+    (with-current-buffer claudemacs-buffer
+      (eat-kill-process)
+      (kill-buffer claudemacs-buffer))
+
+    ;; Reload elisp files
+    (message "Reloading claudemacs elisp files...")
+    (when this-dir
+      (load-file (expand-file-name "claudemacs-ai.el" this-dir))
+      (load-file (expand-file-name "claudemacs.el" this-dir)))
+
+    ;; Start new session with --continue (auto-continues most recent conversation)
+    (message "Starting new claudemacs session with --continue...")
+    (let ((claudemacs-switch-to-buffer-on-create t))
+      (claudemacs--start work-dir "--continue"))
+
+    ;; Send continuation message after Claude is ready (poll for prompt)
+    (claudemacs--send-message-when-ready
+     work-dir
+     "Session restarted - elisp and MCP server reloaded. Please continue."
+     30)
+
+    (message "Claudemacs restarted successfully for %s" work-dir)))
 
 (defun claudemacs--validate-process ()
   "Validate that the Claudemacs process is alive and running."
@@ -1055,6 +1171,7 @@ Hide if current, focus if visible elsewhere, show if hidden."
    ["Core"
     ("s" "Start/Open Session" claudemacs-run)
     ("r" "Start with Resume" claudemacs-resume)
+    ("R" "Restart Session" claudemacs-restart)
     ("k" "Kill Session" claudemacs-kill)
     ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
    ["Actions"

@@ -3,7 +3,7 @@
 #
 # Flags:
 #   safe: true  - Tool will be auto-approved (no permission prompt)
-#                 Use for read-only operations and memory tools
+#                 Use for read-only operations and notes tools
 
 tools:
   # Buffer reading operations (safe - read only)
@@ -131,94 +131,76 @@ tools:
         type: integer
         description: "Timeout in seconds (default: 30)"
 
-  # Buffer watching/streaming operations (safe - read only, blocks until condition)
-  watch_buffer:
-    description: "Watch a buffer until its content stabilizes (stops changing). Useful for waiting on async processes."
-    elisp: claudemacs-ai-watch-buffer
-    safe: true
-    args:
-      buffer_name:
-        type: string
-        description: "Name of the buffer to watch"
-        required: true
-      timeout:
-        type: integer
-        description: "Maximum seconds to wait (default: 30)"
-      stable_time:
-        type: number
-        description: "Seconds of no change before considered stable (default: 0.5)"
+  # NOTE: watch_buffer, watch_for_pattern, and send_and_watch are implemented
+  # as native async Python tools in server.py (not elisp) to avoid blocking Emacs.
+  # They poll via emacsclient asynchronously.
 
-  watch_for_pattern:
-    description: "Watch a buffer until a regex pattern appears. Returns match info or nil on timeout."
-    elisp: claudemacs-ai-watch-for-pattern
-    safe: true
-    args:
-      buffer_name:
-        type: string
-        description: "Name of the buffer to watch"
-        required: true
-      pattern:
-        type: string
-        description: "Regex pattern to wait for"
-        required: true
-      timeout:
-        type: integer
-        description: "Maximum seconds to wait (default: 30)"
-
-  send_and_watch:
-    description: "[EXECUTE] Send input to a buffer and wait for completion. Returns new content after input."
-    elisp: claudemacs-ai-send-and-watch
-    args:
-      buffer_name:
-        type: string
-        description: "Name of the buffer (eat terminal, comint, or regular)"
-        required: true
-      input:
-        type: string
-        description: "Text/command to send"
-        required: true
-      done_pattern:
-        type: string
-        description: "Optional regex pattern that signals completion (otherwise waits for stability)"
-      timeout:
-        type: integer
-        description: "Maximum seconds to wait (default: 30)"
-
-  # Memory operations (all safe - isolated memory buffer)
-  get_memory:
-    description: "Get the content of the memory buffer for this Claude session."
-    elisp: claudemacs-ai-get-memory
+  # Notes operations (all safe - persisted org-mode file at .claude/claudemacs-notes.org)
+  get_notes:
+    description: "Get the content of the notes file (org-mode format, persisted to .claude/claudemacs-notes.org)."
+    elisp: claudemacs-ai-get-notes
     safe: true
 
-  set_memory:
-    description: "Set the memory buffer content, replacing any existing content."
-    elisp: claudemacs-ai-set-memory
+  set_notes:
+    description: "Set the notes file content (org-mode format), replacing any existing content."
+    elisp: claudemacs-ai-set-notes
     safe: true
     args:
       content:
         type: string
-        description: "Content to store in memory"
+        description: "Content to store in notes (org-mode format)"
         required: true
 
-  append_memory:
-    description: "Append content to the memory buffer without replacing existing content."
-    elisp: claudemacs-ai-append-memory
+  append_notes:
+    description: "Append content to the notes file (org-mode format) without replacing existing content."
+    elisp: claudemacs-ai-append-notes
     safe: true
     args:
       content:
         type: string
-        description: "Content to append to memory"
+        description: "Content to append to notes (org-mode format)"
         required: true
 
-  clear_memory:
-    description: "Clear all content from the memory buffer."
-    elisp: claudemacs-ai-clear-memory
+  clear_notes:
+    description: "Clear all content from the notes file."
+    elisp: claudemacs-ai-clear-notes
     safe: true
 
   # Session management
   restart_and_resume:
     description: "Restart the claudemacs session and resume the conversation."
     elisp: claudemacs-ai-restart-and-resume
+
+  # Agent coordination - spawn and communicate with other Claude agents
+  spawn_agent:
+    description: "Spawn a new Claude agent in a directory. Returns the buffer name for monitoring."
+    elisp: claudemacs-ai-spawn-agent
+    args:
+      directory:
+        type: string
+        description: "Directory path where the agent should work (will be expanded)"
+        required: true
+      initial_prompt:
+        type: string
+        description: "Optional initial prompt/instructions to send to the agent after startup"
+
+  list_agents:
+    description: "List all running claudemacs agent sessions. Returns (buffer-name, directory) pairs."
+    elisp: claudemacs-ai-list-agents
+    safe: true
+
+  message_agent:
+    description: "Send a message to another running agent. Use to coordinate between agents."
+    elisp: claudemacs-ai-message-agent
+    args:
+      buffer_name:
+        type: string
+        description: "Buffer name of the agent (from list_agents or spawn_agent)"
+        required: true
+      message:
+        type: string
+        description: "Message to send as user input to the agent"
+        required: true
 
   # Generic elisp evaluation
   eval_elisp:
@@ -230,10 +212,10 @@ tools:
         description: "The elisp expression to evaluate"
         required: true
 
-  # Org-mode memory operations (all safe - isolated memory buffer)
-  memory_add_heading:
-    description: "Add an org heading to the memory buffer. Use this to organize notes and context."
-    elisp: claudemacs-ai-memory-add-heading
+  # Org-mode notes operations (all safe - persisted to .claude/claudemacs-notes.org)
+  notes_add_heading:
+    description: "Add an org heading to the notes file. Use this to organize notes and context."
+    elisp: claudemacs-ai-notes-add-heading
     safe: true
     args:
       level:
@@ -245,9 +227,9 @@ tools:
         description: "The heading title"
         required: true
 
-  memory_add_todo:
-    description: "Add a TODO item to the memory buffer. Great for tracking tasks."
-    elisp: claudemacs-ai-memory-add-todo
+  notes_add_todo:
+    description: "Add a TODO item to the notes file. Great for tracking tasks."
+    elisp: claudemacs-ai-notes-add-todo
     safe: true
     args:
       level:
@@ -262,9 +244,9 @@ tools:
         type: string
         description: "Priority A, B, or C (optional)"
 
-  memory_set_todo_state:
+  notes_set_todo_state:
     description: "Set the TODO state of heading at point. Use after goto_heading."
-    elisp: claudemacs-ai-memory-set-todo-state
+    elisp: claudemacs-ai-notes-set-todo-state
     safe: true
     args:
       state:
@@ -272,23 +254,23 @@ tools:
         description: "TODO, DONE, or empty string to clear"
         required: true
 
-  memory_add_timestamp:
-    description: "Add current timestamp to memory buffer."
-    elisp: claudemacs-ai-memory-add-timestamp
+  notes_add_timestamp:
+    description: "Add current timestamp to notes file."
+    elisp: claudemacs-ai-notes-add-timestamp
     safe: true
     args:
       inactive:
         type: boolean
         description: "If true, use inactive [timestamp] instead of active <timestamp>"
 
-  memory_get_headings:
-    description: "Get all headings from memory buffer as structured list of (level, title, todo-state)."
-    elisp: claudemacs-ai-memory-get-headings
+  notes_get_headings:
+    description: "Get all headings from notes file as structured list of (level, title, todo-state)."
+    elisp: claudemacs-ai-notes-get-headings
     safe: true
 
-  memory_goto_heading:
+  notes_goto_heading:
     description: "Move point to a heading by title. Use before toggle/set operations."
-    elisp: claudemacs-ai-memory-goto-heading
+    elisp: claudemacs-ai-notes-goto-heading
     safe: true
     args:
       title:
@@ -296,9 +278,9 @@ tools:
         description: "The heading title to find"
         required: true
 
-  memory_add_list_item:
-    description: "Add a list item to memory buffer. Can include checkbox for task lists."
-    elisp: claudemacs-ai-memory-add-list-item
+  notes_add_list_item:
+    description: "Add a list item to notes file. Can include checkbox for task lists."
+    elisp: claudemacs-ai-notes-add-list-item
     safe: true
     args:
       text:
@@ -309,14 +291,14 @@ tools:
         type: boolean
         description: "If true, add a checkbox [ ]"
 
-  memory_toggle_checkbox:
-    description: "Toggle checkbox at current position in memory buffer."
-    elisp: claudemacs-ai-memory-toggle-checkbox
+  notes_toggle_checkbox:
+    description: "Toggle checkbox at current position in notes file."
+    elisp: claudemacs-ai-notes-toggle-checkbox
     safe: true
 
-  memory_schedule:
+  notes_schedule:
     description: "Add SCHEDULED timestamp to heading at point. Use after goto_heading."
-    elisp: claudemacs-ai-memory-schedule
+    elisp: claudemacs-ai-notes-schedule
     safe: true
     args:
       timestamp:
@@ -324,9 +306,9 @@ tools:
         description: "Org timestamp like '<2024-01-15 Mon>' or relative like '+1d', '+1w'"
         required: true
 
-  memory_deadline:
+  notes_deadline:
     description: "Add DEADLINE timestamp to heading at point. Use after goto_heading."
-    elisp: claudemacs-ai-memory-deadline
+    elisp: claudemacs-ai-notes-deadline
     safe: true
     args:
       timestamp:
@@ -334,9 +316,9 @@ tools:
         description: "Org timestamp like '<2024-01-15 Mon>' or relative like '+1d', '+1w'"
         required: true
 
-  memory_set_property:
+  notes_set_property:
     description: "Set a property on heading at point. Use after goto_heading."
-    elisp: claudemacs-ai-memory-set-property
+    elisp: claudemacs-ai-notes-set-property
     safe: true
     args:
       property:
@@ -348,9 +330,9 @@ tools:
         description: "Property value"
         required: true
 
-  memory_get_property:
+  notes_get_property:
     description: "Get a property value from heading at point."
-    elisp: claudemacs-ai-memory-get-property
+    elisp: claudemacs-ai-notes-get-property
     safe: true
     args:
       property:
@@ -358,9 +340,9 @@ tools:
         description: "Property name to retrieve"
         required: true
 
-  memory_set_tags:
+  notes_set_tags:
     description: "Set tags on heading at point. Use after goto_heading."
-    elisp: claudemacs-ai-memory-set-tags
+    elisp: claudemacs-ai-notes-set-tags
     safe: true
     args:
       tags:
@@ -368,19 +350,19 @@ tools:
         description: "Colon-separated tags like ':work:urgent:' or 'work:urgent'"
         required: true
 
-  memory_clock_in:
+  notes_clock_in:
     description: "Start time tracking on heading at point."
-    elisp: claudemacs-ai-memory-clock-in
+    elisp: claudemacs-ai-notes-clock-in
     safe: true
 
-  memory_clock_out:
+  notes_clock_out:
     description: "Stop time tracking."
-    elisp: claudemacs-ai-memory-clock-out
+    elisp: claudemacs-ai-notes-clock-out
     safe: true
 
-  memory_set_effort:
+  notes_set_effort:
     description: "Set effort estimate on heading at point."
-    elisp: claudemacs-ai-memory-set-effort
+    elisp: claudemacs-ai-notes-set-effort
     safe: true
     args:
       effort:
@@ -388,14 +370,14 @@ tools:
         description: "Effort like '1:30' for 1h30m, or '30' for 30 minutes"
         required: true
 
-  memory_archive_subtree:
+  notes_archive_subtree:
     description: "Archive the subtree at point (moves to archive file)."
-    elisp: claudemacs-ai-memory-archive-subtree
+    elisp: claudemacs-ai-notes-archive-subtree
     safe: true
 
-  memory_insert_link:
+  notes_insert_link:
     description: "Insert an org link at point-max."
-    elisp: claudemacs-ai-memory-insert-link
+    elisp: claudemacs-ai-notes-insert-link
     safe: true
     args:
       url:
@@ -406,9 +388,9 @@ tools:
         type: string
         description: "Optional link description text"
 
-  memory_sparse_tree:
+  notes_sparse_tree:
     description: "Show only headings matching a query (tags, properties)."
-    elisp: claudemacs-ai-memory-sparse-tree
+    elisp: claudemacs-ai-notes-sparse-tree
     safe: true
     args:
       query:
@@ -416,22 +398,146 @@ tools:
         description: "Match query like '+work-urgent' or 'PRIORITY=\"A\"'"
         required: true
 
-  memory_promote:
+  notes_promote:
     description: "Promote heading at point (decrease level, e.g., ** -> *)."
-    elisp: claudemacs-ai-memory-promote
+    elisp: claudemacs-ai-notes-promote
     safe: true
 
-  memory_demote:
+  notes_demote:
     description: "Demote heading at point (increase level, e.g., * -> **)."
-    elisp: claudemacs-ai-memory-demote
+    elisp: claudemacs-ai-notes-demote
     safe: true
 
-  memory_move_up:
+  notes_move_up:
     description: "Move subtree at point up (swap with previous sibling)."
-    elisp: claudemacs-ai-memory-move-up
+    elisp: claudemacs-ai-notes-move-up
     safe: true
 
-  memory_move_down:
+  notes_move_down:
     description: "Move subtree at point down (swap with next sibling)."
-    elisp: claudemacs-ai-memory-move-down
+    elisp: claudemacs-ai-notes-move-down
     safe: true
+
+  # Priority 1: Properties and Structure
+  notes_get_all_properties:
+    description: "Get all properties for heading at point as an alist."
+    elisp: claudemacs-ai-notes-get-all-properties
+    safe: true
+
+  notes_delete_property:
+    description: "Delete a property from heading at point."
+    elisp: claudemacs-ai-notes-delete-property
+    safe: true
+    args:
+      property:
+        type: string
+        description: "Property name to delete"
+        required: true
+
+  notes_refile:
+    description: "Refile (move) subtree at point to under another heading."
+    elisp: claudemacs-ai-notes-refile
+    safe: true
+    args:
+      target_heading:
+        type: string
+        description: "Title of heading to refile under"
+        required: true
+
+  notes_sort:
+    description: "Sort children of current heading."
+    elisp: claudemacs-ai-notes-sort
+    safe: true
+    args:
+      sorting_type:
+        type: string
+        description: "Sort type: alpha, num, time, priority, todo (default: alpha)"
+
+  # Priority 2: Navigation
+  notes_up_heading:
+    description: "Move to parent heading in notes file."
+    elisp: claudemacs-ai-notes-up-heading
+    safe: true
+
+  notes_next_heading:
+    description: "Move to next heading at same level."
+    elisp: claudemacs-ai-notes-next-heading
+    safe: true
+
+  notes_prev_heading:
+    description: "Move to previous heading at same level."
+    elisp: claudemacs-ai-notes-prev-heading
+    safe: true
+
+  # Priority 3: Search
+  notes_occur:
+    description: "Search for regex pattern in notes file. Returns matches with positions."
+    elisp: claudemacs-ai-notes-occur
+    safe: true
+    args:
+      regexp:
+        type: string
+        description: "Regular expression to search for"
+        required: true
+
+  notes_get_tags:
+    description: "Get tags for heading at point."
+    elisp: claudemacs-ai-notes-get-tags
+    safe: true
+
+  # Priority 4: Clipboard
+  notes_cut_subtree:
+    description: "Cut (kill) subtree at point. Stored for later pasting."
+    elisp: claudemacs-ai-notes-cut-subtree
+    safe: true
+
+  notes_copy_subtree:
+    description: "Copy subtree at point. Stored for later pasting."
+    elisp: claudemacs-ai-notes-copy-subtree
+    safe: true
+
+  notes_paste_subtree:
+    description: "Paste subtree from clipboard at point."
+    elisp: claudemacs-ai-notes-paste-subtree
+    safe: true
+    args:
+      level:
+        type: integer
+        description: "Optional heading level for pasted subtree"
+
+  # Inspection tools
+  notes_get_heading_at_point:
+    description: "Get detailed info about heading at point (level, title, todo, tags, priority, pos)."
+    elisp: claudemacs-ai-notes-get-heading-at-point
+    safe: true
+
+  notes_get_subtree:
+    description: "Get the full text content of subtree at point."
+    elisp: claudemacs-ai-notes-get-subtree
+    safe: true
+
+  notes_get_children:
+    description: "Get direct children headings of current heading (not grandchildren)."
+    elisp: claudemacs-ai-notes-get-children
+    safe: true
+
+  # Elisp debugging and formatting tools
+  elisp_check_parens:
+    description: "Check an elisp file for unbalanced parentheses. Analyzes top-level forms and reports which ones have errors with line numbers."
+    elisp: claudemacs-ai-elisp-check-parens
+    safe: true
+    args:
+      file_path:
+        type: string
+        description: "Path to the elisp file to check"
+        required: true
+
+  elisp_format:
+    description: "Format an elisp file using elisp-format if available. Returns formatted content or error if elisp-format is not installed."
+    elisp: claudemacs-ai-elisp-format
+    safe: true
+    args:
+      file_path:
+        type: string
+        description: "Path to the elisp file to format"
+        required: true
