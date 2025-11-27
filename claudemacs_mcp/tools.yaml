@@ -8,7 +8,7 @@
 tools:
   # Buffer reading operations (safe - read only)
   get_buffer_content:
-    description: "Get the content of an Emacs buffer. Can optionally get only the last N lines."
+    description: "Get the content of an Emacs buffer. Can optionally get head/tail lines or a specific line range."
     elisp: claudemacs-ai-get-buffer-content
     safe: true
     args:
@@ -19,6 +19,15 @@ tools:
       tail_lines:
         type: integer
         description: "Optional: get only the last N lines"
+      head_lines:
+        type: integer
+        description: "Optional: get only the first N lines"
+      start_line:
+        type: integer
+        description: "Optional: start line for range (1-indexed, requires end_line)"
+      end_line:
+        type: integer
+        description: "Optional: end line for range (1-indexed, inclusive, requires start_line)"
 
   list_buffers:
     description: "List all open buffers in Emacs."
@@ -34,6 +43,32 @@ tools:
         type: string
         description: "Name of the buffer"
         required: true
+
+  search_buffer:
+    description: "Search for a pattern in a buffer and return matches with context lines (similar to grep). Supports regex patterns and context control."
+    elisp: claudemacs-ai-search-buffer
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer to search"
+        required: true
+      pattern:
+        type: string
+        description: "Regular expression pattern to search for"
+        required: true
+      context_before:
+        type: integer
+        description: "Number of lines to show before each match (like grep -B)"
+      context_after:
+        type: integer
+        description: "Number of lines to show after each match (like grep -A)"
+      case_insensitive:
+        type: boolean
+        description: "If true, ignore case when searching (like grep -i)"
+      limit:
+        type: integer
+        description: "Maximum number of matches to return"
 
   get_region:
     description: "Get content from a specific region in a buffer by character positions."
@@ -52,6 +87,89 @@ tools:
         type: integer
         description: "End position (1-indexed)"
         required: true
+
+  # Magit section querying (for buffers using magit-section)
+  magit_section_query_find:
+    description: "Find magit sections in a buffer matching criteria. Returns list of positions."
+    elisp: claudemacs-ai-magit-section-query-find
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      type:
+        type: string
+        description: "Section type symbol to match (e.g., 'timeout-section')"
+      heading:
+        type: string
+        description: "Regex pattern to match section heading"
+      hidden:
+        type: boolean
+        description: "Whether section should be hidden"
+      value:
+        type: string
+        description: "Section value to match"
+
+  magit_section_query_content:
+    description: "Extract content of a magit section at a given position."
+    elisp: claudemacs-ai-magit-section-query-content
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      section_position:
+        type: integer
+        description: "Buffer position within the section"
+        required: true
+      strip_indent:
+        type: boolean
+        description: "If true, remove common leading whitespace"
+
+  magit_section_query_get:
+    description: "Get metadata for a magit section at a given position. Returns (type heading hidden start end [content])."
+    elisp: claudemacs-ai-magit-section-query-get
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      section_position:
+        type: integer
+        description: "Buffer position within the section"
+        required: true
+      include_content:
+        type: boolean
+        description: "If true, include section content in result"
+
+  magit_section_query_children:
+    description: "Get child sections of a section matching criteria. Returns list of positions."
+    elisp: claudemacs-ai-magit-section-query-children
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the buffer"
+        required: true
+      section_position:
+        type: integer
+        description: "Buffer position within the parent section"
+        required: true
+      type:
+        type: string
+        description: "Child section type symbol to match"
+      heading:
+        type: string
+        description: "Regex pattern to match child heading"
+      hidden:
+        type: boolean
+        description: "Whether child section should be hidden"
+      value:
+        type: string
+        description: "Child section value to match"
 
   # Buffer modification operations
   insert_in_buffer:
@@ -170,6 +288,7 @@ tools:
   restart_and_resume:
     description: "Restart the claudemacs session and resume the conversation."
     elisp: claudemacs-ai-restart-and-resume
+    safe: true
 
   # Agent coordination - spawn and communicate with other Claude agents
   spawn_agent:

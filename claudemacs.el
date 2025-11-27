@@ -761,7 +761,10 @@ Otherwise, restart the session for the current project."
          (session-id (when work-dir (claudemacs--get-most-recent-session-id work-dir)))
          (this-file (or load-file-name
                         (locate-library "claudemacs")))
-         (this-dir (when this-file (file-name-directory this-file))))
+         (this-dir (when this-file (file-name-directory this-file)))
+         ;; Check if buffer was visible before we kill it
+         (buffer-was-visible (and claudemacs-buffer
+                                  (get-buffer-window claudemacs-buffer t))))
     ;; Validate we have a session to restart
     (unless work-dir
       (error "No Claudemacs session to restart (no work-dir)"))
@@ -781,9 +784,16 @@ Otherwise, restart the session for the current project."
       (load-file (expand-file-name "claudemacs.el" this-dir)))
 
     ;; Start new session with --continue (auto-continues most recent conversation)
+    ;; Always spawn without stealing focus
     (message "Starting new claudemacs session with --continue...")
-    (let ((claudemacs-switch-to-buffer-on-create t))
+    (let ((claudemacs-switch-to-buffer-on-create nil))
       (claudemacs--start work-dir "--continue"))
+
+    ;; If buffer wasn't visible before, hide it now
+    (unless buffer-was-visible
+      (when-let* ((new-buffer (get-buffer (format "*claudemacs:%s*" work-dir)))
+                  (window (get-buffer-window new-buffer t)))
+        (delete-window window)))
 
     ;; Send continuation message after Claude is ready (poll for prompt)
     (claudemacs--send-message-when-ready

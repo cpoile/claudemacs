@@ -43,6 +43,14 @@ NATIVE_TOOLS: dict = {
             "timeout": {"type": "integer", "description": "Maximum seconds to wait (default: 30)"},
         },
     },
+    "watch_for_change": {
+        "description": "Watch a buffer until any change occurs. Non-blocking async polling. Returns 'changed' or 'timeout'.",
+        "safe": True,
+        "args": {
+            "buffer_name": {"type": "string", "description": "Name of the buffer to watch", "required": True},
+            "timeout": {"type": "integer", "description": "Maximum seconds to wait (default: 30)"},
+        },
+    },
     "send_and_watch": {
         "description": "[EXECUTE] Send input to a buffer and wait for completion. Non-blocking async polling. Returns new content after input.",
         "safe": False,
@@ -60,6 +68,14 @@ NATIVE_TOOLS: dict = {
             "command": {"type": "string", "description": "The bash command to execute", "required": True},
             "directory": {"type": "string", "description": "Working directory for the shell (defaults to session cwd)"},
             "timeout": {"type": "integer", "description": "Maximum seconds to wait (default: 120)"},
+        },
+    },
+    "reload_file": {
+        "description": "[EXECUTE] Reload one or more elisp files in Emacs. IMPORTANT: Files are loaded in the order provided - this matters when files have dependencies. If loading fails due to syntax errors, automatically checks for unbalanced parentheses using indentation-aware analysis on the first file that fails.",
+        "safe": False,
+        "args": {
+            "file_path": {"type": "string", "description": "Path to a single elisp file to reload", "required": False},
+            "file_paths": {"type": "array", "description": "Array of file paths to reload in order (use when loading multiple files)", "required": False},
         },
     },
 }
@@ -132,8 +148,24 @@ def build_elisp_call(elisp_fn: str, args: dict, arg_defs: dict) -> str:
         return f"({elisp_fn})"
 
     # Build argument list in definition order
+    # We need to handle optional args carefully - if a later arg is provided,
+    # we need to pass nil for earlier optional args to maintain positional order
     elisp_args = []
-    for arg_name, arg_def in arg_defs.items():
+    arg_names = list(arg_defs.keys())
+
+    # Find the last provided argument
+    last_provided_idx = -1
+    for i, arg_name in enumerate(arg_names):
+        if arg_name in args:
+            last_provided_idx = i
+
+    # Build args up to the last provided one
+    for i, arg_name in enumerate(arg_names):
+        if i > last_provided_idx:
+            break
+
+        arg_def = arg_defs[arg_name]
+
         if arg_name in args:
             value = args[arg_name]
             arg_type = arg_def.get("type", "string")
@@ -146,10 +178,9 @@ def build_elisp_call(elisp_fn: str, args: dict, arg_defs: dict) -> str:
                 elisp_args.append("t" if value else "nil")
             else:
                 elisp_args.append(f'"{escape_elisp_string(str(value))}"')
-        elif not arg_def.get("required", False):
-            # Optional arg not provided - skip (elisp will use default)
-            # But we need to stop here to avoid positional arg issues
-            break
+        else:
+            # Optional arg not provided - pass nil to maintain positional order
+            elisp_args.append("nil")
 
     if elisp_args:
         return f"({elisp_fn} {' '.join(elisp_args)})"
@@ -190,6 +221,12 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
             return json.dumps(result)
         return "null (timeout - pattern not found)"
 
+    elif name == "watch_for_change":
+        buffer_name = arguments["buffer_name"]
+        timeout = float(arguments.get("timeout", 30))
+        result = await lib.watch_for_change_async(buffer_name, timeout)
+        return result
+
     elif name == "send_and_watch":
         buffer_name = arguments["buffer_name"]
         input_text = arguments["input"]
@@ -214,6 +251,17 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
             return f"{output}\n\n[exit code: {exit_code}, shell: {buffer_name}]"
         else:
             return f"{output}\n\n[exit code: {exit_code}, shell: {buffer_name}] (command failed)"
+
+    elif name == "reload_file":
+        # Support both single file_path and multiple file_paths
+        if "file_paths" in arguments:
+            file_paths = arguments["file_paths"]
+        elif "file_path" in arguments:
+            file_paths = arguments["file_path"]
+        else:
+            raise ValueError("Either file_path or file_paths must be provided")
+        result = await lib.reload_elisp_file(file_paths)
+        return result
 
     else:
         raise ValueError(f"Unknown native tool: {name}")

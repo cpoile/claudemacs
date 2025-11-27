@@ -8,7 +8,8 @@
       "Bash(claudemacs-cli get-buffer-content:*)",
       "Bash(claudemacs-cli get-region:*)",
       "Bash(claudemacs-cli list-buffers:*)",
-      "Bash(claudemacs-cli buffer-info:*)"
+      "Bash(claudemacs-cli buffer-info:*)",
+      "mcp__claudemacs__eval_elisp"
     ],
     "deny": [],
     "ask": []

@@ -41,18 +41,39 @@ Designed to be called via emacsclient by Claude AI."
         (format "Inserted %d characters into buffer '%s'" (length text) buffer-name))
     (error "Buffer '%s' does not exist" buffer-name)))
 
-(defun claudemacs-ai-get-buffer-content (buffer-name &optional tail-lines)
+(defun claudemacs-ai-get-buffer-content (buffer-name &optional tail-lines head-lines start-line end-line)
   "Return the content of BUFFER-NAME.
 If TAIL-LINES is provided, return only the last TAIL-LINES lines.
+If HEAD-LINES is provided, return only the first HEAD-LINES lines.
+If START-LINE and END-LINE are provided, return lines in that range (1-indexed, inclusive).
+Only one of TAIL-LINES, HEAD-LINES, or START-LINE/END-LINE should be used.
 Designed to be called via emacsclient by Claude AI."
   (if (get-buffer buffer-name)
       (with-current-buffer buffer-name
-        (if tail-lines
-            (save-excursion
-              (goto-char (point-max))
-              (forward-line (- tail-lines))
-              (buffer-substring-no-properties (point) (point-max)))
-          (buffer-substring-no-properties (point-min) (point-max))))
+        (cond
+         ;; Line range
+         ((and start-line end-line)
+          (save-excursion
+            (goto-char (point-min))
+            (forward-line (1- start-line))
+            (let ((start-pos (point)))
+              (forward-line (1+ (- end-line start-line)))
+              (buffer-substring-no-properties start-pos (point)))))
+         ;; Head lines
+         (head-lines
+          (save-excursion
+            (goto-char (point-min))
+            (forward-line head-lines)
+            (buffer-substring-no-properties (point-min) (point))))
+         ;; Tail lines
+         (tail-lines
+          (save-excursion
+            (goto-char (point-max))
+            (forward-line (- tail-lines))
+            (buffer-substring-no-properties (point) (point-max))))
+         ;; Full buffer
+         (t
+          (buffer-substring-no-properties (point-min) (point-max)))))
     (error "Buffer '%s' does not exist" buffer-name)))
 
 (defun claudemacs-ai-get-region (buffer-name start end)
@@ -62,6 +83,84 @@ Designed to be called via emacsclient by Claude AI."
       (with-current-buffer buffer-name
         (buffer-substring-no-properties start end))
     (error "Buffer '%s' does not exist" buffer-name)))
+
+(defun claudemacs-ai-search-buffer (buffer-name pattern &optional context-before context-after case-insensitive limit)
+  "Search for PATTERN in BUFFER-NAME and return matches with context.
+CONTEXT-BEFORE: number of lines to show before each match (default 0)
+CONTEXT-AFTER: number of lines to show after each match (default 0)
+CASE-INSENSITIVE: if non-nil, ignore case (default nil)
+LIMIT: maximum number of matches to return (default nil for unlimited)
+
+Returns matches as a formatted string similar to grep output, where:
+- Lines before the match have '  ' prefix
+- The matching line has '> ' prefix and shows the line number
+- Lines after the match have '  ' prefix
+- Match groups are separated by '--'
+
+Designed to be called via emacsclient by Claude AI."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+
+  (with-current-buffer buffer-name
+    (let ((output '())
+          (case-fold-search case-insensitive)
+          (before (or context-before 0))
+          (after (or context-after 0))
+          (count 0))
+      (save-excursion
+        (goto-char (point-min))
+        (while (and (re-search-forward pattern nil t)
+                    (or (not limit) (< count limit)))
+          (let* ((match-line (line-number-at-pos))
+                 (match-line-content (buffer-substring-no-properties
+                                      (line-beginning-position)
+                                      (line-end-position)))
+                 (lines '()))
+
+            ;; Collect context before
+            (when (> before 0)
+              (save-excursion
+                (forward-line (- before))
+                (dotimes (_ before)
+                  (let ((line-num (line-number-at-pos)))
+                    (push (format "%6d:  %s" line-num
+                                  (buffer-substring-no-properties
+                                   (line-beginning-position)
+                                   (line-end-position)))
+                          lines))
+                  (forward-line 1))))
+
+            ;; Add the matching line with > prefix
+            (push (format "%6d:> %s" match-line match-line-content) lines)
+
+            ;; Collect context after
+            (when (> after 0)
+              (save-excursion
+                (forward-line 1)
+                (dotimes (_ after)
+                  (unless (eobp)
+                    (let ((line-num (line-number-at-pos)))
+                      (push (format "%6d:  %s" line-num
+                                    (buffer-substring-no-properties
+                                     (line-beginning-position)
+                                     (line-end-position)))
+                            lines))
+                    (forward-line 1)))))
+
+            ;; Add this match group to output
+            (setq output (append output (nreverse lines)))
+            (setq count (1+ count))
+
+            ;; Add separator between matches (but not after the last one)
+            (when (and (< count (or limit most-positive-fixnum))
+                       (not (eobp)))
+              (setq output (append output (list "--"))))
+
+            ;; Move to next line to avoid matching same line multiple times
+            (forward-line 1))))
+
+      ;; Return as newline-separated string
+      (mapconcat 'identity output "\n"))))
 
 (defun claudemacs-ai-replace-region (buffer-name start end text)
   "Replace content in BUFFER-NAME from START to END with TEXT.
@@ -880,16 +979,15 @@ Designed to be called via emacsclient by Claude AI."
 
 (defun claudemacs-ai-restart-and-resume (&optional buffer-name)
   "Restart the claudemacs session in BUFFER-NAME and resume the conversation.
-If BUFFER-NAME is not provided, tries to determine from `claudemacs-session-cwd'
-\(set by MCP server) or falls back to current buffer.
+If BUFFER-NAME is not provided, uses `claudemacs-session-cwd' (set by MCP server).
 This reloads elisp files and restarts the MCP server with any code changes.
 Designed to be called via emacsclient by Claude AI."
   (let* ((target-buffer (or buffer-name
-                            ;; Try to compute from MCP session cwd
+                            ;; Compute from MCP session cwd
                             (when (and (boundp 'claudemacs-session-cwd) claudemacs-session-cwd)
                               (format "*claudemacs:%s*" claudemacs-session-cwd))
-                            ;; Fallback to current buffer
-                            (buffer-name))))
+                            ;; Error if we can't determine the session
+                            (error "Cannot determine claudemacs session - claudemacs-session-cwd not set"))))
     ;; Check if this is a claudemacs buffer
     (if (and (get-buffer target-buffer)
              (string-match-p "^\\*claudemacs:" target-buffer))
@@ -1069,6 +1167,151 @@ This should be called during claudemacs startup to expose the CLI to Claude."
       (let ((socket-file (expand-file-name "server" server-socket-dir)))
         (when (file-exists-p socket-file)
           (setenv "CLAUDEMACS_SOCKET" socket-file))))))
+
+;;;; Magit Section Querying
+
+(require 'magit-section nil t)
+
+(defun claudemacs-ai-magit-section-query--strip-indent (text)
+  "Remove common leading whitespace from TEXT.
+Designed to be called via emacsclient by Claude AI."
+  (let* ((lines (split-string text "\n"))
+         (non-empty-lines (seq-filter (lambda (line) (not (string-empty-p (string-trim-left line)))) lines))
+         (indents (mapcar (lambda (line) (length (replace-regexp-in-string "^\\( *\\).*" "\\1" line))) non-empty-lines))
+         (min-indent (if indents (apply 'min indents) 0)))
+    (mapconcat (lambda (line)
+                 (if (> (length line) min-indent)
+                     (substring line min-indent)
+                   line))
+               lines "\n")))
+
+(defun claudemacs-ai-magit-section-query--walk (section fn)
+  "Walk SECTION tree applying FN to each section.
+FN should accept a section and return non-nil to continue walking.
+Designed to be called via emacsclient by Claude AI."
+  (when (funcall fn section)
+    (dolist (child (eieio-oref section 'children))
+      (claudemacs-ai-magit-section-query--walk child fn))))
+
+(defun claudemacs-ai-magit-section-query--matches-p (section criteria)
+  "Check if SECTION matches CRITERIA (a plist).
+Supported criteria: :type, :heading (regex), :hidden, :value
+Designed to be called via emacsclient by Claude AI."
+  (let ((matches t))
+    (when (plist-member criteria :type)
+      (let ((expected-type (plist-get criteria :type)))
+        (unless (eq (eieio-oref section 'type) expected-type)
+          (setq matches nil))))
+    (when (and matches (plist-member criteria :heading))
+      (let ((heading-pattern (plist-get criteria :heading))
+            (content (eieio-oref section 'content)))
+        ;; Match against the content text if available
+        (unless (and content (string-match-p heading-pattern content))
+          (setq matches nil))))
+    (when (and matches (plist-member criteria :hidden))
+      (let ((expected-hidden (plist-get criteria :hidden))
+            (hidden (eieio-oref section 'hidden)))
+        (unless (eq hidden expected-hidden)
+          (setq matches nil))))
+    (when (and matches (plist-member criteria :value))
+      (let ((expected-value (plist-get criteria :value)))
+        (unless (equal (eieio-oref section 'value) expected-value)
+          (setq matches nil))))
+    matches))
+
+(defun claudemacs-ai-magit-section-query-content (buffer-name section-position &optional strip-indent)
+  "Extract content of magit section at SECTION-POSITION in BUFFER-NAME as string.
+SECTION-POSITION should be a buffer position (integer) within the section.
+If STRIP-INDENT is non-nil, remove common leading whitespace.
+Designed to be called via emacsclient by Claude AI."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+  (with-current-buffer buffer-name
+    (save-excursion
+      (goto-char section-position)
+      (let ((section (magit-current-section)))
+        (unless section
+          (error "No magit section found at position %d" section-position))
+        (let* ((start (marker-position (eieio-oref section 'start)))
+               (end (marker-position (eieio-oref section 'end)))
+               (content (buffer-substring-no-properties start end)))
+          (if strip-indent
+              (claudemacs-ai-magit-section-query--strip-indent content)
+            content))))))
+
+(defun claudemacs-ai-magit-section-query-find (buffer-name &rest criteria)
+  "Find magit sections in BUFFER-NAME matching CRITERIA.
+CRITERIA is a plist that can include:
+  :type TYPE - section type symbol
+  :heading REGEX - regex to match heading
+  :hidden BOOL - whether section is hidden
+  :value VALUE - section value
+
+Returns list of positions (integers) for matching sections.
+Designed to be called via emacsclient by Claude AI."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+  (with-current-buffer buffer-name
+    (let ((results '())
+          (root (magit-current-section)))
+      ;; Get the root section
+      (save-excursion
+        (goto-char (point-min))
+        (setq root (magit-current-section))
+        (when root
+          (claudemacs-ai-magit-section-query--walk
+           root
+           (lambda (section)
+             (when (claudemacs-ai-magit-section-query--matches-p section criteria)
+               (push (marker-position (eieio-oref section 'start)) results))
+             t))))
+      (nreverse results))))
+
+(defun claudemacs-ai-magit-section-query-children (buffer-name section-position &rest criteria)
+  "Get child sections of section at SECTION-POSITION in BUFFER-NAME matching CRITERIA.
+SECTION-POSITION should be a buffer position (integer) within the parent section.
+CRITERIA is a plist (same format as magit-section-query-find).
+Returns list of positions (integers) for matching child sections.
+Designed to be called via emacsclient by Claude AI."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+  (with-current-buffer buffer-name
+    (save-excursion
+      (goto-char section-position)
+      (let* ((section (magit-current-section))
+             (results '()))
+        (unless section
+          (error "No magit section found at position %d" section-position))
+        (dolist (child (eieio-oref section 'children))
+          (when (claudemacs-ai-magit-section-query--matches-p child criteria)
+            (push (marker-position (eieio-oref child 'start)) results)))
+        (nreverse results)))))
+
+(defun claudemacs-ai-magit-section-query-get (buffer-name section-position &optional include-content)
+  "Get metadata for magit section at SECTION-POSITION in BUFFER-NAME.
+SECTION-POSITION should be a buffer position (integer) within the section.
+Returns a list with metadata: (type heading hidden start end [content])
+If INCLUDE-CONTENT is non-nil, includes section content as last element.
+Designed to be called via emacsclient by Claude AI."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+  (with-current-buffer buffer-name
+    (save-excursion
+      (goto-char section-position)
+      (let ((section (magit-current-section)))
+        (unless section
+          (error "No magit section found at position %d" section-position))
+        (let* ((start-pos (marker-position (eieio-oref section 'start)))
+               (end-pos (marker-position (eieio-oref section 'end)))
+               (result (list
+                        (eieio-oref section 'type)
+                        (eieio-oref section 'content)  ; Use content as heading
+                        (eieio-oref section 'hidden)
+                        start-pos
+                        end-pos)))
+          (when include-content
+            (setq result (append result (list (buffer-substring-no-properties start-pos end-pos)))))
+          result)))))
 
 (provide 'claudemacs-ai)
 ;;; claudemacs-ai.el ends here
