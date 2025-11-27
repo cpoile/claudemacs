@@ -34,6 +34,16 @@ tools:
     elisp: claudemacs-ai-list-buffers
     safe: true
 
+  clear_buffer:
+    description: "Clear the terminal content in a claudemacs buffer. Useful when the buffer gets too large and causing performance issues."
+    elisp: claudemacs-ai-clear-buffer
+    safe: false
+    args:
+      buffer_name:
+        type: string
+        description: "Name of the claudemacs buffer to clear"
+        required: true
+
   buffer_info:
     description: "Get detailed information about a buffer (file path, size, major mode, cursor position, etc.)."
     elisp: claudemacs-ai-buffer-info

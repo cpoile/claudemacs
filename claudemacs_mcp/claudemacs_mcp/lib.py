@@ -1106,3 +1106,99 @@ async def reload_elisp_file(file_paths: list[str] | str) -> str:
         for i, file_path in enumerate(loaded_files, 1):
             report += f"  {i}. {file_path}\n"
         return report
+
+
+async def spawn_agent_async(directory: str, initial_prompt: str | None = None) -> str:
+    """Spawn a new claudemacs agent in the specified directory.
+
+    Args:
+        directory: Directory path where the agent should work (will be expanded)
+        initial_prompt: Optional initial prompt/instructions to send after startup
+
+    Returns:
+        Buffer name of the spawned agent
+    """
+    escaped_dir = escape_elisp_string(directory)
+
+    if initial_prompt:
+        escaped_prompt = escape_elisp_string(initial_prompt)
+        elisp = f'(claudemacs-ai-spawn-agent "{escaped_dir}" nil "{escaped_prompt}")'
+    else:
+        elisp = f'(claudemacs-ai-spawn-agent "{escaped_dir}")'
+
+    result = await call_emacs_async(elisp, timeout=30)
+
+    # Remove quotes from elisp string result
+    if result.startswith('"') and result.endswith('"'):
+        result = unescape_elisp_string(result[1:-1])
+
+    return result
+
+
+async def list_agents_async() -> list:
+    """List all running claudemacs agent sessions.
+
+    Returns:
+        List of [buffer-name, directory, agent-id] tuples
+    """
+    # Use json-encode in elisp for reliable parsing
+    elisp = '(json-encode (claudemacs-ai-list-agents))'
+    result = await call_emacs_async(elisp, timeout=10)
+
+    # Remove quotes if it's a quoted string
+    if result.startswith('"') and result.endswith('"'):
+        result = unescape_elisp_string(result[1:-1])
+
+    # Parse JSON
+    import json as json_module
+    try:
+        agents = json_module.loads(result)
+        return agents
+    except Exception as e:
+        # Fallback: return empty list with error
+        return []
+
+
+async def message_agent_async(buffer_name: str, message: str, from_buffer: str | None = None) -> str:
+    """Send a message to another claudemacs agent.
+
+    Args:
+        buffer_name: Buffer name of the target agent
+        message: Message to send as user input
+        from_buffer: Optional sender buffer name (auto-detected if not provided)
+
+    Returns:
+        Confirmation message
+    """
+    escaped_buffer = escape_elisp_string(buffer_name)
+    escaped_message = escape_elisp_string(message)
+
+    if from_buffer:
+        escaped_from = escape_elisp_string(from_buffer)
+        elisp = f'(claudemacs-ai-message-agent "{escaped_buffer}" "{escaped_message}" "{escaped_from}")'
+    else:
+        elisp = f'(claudemacs-ai-message-agent "{escaped_buffer}" "{escaped_message}")'
+
+    result = await call_emacs_async(elisp, timeout=10)
+
+    # Remove quotes from elisp string result
+    if result.startswith('"') and result.endswith('"'):
+        result = unescape_elisp_string(result[1:-1])
+
+    return result
+
+
+async def message_board_summary_async() -> str:
+    """Get a summary of messages sent between agents.
+
+    Returns:
+        Formatted string showing message counts
+    """
+    elisp = '(claudemacs-ai-message-board-summary)'
+    result = await call_emacs_async(elisp, timeout=10)
+
+    # Remove quotes from elisp string result
+    if result.startswith('"') and result.endswith('"'):
+        result = unescape_elisp_string(result[1:-1])
+
+    return result

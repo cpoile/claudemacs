@@ -78,6 +78,33 @@ NATIVE_TOOLS: dict = {
             "file_paths": {"type": "array", "description": "Array of file paths to reload in order (use when loading multiple files)", "required": False},
         },
     },
+    "spawn_agent": {
+        "description": "Spawn a new Claude agent in a directory. Returns the buffer name for monitoring.",
+        "safe": True,
+        "args": {
+            "directory": {"type": "string", "description": "Directory path where the agent should work (will be expanded)", "required": True},
+            "initial_prompt": {"type": "string", "description": "Optional initial prompt/instructions to send to the agent after startup"},
+        },
+    },
+    "list_agents": {
+        "description": "List all running claudemacs agent sessions. Returns (buffer-name, directory) pairs.",
+        "safe": True,
+        "args": {},
+    },
+    "message_agent": {
+        "description": "Send a message to another running agent. Messages include sender metadata and are logged to the message board.",
+        "safe": True,
+        "args": {
+            "buffer_name": {"type": "string", "description": "Buffer name of the agent (from list_agents or spawn_agent)", "required": True},
+            "message": {"type": "string", "description": "Message to send as user input to the agent", "required": True},
+            "from_buffer": {"type": "string", "description": "Optional sender buffer name (auto-detected if not provided)"},
+        },
+    },
+    "message_board_summary": {
+        "description": "Get a summary of messages sent between agents. Shows message counts for each sender/recipient pair.",
+        "safe": True,
+        "args": {},
+    },
 }
 
 
@@ -261,6 +288,27 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
         else:
             raise ValueError("Either file_path or file_paths must be provided")
         result = await lib.reload_elisp_file(file_paths)
+        return result
+
+    elif name == "spawn_agent":
+        directory = arguments["directory"]
+        initial_prompt = arguments.get("initial_prompt")
+        result = await lib.spawn_agent_async(directory, initial_prompt)
+        return result
+
+    elif name == "list_agents":
+        result = await lib.list_agents_async()
+        return json.dumps(result)
+
+    elif name == "message_agent":
+        buffer_name = arguments["buffer_name"]
+        message = arguments["message"]
+        from_buffer = arguments.get("from_buffer")
+        result = await lib.message_agent_async(buffer_name, message, from_buffer)
+        return result
+
+    elif name == "message_board_summary":
+        result = await lib.message_board_summary_async()
         return result
 
     else:
