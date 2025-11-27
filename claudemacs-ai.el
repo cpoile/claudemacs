@@ -1171,24 +1171,36 @@ This should be called during claudemacs startup to expose the CLI to Claude."
           (setenv "CLAUDEMACS_SOCKET" socket-file))))))
 
 (defun claudemacs-ai-clear-buffer (buffer-name)
-  "Clear the terminal content in BUFFER-NAME.
-Sends the 'clear' command to reset the terminal.
+  "Clear the terminal content in BUFFER-NAME by truncating the buffer.
+This removes accumulated history to improve performance.
 Designed to be called via MCP by Claude AI."
   (unless (get-buffer buffer-name)
     (error "Buffer '%s' does not exist" buffer-name))
 
-  (with-current-buffer buffer-name
-    (unless (and (boundp 'eat-terminal) eat-terminal)
-      (error "Buffer '%s' is not a claudemacs buffer (no eat-terminal)" buffer-name))
+  (let ((original-size 0)
+        (new-size 0))
+    (with-current-buffer buffer-name
+      (unless (and (boundp 'eat-terminal) eat-terminal)
+        (error "Buffer '%s' is not a claudemacs buffer (no eat-terminal)" buffer-name))
 
-    (let ((process (eat-term-parameter eat-terminal 'eat--process)))
-      (unless (and process (process-live-p process))
-        (error "Claudemacs agent in '%s' is not running" buffer-name))
+      (let ((process (eat-term-parameter eat-terminal 'eat--process)))
+        (unless (and process (process-live-p process))
+          (error "Claudemacs agent in '%s' is not running" buffer-name))
 
-      ;; Send clear command
-      (process-send-string process "clear\n")))
+        ;; Capture original size
+        (setq original-size (buffer-size))
 
-  (format "Cleared terminal in %s" buffer-name))
+        ;; Truncate buffer if too large
+        (when (> original-size 50000)
+          (let ((inhibit-read-only t))
+            ;; Keep only last 10000 chars
+            (delete-region (point-min) (max (point-min) (- (point-max) 10000)))
+            (setq new-size (buffer-size))))))
+
+    (if (> original-size 50000)
+        (format "Truncated buffer %s: %d → %d chars (removed %d)"
+                buffer-name original-size new-size (- original-size new-size))
+      (format "Buffer %s is only %d chars, no truncation needed" buffer-name original-size))))
 
 (provide 'claudemacs-ai)
 ;;; claudemacs-ai.el ends here
