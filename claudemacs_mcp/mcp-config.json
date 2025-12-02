@@ -7,6 +7,10 @@
       "env": {
         "CLAUDEMACS_SOCKET": "/var/folders/tb/04bsctp95yj8j1r9g92grnhw0000gn/T/emacs501/server"
       }
+    },
+    "notion": {
+      "url": "https://mcp.notion.com/mcp",
+      "transport": "sse"
     }
   }
 }

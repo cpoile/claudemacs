@@ -5,10 +5,65 @@ import os
 import re
 import subprocess
 import time
-from typing import Optional
+from typing import Any, TypedDict
 
 
-def get_session_cwd() -> Optional[str]:
+class ParenError(TypedDict, total=False):
+    """Type for parenthesis mismatch errors."""
+    line: int
+    line_content: str
+    open_parens: int
+    close_parens: int
+    missing: int
+    form_name: str | None
+    note: str  # Additional note about the error
+
+
+class FormInfo(TypedDict):
+    """Information about a form in elisp code."""
+    name: str | None
+    indent: int
+    line_idx: int
+    line: str
+    start_idx: int
+    end_idx: int
+
+
+class SExprInfo(TypedDict):
+    """Information about an S-expression being tracked."""
+    line: int
+    col: int
+    indent: int
+    label: str | None
+    level: int
+
+
+class ErrorInfo(TypedDict):
+    """Generic error information."""
+    error: str
+    line: int | None
+    expr: SExprInfo | None
+    prev: SExprInfo | None
+    root: SExprInfo | None
+    close_line: int | None
+
+
+class BashResult(TypedDict):
+    """Result from bash_async execution."""
+    output: str
+    exit_code: int
+    buffer_name: str
+
+
+class WatchResult(TypedDict):
+    """Result from watch_for_pattern_async."""
+    match: str
+    pos: int
+    line: str
+    line_num: int
+
+
+def get_session_cwd() -> str | None:
     """Get the claudemacs session's working directory.
 
     This is set by claudemacs.el via the CLAUDEMACS_CWD env var in the MCP config.
@@ -49,7 +104,7 @@ def get_socket_path() -> str:
     return os.path.join(emacs_dir, 'server', 'server')
 
 
-def call_emacs(elisp_expr: str, socket: Optional[str] = None, timeout: int = 30) -> str:
+def call_emacs(elisp_expr: str, socket: str | None = None, timeout: int = 30) -> str:
     """Call emacsclient with an elisp expression.
 
     Args:
@@ -90,7 +145,7 @@ def unescape_elisp_string(s: str) -> str:
     return s.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
 
 
-async def call_emacs_async(elisp_expr: str, socket: Optional[str] = None, timeout: int = 30) -> str:
+async def call_emacs_async(elisp_expr: str, socket: str | None = None, timeout: int = 30) -> str:
     """Async version of call_emacs using asyncio subprocess.
 
     Args:
@@ -134,10 +189,10 @@ def escape_elisp_string(s: str) -> str:
 
 async def get_buffer_content_async(
     buffer_name: str,
-    tail_lines: Optional[int] = None,
-    head_lines: Optional[int] = None,
-    start_line: Optional[int] = None,
-    end_line: Optional[int] = None
+    tail_lines: int | None = None,
+    head_lines: int | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None
 ) -> str:
     """Async helper to get buffer content from Emacs.
 
@@ -228,7 +283,7 @@ async def watch_for_pattern_async(
     pattern: str,
     timeout: float = 30.0,
     poll_interval: float = 0.2
-) -> Optional[dict]:
+) -> WatchResult | None:
     """Watch a buffer until a regex pattern appears.
 
     Polls Emacs asynchronously without blocking.
@@ -314,7 +369,7 @@ async def send_input_async(buffer_name: str, text: str) -> str:
 async def send_and_watch_async(
     buffer_name: str,
     input_text: str,
-    done_pattern: Optional[str] = None,
+    done_pattern: str | None = None,
     timeout: float = 30.0,
     stable_time: float = 1.0,
     poll_interval: float = 0.2
@@ -395,7 +450,7 @@ async def bash_async(
     directory: str,
     timeout: float = 120.0,
     poll_interval: float = 0.2
-) -> dict:
+) -> BashResult:
     """Execute a bash command in a project shell and return the output.
 
     Uses a marker-based approach for reliable completion detection.
@@ -598,8 +653,8 @@ def parse_s_exprs(line: str):
 
 def check_parens_v2(
     lines: list[str],
-) -> list[dict]:
-    stack: list[dict] = []
+) -> list[ParenError]:
+    stack: list[SExprInfo] = []
     block_stack: list[dict] = []
 
     prev_indent = 0
@@ -608,7 +663,7 @@ def check_parens_v2(
     # The immediately prior s_expr
     prev_s_expr = None
 
-    errors = []
+    errors: list[dict[str, Any]] = []
     reported_forms = set()  # Track (line, label) of forms already reported
 
     for i, line in enumerate(lines):
@@ -623,15 +678,15 @@ def check_parens_v2(
         if current_indent < prev_indent and stack:
             # We've de-indented - check if there are forms that should have closed
             # Look for forms with indent >= prev_indent (they were at the deeper level)
-            for s_expr in stack:
+            for stack_expr in stack:
                 # If a form's children would be at indent > current_indent,
                 # and we've de-indented to current_indent,
                 # then that form should have been closed
-                form_key = (s_expr["line"], s_expr.get("label"))
-                if s_expr["indent"] >= current_indent and s_expr["line"] < i - 1 and form_key not in reported_forms:
+                form_key = (stack_expr["line"], stack_expr.get("label"))
+                if stack_expr["indent"] >= current_indent and stack_expr["line"] < i - 1 and form_key not in reported_forms:
                     # This form is at or past our current indent level
                     # It should have been closed before we de-indented
-                    errors.append({"error": "form not closed before de-indent", "expr": s_expr, "de_indent_line": i})
+                    errors.append({"error": "form not closed before de-indent", "expr": stack_expr, "de_indent_line": i})
                     reported_forms.add(form_key)
                     break  # Only report the first (most nested) one
 
@@ -643,7 +698,7 @@ def check_parens_v2(
                     # label: if the s-expr starts with a literal, use that to identify it
                     # indent: the character pos where the ( appears.
                     # level: number of unclosed parens so far
-                    s_expr = {"line": i, "label": label, "indent": new_indent, "level": len(stack)}
+                    s_expr: SExprInfo = {"line": i, "col": new_indent, "label": label, "indent": new_indent, "level": len(stack)}
 
                     # Check if we're not properly closing
                     if not stack and new_indent > 0:
@@ -666,15 +721,15 @@ def check_parens_v2(
                     stack.append(s_expr)
                 case ')':
                     if stack:
-                        prev = stack.pop()
-                        prev_s_expr = prev
+                        popped_expr = stack.pop()
+                        prev_s_expr = popped_expr
                         # Check if we're closing a form that's at a deeper indent than current line
                         # This suggests the form should have been closed earlier (on a deeper line)
-                        if prev["indent"] > current_indent and prev["line"] != i:
+                        if popped_expr["indent"] > current_indent and popped_expr["line"] != i:
                             # The form we're closing is indented more than this line
                             # AND it was opened on a different line (not same line)
                             # This means it should have closed before we de-indented
-                            errors.append({"error": "unclosed form detected via indent", "expr": prev, "close_line": i})
+                            errors.append({"error": "unclosed form detected via indent", "expr": popped_expr, "close_line": i})
                     else:
                         # We have too many parens - track the line where this occurs
                         errors.append({"error": "too many close parens", "line": i, "root": root_s_expr, "prev": prev_s_expr})
@@ -694,10 +749,10 @@ def check_parens_v2(
                 errors.append({"error": "missing closing paren", "expr": s_expr})
 
     # Transform errors to match expected format
-    formatted_errors = []
+    formatted_errors: list[ParenError] = []
     for err in errors:
         if err["error"] == "previous s-expr not closed":
-            prev = err["prev"]
+            prev: dict[str, Any] = err["prev"]
             formatted_errors.append({
                 'line': prev['line'] + 1,  # Convert to 1-indexed
                 'line_content': lines[prev['line']].rstrip() if prev['line'] < len(lines) else "",
@@ -708,7 +763,7 @@ def check_parens_v2(
             })
         elif err["error"] == "too many close parens":
             # Report the line where the extra close paren occurs
-            line_num = err.get('line', prev_s_expr['line'] if prev_s_expr else 0)
+            line_num = int(err.get('line', prev_s_expr['line'] if prev_s_expr else 0))
             # Extract form name from the line
             form_name = None
             if line_num < len(lines):
@@ -758,7 +813,7 @@ def check_block_parens_recursive(
     base_indent: int,
     global_line_offset: int,
     parent_balanced: bool = False
-) -> list[dict]:
+) -> list[ParenError]:
     """Recursively check parens in a block using indentation to find sub-blocks.
 
     Args:
@@ -825,7 +880,7 @@ def check_block_parens_recursive(
     start_scan_idx = 1 if block_lines and block_lines[0][1].strip().startswith('(') else 0
 
     # Collect all forms at the same indentation level
-    forms = []
+    forms: list[FormInfo] = []
     idx = start_scan_idx
     while idx < len(block_lines):
         line_idx, line = block_lines[idx]
@@ -860,14 +915,15 @@ def check_block_parens_recursive(
                 break
             form_end_idx += 1
 
-        forms.append({
-            'name': form_name,
-            'indent': form_indent,
-            'line_idx': line_idx,
-            'line': line,
-            'start_idx': form_start_idx,
-            'end_idx': form_end_idx
-        })
+        form: FormInfo = {
+            "name": form_name,
+            "indent": form_indent,
+            "line_idx": line_idx,
+            "line": line,
+            "start_idx": form_start_idx,
+            "end_idx": form_end_idx
+        }
+        forms.append(form)
 
         idx = form_end_idx
 
@@ -974,7 +1030,7 @@ def check_block_parens_recursive(
     return []
 
 
-def check_elisp_parens(code: str) -> list[dict]:
+def check_elisp_parens(code: str) -> list[dict[Any, Any]]:
     """Check elisp code string for unbalanced parens using indentation analysis.
 
     Args:
@@ -992,12 +1048,13 @@ def check_elisp_parens(code: str) -> list[dict]:
     # If there are multiple errors, they're likely cascading from the first one
     # Only return the first error to avoid overwhelming the user
     if errors:
-        return errors[:1]
+        # Cast to the expected return type
+        return [dict(err) for err in errors[:1]]
 
     return []
 
 
-def check_elisp_file_parens(file_path: str) -> list[dict]:
+def check_elisp_file_parens(file_path: str) -> list[dict[Any, Any]]:
     """Check an elisp file for unbalanced parens using indentation analysis.
 
     Args:
@@ -1108,23 +1165,28 @@ async def reload_elisp_file(file_paths: list[str] | str) -> str:
         return report
 
 
-async def spawn_agent_async(directory: str, initial_prompt: str | None = None) -> str:
+async def spawn_agent_async(directory: str, agent_name: str | None = None) -> str:
     """Spawn a new claudemacs agent in the specified directory.
 
     Args:
         directory: Directory path where the agent should work (will be expanded)
-        initial_prompt: Optional initial prompt/instructions to send after startup
+        agent_name: Optional identifier for the agent. If not provided, buffer will be
+                   named *claudemacs:/path*. If provided, buffer will be *claudemacs:/path:agent-name*.
 
     Returns:
         Buffer name of the spawned agent
+
+    Note: To send an initial message to the agent after spawning, use message_agent separately.
+          TODO: MCP server will handle this automatically.
     """
     escaped_dir = escape_elisp_string(directory)
 
-    if initial_prompt:
-        escaped_prompt = escape_elisp_string(initial_prompt)
-        elisp = f'(claudemacs-ai-spawn-agent "{escaped_dir}" nil "{escaped_prompt}")'
+    # Build elisp call - now calls claudemacs-spawn-agent directly
+    if agent_name:
+        escaped_name = escape_elisp_string(agent_name)
+        elisp = f'(claudemacs-spawn-agent "{escaped_dir}" "{escaped_name}")'
     else:
-        elisp = f'(claudemacs-ai-spawn-agent "{escaped_dir}")'
+        elisp = f'(claudemacs-spawn-agent "{escaped_dir}")'
 
     result = await call_emacs_async(elisp, timeout=30)
 
@@ -1165,7 +1227,7 @@ async def message_agent_async(buffer_name: str, message: str, from_buffer: str |
     Args:
         buffer_name: Buffer name of the target agent
         message: Message to send as user input
-        from_buffer: Optional sender buffer name (auto-detected if not provided)
+        from_buffer: Optional sender buffer name (should be provided by server from session state)
 
     Returns:
         Confirmation message
@@ -1173,12 +1235,39 @@ async def message_agent_async(buffer_name: str, message: str, from_buffer: str |
     escaped_buffer = escape_elisp_string(buffer_name)
     escaped_message = escape_elisp_string(message)
 
-    if from_buffer:
-        escaped_from = escape_elisp_string(from_buffer)
-        elisp = f'(claudemacs-ai-message-agent "{escaped_buffer}" "{escaped_message}" "{escaped_from}")'
-    else:
-        elisp = f'(claudemacs-ai-message-agent "{escaped_buffer}" "{escaped_message}")'
+    # Use a simpler approach - directly send the string to the eat terminal
+    elisp = f'''(if (get-buffer "{escaped_buffer}")
+        (with-current-buffer "{escaped_buffer}"
+          (if (and (boundp 'eat-terminal) eat-terminal)
+              (progn
+                (eat-term-send-string eat-terminal "{escaped_message}")
+                (eat-term-input-event eat-terminal 1 'return)
+                "Sent message to {escaped_buffer}")
+            (error "Buffer is not a claudemacs terminal")))
+      (error "Buffer does not exist"))'''
 
+    result = await call_emacs_async(elisp, timeout=10)
+
+    # Remove quotes from elisp string result
+    if result.startswith('"') and result.endswith('"'):
+        result = unescape_elisp_string(result[1:-1])
+
+    return result
+
+
+async def check_messages_async(buffer_name: str, clear: bool = False) -> str:
+    """Check queued messages for an agent.
+
+    Args:
+        buffer_name: Buffer name of the agent to check messages for
+        clear: Whether to clear messages after reading them
+
+    Returns:
+        Formatted string with queued messages and response instructions
+    """
+    escaped_buffer = escape_elisp_string(buffer_name)
+    clear_arg = 't' if clear else 'nil'
+    elisp = f'(claudemacs-ai-check-messages "{escaped_buffer}" {clear_arg})'
     result = await call_emacs_async(elisp, timeout=10)
 
     # Remove quotes from elisp string result

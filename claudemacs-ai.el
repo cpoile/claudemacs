@@ -984,10 +984,11 @@ Designed to be called via emacsclient by Claude AI."
 If BUFFER-NAME is not provided, uses `claudemacs-session-cwd' (set by MCP server).
 This reloads elisp files and restarts the MCP server with any code changes.
 Designed to be called via emacsclient by Claude AI."
+  (require 'claudemacs-ai-messaging)
   (let* ((target-buffer (or buffer-name
-                            ;; Compute from MCP session cwd
+                            ;; Find the agent buffer from MCP session cwd
                             (when (and (boundp 'claudemacs-session-cwd) claudemacs-session-cwd)
-                              (format "*claudemacs:%s*" claudemacs-session-cwd))
+                              (claudemacs-ai-find-agent-by-cwd claudemacs-session-cwd))
                             ;; Error if we can't determine the session
                             (error "Cannot determine claudemacs session - claudemacs-session-cwd not set"))))
     ;; Check if this is a claudemacs buffer
@@ -996,20 +997,21 @@ Designed to be called via emacsclient by Claude AI."
         (let ((work-dir (with-current-buffer target-buffer
                          (or claudemacs--cwd
                              ;; Fallback: extract directory from buffer name
-                             ;; *claudemacs:/path/to/dir/* -> /path/to/dir
-                             (when (string-match "^\\*claudemacs:\\(.*\\)\\*$" target-buffer)
+                             ;; *claudemacs:/path/to/dir/* or *claudemacs:/path/to/dir:agent-name*
+                             (when (string-match "^\\*claudemacs:\\([^:]+\\)" target-buffer)
                                (match-string 1 target-buffer))))))
           (unless work-dir
             (error "Cannot determine working directory for buffer '%s'" target-buffer))
           ;; Use run-at-time to defer execution so we can return a response first
-          ;; Pass work-dir to claudemacs-restart to target the correct session
+          ;; Pass work-dir and buffer name to claudemacs-restart to target the correct session
           (run-at-time 0.5 nil
-                       (lambda (dir)
+                       (lambda (dir buf)
                          (require 'claudemacs)
-                         (claudemacs-restart dir))
-                       work-dir)
-          (format "Restart scheduled for %s - session will reload elisp files, restart MCP server, and resume shortly"
-                  work-dir))
+                         ;; Call claudemacs-restart with both work-dir and buffer-name
+                         (claudemacs-restart dir buf))
+                       work-dir target-buffer)
+          (format "Restart scheduled for %s (buffer: %s) - session will reload elisp files, restart MCP server, and resume shortly"
+                  work-dir target-buffer))
       (error "Buffer '%s' is not a claudemacs buffer" target-buffer))))
 
 ;;;; Project Shell for Bash Execution

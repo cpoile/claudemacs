@@ -8,6 +8,7 @@
 ;; - Spawning multiple claudemacs agents per project
 ;; - Listing all running agents
 ;; - Sending messages between agents
+;; - Queuing messages for agents that are busy (thinking/waiting for permissions)
 ;;
 ;; Agents are identified by unique buffer names:
 ;; - Primary agent: *claudemacs:<directory>*
@@ -16,6 +17,70 @@
 ;;; Code:
 
 (require 'cl-lib)
+
+;;;; Message Queue System
+
+(defvar claudemacs-ai-message-queues (make-hash-table :test 'equal)
+  "Hash table mapping buffer names to message queues.
+Each queue is a list of plists with keys: :message, :sender, :timestamp.")
+
+(defun claudemacs-ai-message-queue-add (buffer-name message sender)
+  "Add MESSAGE from SENDER to the queue for BUFFER-NAME.
+Returns the number of messages now in the queue."
+  (let* ((queue (gethash buffer-name claudemacs-ai-message-queues '()))
+         (entry (list :message message
+                      :sender sender
+                      :timestamp (current-time))))
+    (puthash buffer-name (append queue (list entry)) claudemacs-ai-message-queues)
+    (length (gethash buffer-name claudemacs-ai-message-queues))))
+
+(defun claudemacs-ai-message-queue-get (buffer-name &optional clear)
+  "Get all queued messages for BUFFER-NAME.
+Returns a list of plists with keys: :message, :sender, :timestamp.
+If CLEAR is non-nil, removes the messages from the queue after retrieving them."
+  (let ((queue (gethash buffer-name claudemacs-ai-message-queues '())))
+    (when clear
+      (remhash buffer-name claudemacs-ai-message-queues))
+    queue))
+
+(defun claudemacs-ai-message-queue-peek (buffer-name)
+  "Check if there are queued messages for BUFFER-NAME.
+Returns the count of messages without removing them."
+  (length (gethash buffer-name claudemacs-ai-message-queues '())))
+
+(defun claudemacs-ai-message-queue-clear (buffer-name)
+  "Clear all queued messages for BUFFER-NAME."
+  (remhash buffer-name claudemacs-ai-message-queues))
+
+(defun claudemacs-ai-message-queue-format (buffer-name)
+  "Format queued messages for BUFFER-NAME as a human-readable string.
+Designed to be shown to Claude AI agents."
+  (let ((queue (gethash buffer-name claudemacs-ai-message-queues '())))
+    (if (null queue)
+        "No queued messages."
+      (with-temp-buffer
+        (insert (format "You have %d queued message%s:\n\n"
+                       (length queue)
+                       (if (> (length queue) 1) "s" "")))
+        (dolist (entry queue)
+          (let ((message (plist-get entry :message))
+                (sender (plist-get entry :sender))
+                (timestamp (plist-get entry :timestamp)))
+            (insert (format "═══════════════════════════════════════════════════════\n"))
+            (insert (format "From: %s\n" sender))
+            (insert (format "Time: %s\n" (format-time-string "%Y-%m-%d %H:%M:%S" timestamp)))
+            (insert (format "─────────────────────────────────────────────────────\n"))
+            (insert message)
+            (insert "\n\n")))
+        (insert (format "═══════════════════════════════════════════════════════\n\n"))
+        (insert "To respond to a message, use the MCP tool:\n")
+        (insert "  mcp__claudemacs__message_agent\n")
+        (insert "with parameters:\n")
+        (insert "  buffer_name: <sender's buffer name>\n")
+        (insert "  message: <your response>\n\n")
+        (insert "To clear these messages after reading, use:\n")
+        (insert "  mcp__claudemacs__check_messages with clear=true\n")
+        (buffer-string)))))
 
 (defun claudemacs-ai-spawn-agent (directory &optional agent-name initial-prompt)
   "Spawn a new claudemacs agent in DIRECTORY.
@@ -78,21 +143,70 @@ Designed to be called via MCP by Claude AI."
             (push (vector name directory) agents)))))
     (vconcat (nreverse agents))))
 
-(defun claudemacs-ai-message-agent (buffer-name message &optional from-buffer)
-  "Send MESSAGE to the claudemacs agent in BUFFER-NAME.
-FROM-BUFFER is the sender's buffer name (defaults to current buffer if it's a claudemacs buffer).
-The message is prefixed with sender context and logged to the message board.
+(defun claudemacs-ai-find-agent-by-cwd (cwd)
+  "Find the claudemacs agent buffer for CWD.
+Returns the buffer name, or nil if not found.
+Prefers the primary agent (without agent-name suffix) if multiple exist.
+Designed to be called via MCP by Claude AI."
+  (let* ((expanded-cwd (expand-file-name cwd))
+         (primary-buffer (format "*claudemacs:%s*" expanded-cwd))
+         (agents '()))
+    ;; First check if primary agent exists
+    (if (get-buffer primary-buffer)
+        primary-buffer
+      ;; Otherwise find any agent for this directory
+      (dolist (buffer (buffer-list))
+        (let ((name (buffer-name buffer)))
+          (when (string-match (concat "^\\*claudemacs:"
+                                     (regexp-quote expanded-cwd)
+                                     "\\(?::\\(.+\\)\\)?\\*$")
+                             name)
+            (push name agents))))
+      ;; Return the first match, or nil
+      (car agents))))
+
+(defun claudemacs-ai-check-messages (buffer-name &optional clear)
+  "Check queued messages for BUFFER-NAME.
+If CLEAR is non-nil, messages are removed from the queue after retrieval.
+Returns a formatted string with all queued messages and instructions on how to respond.
+Designed to be called via MCP by Claude AI agents to check their inbox."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+  (claudemacs-ai-message-queue-format buffer-name)
+  (when clear
+    (claudemacs-ai-message-queue-clear buffer-name))
+  (claudemacs-ai-message-queue-format buffer-name))
+
+(defun claudemacs-ai-agent-ready-p (buffer-name)
+  "Check if the claudemacs agent in BUFFER-NAME is ready to receive messages.
+Returns t if the agent has a prompt visible and is not busy thinking.
+Returns nil if the agent is busy, waiting for input, or not ready.
+Designed to be called via MCP by Claude AI."
+  (when-let ((buffer (get-buffer buffer-name)))
+    (with-current-buffer buffer
+      (when (and (boundp 'eat-terminal) eat-terminal)
+        (let* ((process (eat-term-parameter eat-terminal 'eat--process))
+               ;; Get last ~1000 chars of buffer for checking
+               (tail-start (max (point-min) (- (point-max) 1000)))
+               (tail-content (buffer-substring-no-properties tail-start (point-max))))
+          (and process
+               (memq (process-status process) '(run open listen connect))
+               ;; Check for the "? for shortcuts" line which appears when ready for input
+               (string-match-p "? for shortcuts" tail-content)
+               ;; Not showing thinking indicator
+               (not (string-match-p "Thought for\\|Thinking on\\|Slithering\\|Flummoxing" tail-content))))))))
+
+
+(defun claudemacs-ai-send-message-now (buffer-name message &optional from-buffer)
+  "Send MESSAGE directly to the claudemacs agent in BUFFER-NAME.
+FROM-BUFFER is the sender's buffer name for logging purposes.
+This function sends immediately via process-send-string, bypassing any readiness checks.
+The message will be queued by Claude Code if it's currently busy.
 Designed to be called via MCP by Claude AI."
   (unless (get-buffer buffer-name)
     (error "Buffer '%s' does not exist" buffer-name))
 
-  ;; Determine sender
-  (let* ((sender (or from-buffer
-                    (when (and (buffer-name)
-                              (string-match-p "^\\*claudemacs:" (buffer-name)))
-                      (buffer-name))
-                    "unknown"))
-         ;; Format message with metadata
+  (let* ((sender (or from-buffer "unknown"))
          (formatted-message (format "[Message from %s]\n%s" sender message)))
 
     (with-current-buffer buffer-name
@@ -106,14 +220,45 @@ Designed to be called via MCP by Claude AI."
         ;; Log to message board
         (claudemacs-ai-message-board-log sender buffer-name message)
 
-        ;; Send the message using eat's input mechanism
-        ;; This properly simulates user input and triggers submission
-        (dolist (char (string-to-list formatted-message))
-          (eat-self-input 1 char))
-        ;; Send carriage return to submit
-        (eat-self-input 1 ?\r)))
+        ;; Send the message directly to the process, then submit with just carriage return
+        (process-send-string process formatted-message)
+        (sit-for 0.1)  ; Small delay to ensure message is processed
+        (process-send-string process "\r")))
 
     (format "Message sent to %s from %s" buffer-name sender)))
+
+(defun claudemacs-ai-message-agent (buffer-name message &optional from-buffer)
+  "Queue MESSAGE for the claudemacs agent in BUFFER-NAME.
+FROM-BUFFER is the sender's buffer name (defaults to current buffer if it's a claudemacs buffer).
+The message is added to the recipient's queue and logged to the message board.
+The recipient can check their messages using mcp__claudemacs__check_messages.
+Designed to be called via MCP by Claude AI."
+  (unless (get-buffer buffer-name)
+    (error "Buffer '%s' does not exist" buffer-name))
+
+  ;; Determine sender
+  (let ((sender (or from-buffer
+                    (when (and (buffer-name)
+                              (string-match-p "^\\*claudemacs:" (buffer-name)))
+                      (buffer-name))
+                    "unknown")))
+
+    ;; Verify it's a claudemacs buffer
+    (with-current-buffer buffer-name
+      (unless (and (boundp 'eat-terminal) eat-terminal)
+        (error "Buffer '%s' is not a claudemacs buffer (no eat-terminal)" buffer-name))
+
+      (let ((process (eat-term-parameter eat-terminal 'eat--process)))
+        (unless (and process (process-live-p process))
+          (error "Claudemacs agent in '%s' is not running" buffer-name))))
+
+    ;; Add to queue
+    (let ((queue-size (claudemacs-ai-message-queue-add buffer-name message sender)))
+      ;; Log to message board
+      (claudemacs-ai-message-board-log sender buffer-name message)
+
+      (format "Message queued for %s from %s (%d message%s in queue). The recipient can check messages using mcp__claudemacs__check_messages."
+              buffer-name sender queue-size (if (> queue-size 1) "s" "")))))
 
 ;;;; Message Board (Org-Mode Buffer)
 

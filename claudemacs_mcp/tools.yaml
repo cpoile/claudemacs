@@ -302,24 +302,34 @@ tools:
 
   # Agent coordination - spawn and communicate with other Claude agents
   spawn_agent:
-    description: "Spawn a new Claude agent in a directory. Returns the buffer name for monitoring."
-    elisp: claudemacs-ai-spawn-agent
+    description: "Spawn a new Claude agent in a directory. Returns the buffer name for monitoring. Note: To send an initial message to the agent after spawning, use message_agent separately (TODO: MCP server will handle this automatically)."
+    elisp: claudemacs-spawn-agent
     args:
       directory:
         type: string
         description: "Directory path where the agent should work (will be expanded)"
         required: true
-      initial_prompt:
+      agent_name:
         type: string
-        description: "Optional initial prompt/instructions to send to the agent after startup"
+        description: "Optional identifier for the agent (e.g., 'test', 'debug'). If not provided, buffer will be named *claudemacs:/path*. If provided, buffer will be *claudemacs:/path:agent-name*."
 
   list_agents:
     description: "List all running claudemacs agent sessions. Returns (buffer-name, directory) pairs."
     elisp: claudemacs-ai-list-agents
     safe: true
 
+  agent_ready_p:
+    description: "Check if an agent is ready to receive messages (has prompt visible, not busy thinking)."
+    elisp: claudemacs-ai-agent-ready-p
+    safe: true
+    args:
+      buffer_name:
+        type: string
+        description: "Buffer name of the agent to check"
+        required: true
+
   message_agent:
-    description: "Send a message to another running agent. Use to coordinate between agents."
+    description: "Queue a message to another running agent. The MCP server will deliver it when the agent is ready."
     elisp: claudemacs-ai-message-agent
     args:
       buffer_name:
@@ -670,3 +680,8 @@ tools:
         type: string
         description: "Path to the elisp file to format"
         required: true
+
+  test_dynamic:
+    description: "A test tool added dynamically during runtime"
+    elisp: test-dynamic-tool
+    safe: true

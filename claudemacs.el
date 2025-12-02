@@ -72,6 +72,19 @@ When nil, falls back to bash-based claudemacs-cli tools."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-additional-tools-files nil
+  "List of additional tools.yaml files to load for MCP tools.
+Each file should contain tool definitions in the same format as the main tools.yaml.
+Tools from additional files are merged with the built-in tools.
+
+This can be set via .dir-locals.el to provide project-specific MCP tools.
+
+Example:
+  ((nil . ((claudemacs-additional-tools-files . (\"~/my-project/.claudemacs-tools.yaml\")))))"
+  :type '(repeat file)
+  :safe #'listp
+  :group 'claudemacs)
+
 (defcustom claudemacs-prefer-projectile-root nil
   "Whether to prefer projectile root over git root when available.
 If non-nil and projectile is loaded, use `projectile-project-root' to
@@ -194,6 +207,10 @@ are executed with the claudemacs buffer as the current buffer."
 ;;;; Buffer-local Variables
 (defvar-local claudemacs--cwd nil
   "Buffer-local variable storing the current working directory for this Claude session.")
+
+(defvar-local claudemacs--session-id nil
+  "Buffer-local variable storing the session ID (UUID) for this Claude session.
+Used to resume the correct session when restarting agents with custom names.")
 
 ;;;;
 ;;;; Utility Functions
@@ -518,9 +535,10 @@ Includes both CLI commands (if enabled) and safe MCP tools."
 (defvar claudemacs--mcp-config-file nil
   "Path to the dynamically generated MCP config file.")
 
-(defun claudemacs--generate-mcp-config (work-dir)
+(defun claudemacs--generate-mcp-config (work-dir buffer-name)
   "Generate a temporary MCP config file with dynamic paths.
 WORK-DIR is the session's working directory, used to isolate memory buffers.
+BUFFER-NAME is the claudemacs buffer name for this session.
 Returns the path to the generated config file."
   (let* ((this-file (or load-file-name buffer-file-name
                         (locate-library "claudemacs")))
@@ -529,13 +547,20 @@ Returns the path to the generated config file."
                     (expand-file-name "claudemacs_mcp" this-dir)))
          (expanded-work-dir (expand-file-name work-dir))
          (config-file (make-temp-file "claudemacs-mcp-config-" nil ".json"))
+         ;; Build environment with optional additional tools files
+         (env-vars `((CLAUDEMACS_CWD . ,expanded-work-dir)
+                    (CLAUDEMACS_BUFFER_NAME . ,buffer-name)))
+         (env-vars (if claudemacs-additional-tools-files
+                      (append env-vars
+                              `((CLAUDEMACS_ADDITIONAL_TOOLS_FILES . ,(string-join claudemacs-additional-tools-files ":"))))
+                    env-vars))
          (config-json (json-encode
                        `((mcpServers
                           . ((claudemacs
                               . ((command . "uv")
                                  (args . ["run" "--python-preference" "managed" "--directory" ,mcp-dir
                                           "-m" "claudemacs_mcp.server"])
-                                 (env . ((CLAUDEMACS_CWD . ,expanded-work-dir)))))))))))
+                                 (env . ,env-vars)))))))))
     (with-temp-file config-file
       (insert config-json))
     (setq claudemacs--mcp-config-file config-file)
@@ -557,9 +582,10 @@ Returns nil if file doesn't exist."
         (when (not (string-empty-p (string-trim content)))
           (list "--append-system-prompt" content))))))
 
-(defun claudemacs--get-mcp-config (work-dir)
+(defun claudemacs--get-mcp-config (work-dir buffer-name)
   "Generate --mcp-config flag if MCP is enabled.
 WORK-DIR is the session's working directory for memory buffer isolation.
+BUFFER-NAME is the claudemacs buffer name for this session.
 Returns nil if `claudemacs-use-mcp' is nil."
   (when claudemacs-use-mcp
     (let* ((this-file (or load-file-name buffer-file-name
@@ -568,16 +594,25 @@ Returns nil if `claudemacs-use-mcp' is nil."
            (mcp-dir (when this-dir
                       (expand-file-name "claudemacs_mcp" this-dir))))
       (when (and mcp-dir (file-directory-p mcp-dir))
-        (list "--mcp-config" (claudemacs--generate-mcp-config work-dir))))))
+        (list "--mcp-config" (claudemacs--generate-mcp-config work-dir buffer-name))))))
 
 (defun claudemacs--start (work-dir &rest args)
-  "Start Claude Code in WORK-DIR with ARGS."
+  "Start Claude Code in WORK-DIR with ARGS.
+WORK-DIR can be either:
+  - A string: \"/path\" creates buffer *claudemacs:/path*
+  - A list: '(\"/path\" \"agent-name\") creates *claudemacs:/path:agent-name*"
   (require 'eat)
   ;; Set up environment variables BEFORE spawning the Claude process
   (claudemacs-ai-setup-claude-environment)
 
-  (let* ((default-directory work-dir)
-         (buffer-name (claudemacs--get-buffer-name))
+  ;; Parse work-dir - it can be a string or (dir agent-name) list
+  (let* ((dir-string (if (listp work-dir) (car work-dir) work-dir))
+         (agent-name (when (listp work-dir) (cadr work-dir)))
+         (expanded-dir (expand-file-name dir-string))
+         (buffer-name (if agent-name
+                         (format "*claudemacs:%s:%s*" expanded-dir agent-name)
+                       (format "*claudemacs:%s*" expanded-dir)))
+         (default-directory dir-string)
          (buffer (get-buffer-create buffer-name))
          (cli-dir (file-name-directory (claudemacs-ai-get-cli-path)))
          (claudemacs-socket (when (and (boundp 'server-socket-dir)
@@ -591,14 +626,14 @@ Returns nil if `claudemacs-use-mcp' is nil."
                     (list (format "CLAUDEMACS_SOCKET=%s" claudemacs-socket)))
                   process-environment)))
     (with-current-buffer buffer
-      (cd work-dir)
+      (cd dir-string)
       (setq-local eat-term-name "xterm-256color")
       (let ((process-adaptive-read-buffering nil)
             (switches (remove nil (append args
                                          claudemacs-program-switches
                                          (claudemacs--get-auto-allow-permissions)
                                          (claudemacs--get-custom-prompt)
-                                         (claudemacs--get-mcp-config work-dir)))))
+                                         (claudemacs--get-mcp-config dir-string buffer-name)))))
         (if claudemacs-use-shell-env
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
             ;; Explicitly set environment variables in the shell command to survive shell config sourcing
@@ -617,8 +652,27 @@ Returns nil if `claudemacs-use-mcp' is nil."
           (apply #'eat-make (substring buffer-name 1 -1) claudemacs-program nil switches)))
       
       ;; Set buffer-local variables after eat-make to ensure they persist
-      (setq-local claudemacs--cwd work-dir)
-      
+      (setq-local claudemacs--cwd dir-string)
+
+      ;; Store session ID for this buffer
+      ;; For multi-agent setups, try to read from cache file first, otherwise use most recent
+      (let* ((session-cache-dir (expand-file-name ".claude/" dir-string))
+             (session-cache-file (expand-file-name
+                                  (format "session-%s" (md5 buffer-name))
+                                  session-cache-dir)))
+        (run-at-time 2 nil
+                     (lambda (buf dir cache-file)
+                       (when (buffer-live-p buf)
+                         (let ((session-id (claudemacs--get-most-recent-session-id dir)))
+                           (when session-id
+                             (with-current-buffer buf
+                               (setq-local claudemacs--session-id session-id))
+                             ;; Cache it to a file for future restarts
+                             (make-directory (file-name-directory cache-file) t)
+                             (with-temp-file cache-file
+                               (insert session-id))))))
+                     (current-buffer) dir-string session-cache-file))
+
       (claudemacs--setup-repl-faces)
       ;; Optimize scrolling for terminal input - allows text to go to bottom
       (setq-local scroll-conservatively 10000)  ; Never recenter
@@ -649,6 +703,9 @@ Returns nil if `claudemacs-use-mcp' is nil."
         (aset display-table #x23fa [?✽])  ; Replace ⏺ (U+23FA) with ✽
         (setq-local buffer-display-table display-table))
       
+      ;; Enable claudemacs-mode for keybindings
+      (claudemacs-mode 1)
+
       ;; Set up custom key mappings & completion notifications after eat initialization
       (run-with-timer 0.1 nil
                       (lambda ()
@@ -693,6 +750,52 @@ With prefix ARG, prompt for the project directory."
           (kill-buffer claudemacs-buffer))
         (message "Claudemacs session killed"))
     (error "There is no Claudemacs session in this workspace or project")))
+
+;;;###autoload
+(defun claudemacs-clear-buffer ()
+  "Clear/trim the current claudemacs buffer to improve performance.
+Removes accumulated history, keeping only the last 10KB of content."
+  (interactive)
+  (if (claudemacs--is-claudemacs-buffer-p)
+      (let ((result (claudemacs-ai-clear-buffer (buffer-name))))
+        (message "%s" result))
+    (error "Not in a claudemacs buffer")))
+
+;;;###autoload
+(defun claudemacs-spawn-agent (directory &optional agent-name)
+  "Spawn a new claudemacs agent in DIRECTORY with optional AGENT-NAME.
+When called interactively, uses current directory and prompts for agent identifier.
+If AGENT-NAME is nil or empty, buffer will be named *claudemacs:/path*.
+If provided, buffer will be named *claudemacs:/path:agent-name*.
+Returns the buffer name."
+  (interactive
+   (list (if (claudemacs--is-claudemacs-buffer-p)
+            (or claudemacs--cwd default-directory)
+          (claudemacs--project-root))
+         (let ((input (read-string "Agent identifier (leave empty for primary): " nil nil "")))
+           (if (string-empty-p input) nil input))))
+  (let* ((expanded-dir (expand-file-name directory))
+         (buffer-name (if agent-name
+                         (format "*claudemacs:%s:%s*" expanded-dir agent-name)
+                       (format "*claudemacs:%s*" expanded-dir)))
+         (work-dir-arg (if agent-name
+                          (list directory agent-name)
+                        directory)))
+    ;; Check if buffer already exists
+    (when (get-buffer buffer-name)
+      (error "Agent already exists with buffer name: %s" buffer-name))
+
+    ;; Check directory exists
+    (unless (file-directory-p expanded-dir)
+      (error "Directory does not exist: %s" expanded-dir))
+
+    ;; Spawn the agent
+    (claudemacs--start work-dir-arg)
+
+    (when (called-interactively-p 'interactive)
+      (message "Spawned agent: %s" buffer-name))
+
+    buffer-name))
 
 (defun claudemacs--get-most-recent-session-id (work-dir)
   "Get the most recent session ID for WORK-DIR.
@@ -745,20 +848,28 @@ WORK-DIR identifies the session. ATTEMPT tracks retry count."
        work-dir message timeout attempt))))
 
 ;;;###autoload
-(defun claudemacs-restart (&optional target-work-dir)
+(defun claudemacs-restart (&optional target-work-dir target-buffer-name)
   "Restart Claudemacs session, reloading elisp files and MCP server.
 This kills the current session, reloads claudemacs elisp files,
 and starts a new session with --resume to continue the conversation.
 If TARGET-WORK-DIR is provided, restart the session for that directory.
+If TARGET-BUFFER-NAME is provided, restart that specific buffer (for custom-named agents).
 Otherwise, restart the session for the current project."
   (interactive)
   (let* ((work-dir (when-let ((dir (or target-work-dir
-                                       (when-let ((buf (claudemacs--get-buffer)))
+                                       (when-let ((buf (or (when target-buffer-name
+                                                             (get-buffer target-buffer-name))
+                                                           (claudemacs--get-buffer))))
                                          (with-current-buffer buf claudemacs--cwd)))))
                      (expand-file-name dir)))
-         (claudemacs-buffer (when work-dir
-                              (get-buffer (format "*claudemacs:%s*" work-dir))))
-         (session-id (when work-dir (claudemacs--get-most-recent-session-id work-dir)))
+         (claudemacs-buffer (or (when target-buffer-name
+                                  (get-buffer target-buffer-name))
+                                (when work-dir
+                                  (get-buffer (format "*claudemacs:%s*" work-dir)))))
+         (buffer-name-to-restore (when claudemacs-buffer (buffer-name claudemacs-buffer)))
+         ;; For now, don't try to restore specific sessions for multi-agent buffers
+         ;; Just use --continue which will resume the most recent session
+         (session-id nil)
          (this-file (or load-file-name
                         (locate-library "claudemacs")))
          (this-dir (when this-file (file-name-directory this-file)))
@@ -769,7 +880,8 @@ Otherwise, restart the session for the current project."
     (unless work-dir
       (error "No Claudemacs session to restart (no work-dir)"))
     (unless claudemacs-buffer
-      (error "No Claudemacs session found for directory: %s" work-dir))
+      (error "No Claudemacs session found for directory: %s (buffer: %s)"
+             work-dir target-buffer-name))
 
     ;; Kill the target session
     (message "Killing claudemacs session for %s..." work-dir)
@@ -783,25 +895,38 @@ Otherwise, restart the session for the current project."
       (load-file (expand-file-name "claudemacs-ai.el" this-dir))
       (load-file (expand-file-name "claudemacs.el" this-dir)))
 
-    ;; Start new session with --continue (auto-continues most recent conversation)
+    ;; Start new session with either --resume <id> or --continue
     ;; Always spawn without stealing focus
-    (message "Starting new claudemacs session with --continue...")
-    (let ((claudemacs-switch-to-buffer-on-create nil))
-      (claudemacs--start work-dir "--continue"))
+    (let ((session-args (if session-id
+                           (list "--resume" session-id)
+                         (list "--continue"))))
+      (message "Starting new claudemacs session with %s %s..."
+               (car session-args)
+               (or (cadr session-args) ""))
+      (let ((claudemacs-switch-to-buffer-on-create nil)
+            (new-buffer-name nil))
+        ;; If restoring a custom-named agent, override the buffer name function
+        (if buffer-name-to-restore
+            (cl-letf (((symbol-function 'claudemacs--get-buffer-name)
+                       (lambda () buffer-name-to-restore)))
+              (apply #'claudemacs--start work-dir session-args)
+              (setq new-buffer-name buffer-name-to-restore))
+          (apply #'claudemacs--start work-dir session-args)
+          (setq new-buffer-name (format "*claudemacs:%s*" work-dir)))
 
-    ;; If buffer wasn't visible before, hide it now
-    (unless buffer-was-visible
-      (when-let* ((new-buffer (get-buffer (format "*claudemacs:%s*" work-dir)))
-                  (window (get-buffer-window new-buffer t)))
-        (delete-window window)))
+        ;; If buffer wasn't visible before, hide it now
+        (unless buffer-was-visible
+          (when-let* ((new-buffer (get-buffer new-buffer-name))
+                      (window (get-buffer-window new-buffer t)))
+            (delete-window window)))
 
-    ;; Send continuation message after Claude is ready (poll for prompt)
-    (claudemacs--send-message-when-ready
-     work-dir
-     "Session restarted - elisp and MCP server reloaded. Please continue."
-     30)
+        ;; Send continuation message after Claude is ready (poll for prompt)
+        (claudemacs--send-message-when-ready
+         work-dir
+         "Session restarted - elisp and MCP server reloaded. Please continue."
+         30)
 
-    (message "Claudemacs restarted successfully for %s" work-dir)))
+        (message "Claudemacs restarted successfully for %s" work-dir)))))
 
 (defun claudemacs--validate-process ()
   "Validate that the Claudemacs process is alive and running."
@@ -1203,6 +1328,8 @@ Hide if current, focus if visible elsewhere, show if hidden."
 (defvar claudemacs-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-e") #'claudemacs-transient-menu)
+    (define-key map (kbd "C-c t") #'claudemacs-clear-buffer)
+    (define-key map (kbd "C-c s") #'claudemacs-spawn-agent)
     map)
   "Keymap for `claudemacs-mode'.")
 

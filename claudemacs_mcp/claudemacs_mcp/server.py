@@ -6,6 +6,7 @@ Native async tools (like watch functions) are defined in Python.
 """
 
 import json
+import os
 from pathlib import Path
 
 import yaml
@@ -18,6 +19,10 @@ from . import lib
 
 # Create the MCP server
 app = Server("claudemacs")
+
+# Store the buffer identity for this MCP server instance
+# This is set during server initialization from CLAUDEMACS_BUFFER_NAME env var
+SESSION_BUFFER_NAME: str | None = None
 
 # Load tool definitions from YAML
 TOOLS_FILE = Path(__file__).parent.parent / "tools.yaml"
@@ -79,11 +84,11 @@ NATIVE_TOOLS: dict = {
         },
     },
     "spawn_agent": {
-        "description": "Spawn a new Claude agent in a directory. Returns the buffer name for monitoring.",
+        "description": "Spawn a new Claude agent in a directory. Returns the buffer name for monitoring. Note: To send an initial message to the agent after spawning, use message_agent separately (TODO: MCP server will handle this automatically).",
         "safe": True,
         "args": {
             "directory": {"type": "string", "description": "Directory path where the agent should work (will be expanded)", "required": True},
-            "initial_prompt": {"type": "string", "description": "Optional initial prompt/instructions to send to the agent after startup"},
+            "agent_name": {"type": "string", "description": "Optional identifier for the agent (e.g., 'test', 'debug'). If not provided, buffer will be named *claudemacs:/path*. If provided, buffer will be *claudemacs:/path:agent-name*."},
         },
     },
     "list_agents": {
@@ -92,7 +97,7 @@ NATIVE_TOOLS: dict = {
         "args": {},
     },
     "message_agent": {
-        "description": "Send a message to another running agent. Messages include sender metadata and are logged to the message board.",
+        "description": "Send a message to another running agent. Messages are queued and can be checked by the recipient using check_messages.",
         "safe": True,
         "args": {
             "buffer_name": {"type": "string", "description": "Buffer name of the agent (from list_agents or spawn_agent)", "required": True},
@@ -100,8 +105,21 @@ NATIVE_TOOLS: dict = {
             "from_buffer": {"type": "string", "description": "Optional sender buffer name (auto-detected if not provided)"},
         },
     },
+    "check_messages": {
+        "description": "Check queued messages for an agent. Returns formatted messages with sender info and instructions on how to respond. Use this to check your inbox.",
+        "safe": True,
+        "args": {
+            "buffer_name": {"type": "string", "description": "Buffer name of the agent to check messages for", "required": True},
+            "clear": {"type": "boolean", "description": "Whether to clear messages after reading (default: false)"},
+        },
+    },
     "message_board_summary": {
         "description": "Get a summary of messages sent between agents. Shows message counts for each sender/recipient pair.",
+        "safe": True,
+        "args": {},
+    },
+    "whoami": {
+        "description": "Get the buffer name/identity of the current claudemacs session. Use this to identify yourself when sending messages or logging actions.",
         "safe": True,
         "args": {},
     },
@@ -109,11 +127,45 @@ NATIVE_TOOLS: dict = {
 
 
 def load_tools() -> dict:
-    """Load tool definitions from YAML file."""
+    """Load tool definitions from YAML file and any additional tools files."""
     global TOOL_DEFS
+
+    # Load main tools file
     with open(TOOLS_FILE) as f:
         data = yaml.safe_load(f)
     TOOL_DEFS = data.get("tools", {})
+
+    # Check for default .claude/claudemacs-tools.yaml in session directory
+    session_cwd = os.environ.get("CLAUDEMACS_CWD")
+    if session_cwd:
+        default_tools_file = os.path.join(session_cwd, ".claude", "claudemacs-tools.yaml")
+        if os.path.exists(default_tools_file):
+            try:
+                with open(default_tools_file) as f:
+                    default_data = yaml.safe_load(f)
+                default_tools = default_data.get("tools", {})
+                # Merge default tools (these can be overridden by explicitly specified files)
+                TOOL_DEFS.update(default_tools)
+                print(f"Loaded project tools from {default_tools_file}", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: Failed to load default tools from {default_tools_file}: {e}", file=sys.stderr)
+
+    # Load additional tools files from environment variable
+    additional_files = os.environ.get("CLAUDEMACS_ADDITIONAL_TOOLS_FILES", "")
+    if additional_files:
+        for tools_file in additional_files.split(":"):
+            tools_file = tools_file.strip()
+            if tools_file and os.path.exists(tools_file):
+                try:
+                    with open(tools_file) as f:
+                        additional_data = yaml.safe_load(f)
+                    additional_tools = additional_data.get("tools", {})
+                    # Merge additional tools into TOOL_DEFS
+                    TOOL_DEFS.update(additional_tools)
+                except Exception as e:
+                    # Log but don't fail - continue with other tools
+                    print(f"Warning: Failed to load additional tools from {tools_file}: {e}", file=sys.stderr)
+
     return TOOL_DEFS
 
 
@@ -169,8 +221,125 @@ def escape_elisp_string(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
 
 
+def substitute_variables(template: str, args: dict, arg_defs: dict) -> str:
+    """Substitute variables in template string using {{var}} or $var syntax."""
+    result = template
+
+    for arg_name, value in args.items():
+        arg_def = arg_defs.get(arg_name, {})
+        arg_type = arg_def.get("type", "string")
+
+        # Format value based on type
+        if arg_type == "string":
+            formatted_value = f'"{escape_elisp_string(str(value))}"'
+        elif arg_type == "integer":
+            formatted_value = str(int(value))
+        elif arg_type == "boolean":
+            formatted_value = "t" if value else "nil"
+        elif arg_type == "array":
+            # Handle array as elisp list
+            if isinstance(value, list):
+                items = [f'"{escape_elisp_string(str(v))}"' for v in value]
+                formatted_value = f"'({' '.join(items)})"
+            else:
+                formatted_value = "'()"
+        else:
+            formatted_value = f'"{escape_elisp_string(str(value))}"'
+
+        # Replace {{var}} and $var patterns
+        result = result.replace(f"{{{{{arg_name}}}}}", formatted_value)
+        result = result.replace(f"${arg_name}", formatted_value)
+
+    return result
+
+
+def build_elisp_from_spec(elisp_spec, args: dict, arg_defs: dict) -> str:
+    """Build elisp expression from various spec formats."""
+    if isinstance(elisp_spec, str):
+        # Simple function name or template string
+        if "{{" in elisp_spec or "$" in elisp_spec:
+            # It's a template string with variables
+            return substitute_variables(elisp_spec, args, arg_defs)
+        else:
+            # It's a simple function name, use old behavior
+            return build_elisp_call(elisp_spec, args, arg_defs)
+
+    elif isinstance(elisp_spec, list):
+        # List format: ["progn", ["message", "{{msg}}"], ["sit-for", 1]]
+        return build_elisp_from_list(elisp_spec, args, arg_defs)
+
+    elif isinstance(elisp_spec, dict):
+        # Dict format for more complex expressions
+        if "template" in elisp_spec:
+            return substitute_variables(elisp_spec["template"], args, arg_defs)
+        elif "function" in elisp_spec:
+            # Traditional function call
+            return build_elisp_call(elisp_spec["function"], args, arg_defs)
+
+    # Fallback to old behavior
+    return build_elisp_call(str(elisp_spec), args, arg_defs)
+
+
+def build_elisp_from_list(spec_list: list, args: dict, arg_defs: dict) -> str:
+    """Build elisp from list specification."""
+    if not spec_list:
+        return "nil"
+
+    result_parts = []
+    for item in spec_list:
+        if isinstance(item, str):
+            # Check if it's a pure template variable (e.g., "{{item}}" or "$item")
+            # These should be substituted without adding quotes
+            is_pure_template = False
+            if item.strip().startswith("{{") and item.strip().endswith("}}"):
+                var_name = item.strip()[2:-2].strip()
+                if var_name in args:
+                    is_pure_template = True
+                    # Substitute just the variable, quotes are already added by substitute_variables
+                    result_parts.append(substitute_variables(item, args, arg_defs))
+            elif item.strip().startswith("$"):
+                var_name = item.strip()[1:]
+                if var_name in args:
+                    is_pure_template = True
+                    result_parts.append(substitute_variables(item, args, arg_defs))
+
+            if not is_pure_template:
+                # Could be a function name, literal string, or template with mixed content
+                if "{{" in item or "$" in item:
+                    # Mixed template - needs to be handled as string literal
+                    substituted = substitute_variables(item, args, arg_defs)
+                    # If it doesn't start with a quote, it needs to be quoted
+                    if not substituted.startswith('"'):
+                        result_parts.append(f'"{escape_elisp_string(substituted)}"')
+                    else:
+                        result_parts.append(substituted)
+                else:
+                    # Plain string - could be function name or literal
+                    # Check if it's a valid elisp symbol (function/variable name)
+                    import re
+                    # Valid symbols: alphanumeric, -, +, *, /, <, >, =, !, ?, etc.
+                    # but NOT if it contains spaces, %, :, etc which indicate it's a string
+                    if re.match(r'^[a-zA-Z_+\-*/<>=!?][a-zA-Z0-9_+\-*/<>=!?]*$', item):
+                        # Looks like a symbol/function name, don't quote
+                        result_parts.append(item)
+                    else:
+                        # It's a literal string, needs quotes
+                        result_parts.append(f'"{escape_elisp_string(item)}"')
+        elif isinstance(item, list):
+            # Nested list
+            result_parts.append(build_elisp_from_list(item, args, arg_defs))
+        elif isinstance(item, (int, float)):
+            result_parts.append(str(item))
+        elif isinstance(item, bool):
+            result_parts.append("t" if item else "nil")
+        else:
+            result_parts.append(str(item))
+
+    return f"({' '.join(result_parts)})"
+
+
 def build_elisp_call(elisp_fn: str, args: dict, arg_defs: dict) -> str:
-    """Build an elisp function call from tool arguments."""
+    """Build an elisp function call from tool arguments (legacy format)."""
     if not arg_defs:
         return f"({elisp_fn})"
 
@@ -224,10 +393,45 @@ def needs_session_cwd(name: str) -> bool:
     }
 
 
+def wrap_with_context(elisp_expr: str, cwd: str | None = None, buffer_name: str | None = None, file_path: str | None = None) -> str:
+    """Wrap an elisp expression with proper context (directory, buffer, or file).
+
+    Args:
+        elisp_expr: The elisp expression to evaluate
+        cwd: Working directory to use (sets default-directory)
+        buffer_name: Buffer to execute in (for buffer-local vars and modes)
+        file_path: File to visit before execution (for file-specific modes)
+
+    Returns:
+        Wrapped elisp expression that executes in the proper context
+    """
+    if file_path:
+        # Execute in the context of a file buffer
+        escaped_file = escape_elisp_string(file_path)
+        return f'''(with-current-buffer (find-file-noselect "{escaped_file}")
+                     {elisp_expr})'''
+    elif buffer_name:
+        # Execute in the context of a specific buffer
+        escaped_buffer = escape_elisp_string(buffer_name)
+        # Check if buffer exists first
+        return f'''(if (get-buffer "{escaped_buffer}")
+                     (with-current-buffer "{escaped_buffer}"
+                       {elisp_expr})
+                     (error "Buffer %s does not exist" "{escaped_buffer}"))'''
+    elif cwd:
+        # Execute with a specific default-directory
+        escaped_cwd = escape_elisp_string(cwd)
+        return f'''(let ((default-directory "{escaped_cwd}")
+                         (claudemacs-session-cwd "{escaped_cwd}"))
+                     {elisp_expr})'''
+    else:
+        # No context wrapping needed
+        return elisp_expr
+
+
 def wrap_with_cwd(elisp_expr: str, cwd: str) -> str:
-    """Wrap an elisp expression with a let binding for claudemacs-session-cwd."""
-    escaped_cwd = escape_elisp_string(cwd)
-    return f'(let ((claudemacs-session-cwd "{escaped_cwd}")) {elisp_expr})'
+    """Legacy wrapper - now calls wrap_with_context for backward compatibility."""
+    return wrap_with_context(elisp_expr, cwd=cwd)
 
 
 async def handle_native_tool(name: str, arguments: dict) -> str:
@@ -243,9 +447,9 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
         buffer_name = arguments["buffer_name"]
         pattern = arguments["pattern"]
         timeout = float(arguments.get("timeout", 30))
-        result = await lib.watch_for_pattern_async(buffer_name, pattern, timeout)
-        if result:
-            return json.dumps(result)
+        watch_result = await lib.watch_for_pattern_async(buffer_name, pattern, timeout)
+        if watch_result:
+            return json.dumps(watch_result)
         return "null (timeout - pattern not found)"
 
     elif name == "watch_for_change":
@@ -269,11 +473,11 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
         if not directory:
             raise ValueError("No directory specified and CLAUDEMACS_CWD not set")
         timeout = float(arguments.get("timeout", 120))
-        result = await lib.bash_async(command, directory, timeout)
+        bash_result = await lib.bash_async(command, directory, timeout)
         # Format output similar to Claude Code's Bash tool
-        output = result['output']
-        exit_code = result['exit_code']
-        buffer_name = result['buffer_name']
+        output = bash_result['output']
+        exit_code = bash_result['exit_code']
+        buffer_name = bash_result['buffer_name']
         if exit_code == 0:
             return f"{output}\n\n[exit code: {exit_code}, shell: {buffer_name}]"
         else:
@@ -292,24 +496,36 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
 
     elif name == "spawn_agent":
         directory = arguments["directory"]
-        initial_prompt = arguments.get("initial_prompt")
-        result = await lib.spawn_agent_async(directory, initial_prompt)
+        agent_name = arguments.get("agent_name")
+        result = await lib.spawn_agent_async(directory, agent_name)
         return result
 
     elif name == "list_agents":
-        result = await lib.list_agents_async()
-        return json.dumps(result)
+        agents_list = await lib.list_agents_async()
+        return json.dumps(agents_list)
 
     elif name == "message_agent":
         buffer_name = arguments["buffer_name"]
         message = arguments["message"]
-        from_buffer = arguments.get("from_buffer")
+        # Auto-detect sender from session state if not provided
+        from_buffer = arguments.get("from_buffer") or SESSION_BUFFER_NAME
         result = await lib.message_agent_async(buffer_name, message, from_buffer)
+        return result
+
+    elif name == "check_messages":
+        buffer_name = arguments["buffer_name"]
+        clear = arguments.get("clear", False)
+        result = await lib.check_messages_async(buffer_name, clear)
         return result
 
     elif name == "message_board_summary":
         result = await lib.message_board_summary_async()
         return result
+
+    elif name == "whoami":
+        if not SESSION_BUFFER_NAME:
+            raise ValueError("Buffer name not configured - CLAUDEMACS_BUFFER_NAME environment variable is not set")
+        return SESSION_BUFFER_NAME
 
     else:
         raise ValueError(f"Unknown native tool: {name}")
@@ -334,20 +550,77 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not elisp_fn:
             raise ValueError(f"Tool {name} has no elisp function defined")
 
+        # Extract explicit context parameters first (these are special and not passed to elisp)
+        context_buffer = arguments.pop("__buffer", None)
+        context_file = arguments.pop("__file", None)
+        context_dir = arguments.pop("__dir", None)
+
+        # Infer context from tool arguments if not explicitly provided
+        if not context_file and not context_buffer and not context_dir:
+            # Check tool definition for context hints
+            context_hint = tool_def.get("context", "auto")  # Default to auto
+
+            # Always try to auto-detect unless explicitly disabled
+            if context_hint != "none":
+                # Look for file-related arguments (highest priority)
+                if context_hint in ["file", "auto"]:
+                    for arg_name in ["file_path", "file", "path", "filename", "source", "target"]:
+                        if arg_name in arguments and arguments[arg_name]:
+                            arg_val = arguments[arg_name]
+                            # Check if it looks like a file path
+                            if isinstance(arg_val, str) and ("." in arg_val or "/" in arg_val):
+                                # More comprehensive file extension check
+                                if os.path.splitext(arg_val)[1] or not arg_val.endswith("/"):
+                                    context_file = arg_val
+                                    break
+
+                # Look for buffer-related arguments (second priority)
+                if not context_file and context_hint in ["buffer", "auto"]:
+                    for arg_name in ["buffer_name", "buffer", "buf"]:
+                        if arg_name in arguments and arguments[arg_name]:
+                            context_buffer = arguments[arg_name]
+                            break
+
+                # Look for directory-related arguments (third priority)
+                if not context_file and not context_buffer and context_hint in ["dir", "auto"]:
+                    for arg_name in ["directory", "dir", "folder", "project_dir", "work_dir"]:
+                        if arg_name in arguments and arguments[arg_name]:
+                            context_dir = arguments[arg_name]
+                            break
+                    # Also check if 'path' looks like a directory
+                    if not context_dir and "path" in arguments:
+                        path_val = arguments["path"]
+                        if isinstance(path_val, str) and (path_val.endswith("/") or not "." in os.path.basename(path_val)):
+                            context_dir = path_val
+
         # Special case for eval_elisp - pass expression directly
         if elisp_fn == "eval" and "expression" in arguments:
             elisp_expr = arguments["expression"]
         else:
-            elisp_expr = build_elisp_call(
+            elisp_expr = build_elisp_from_spec(
                 elisp_fn,
                 arguments,
                 tool_def.get("args", {})
             )
 
-        # For tools that need session context, wrap with session cwd binding
+        # Determine the context to use
         session_cwd = lib.get_session_cwd()
-        if session_cwd and needs_session_cwd(name):
-            elisp_expr = wrap_with_cwd(elisp_expr, session_cwd)
+        session_buffer = os.environ.get("CLAUDEMACS_BUFFER_NAME")
+
+        # Apply context wrapping based on priority: file > buffer > dir > session
+        if context_file:
+            elisp_expr = wrap_with_context(elisp_expr, file_path=context_file)
+        elif context_buffer:
+            elisp_expr = wrap_with_context(elisp_expr, buffer_name=context_buffer)
+        elif context_dir:
+            elisp_expr = wrap_with_context(elisp_expr, cwd=context_dir)
+        elif needs_session_cwd(name) and session_cwd:
+            # For tools that need session context, use session defaults
+            # Prefer executing in the claudemacs buffer if available
+            if session_buffer and name != "eval_elisp":
+                elisp_expr = wrap_with_context(elisp_expr, buffer_name=session_buffer)
+            else:
+                elisp_expr = wrap_with_context(elisp_expr, cwd=session_cwd)
 
         result = lib.call_emacs(elisp_expr)
 
@@ -363,6 +636,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def main():
     """Run the MCP server."""
+    global SESSION_BUFFER_NAME
+
+    # Initialize session buffer name from environment
+    SESSION_BUFFER_NAME = os.environ.get("CLAUDEMACS_BUFFER_NAME")
+
     # Load tools on startup
     load_tools()
 
