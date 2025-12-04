@@ -236,6 +236,8 @@ Designed to be called via emacsclient by Claude AI."
         (cond
          ;; eat-mode terminals (like claudemacs)
          ((and (boundp 'eat-terminal) eat-terminal)
+          ;; Clear any partial input first with Ctrl+U
+          (eat-term-send-string eat-terminal "\C-u")
           (eat-term-send-string eat-terminal text)
           (eat-term-input-event eat-terminal 1 'return)
           (format "Sent input to eat terminal '%s'" buffer-name))
@@ -1016,9 +1018,64 @@ Designed to be called via emacsclient by Claude AI."
 
 ;;;; Project Shell for Bash Execution
 
-(defun claudemacs-ai-get-project-shell (directory)
-  "Get or create an eat shell for DIRECTORY.
+
+(defun claudemacs-ai-bash-hook-script ()
+  "Generate shell hook script for bash/zsh command completion callbacks.
+Returns a string containing the hook setup script."
+  "
+__claudemacs_post_command() {
+    local exit_code=$?
+    # Run in subshell to hide job control messages
+    if command -v curl >/dev/null 2>&1; then
+        (curl -X POST -H 'Content-Type: application/json' \\
+             -d '{\"shell_id\":\"'$CLAUDEMACS_SHELL_ID'\",\"exit_code\":'$exit_code'}' \\
+             \"http://localhost:$CLAUDEMACS_MCP_PORT/bash-command\" >/dev/null 2>&1 &)
+    elif command -v python3 >/dev/null 2>&1; then
+        (python3 -c \"
+import urllib.request, json
+try:
+    data = json.dumps({'shell_id':'$CLAUDEMACS_SHELL_ID','exit_code':$exit_code}).encode()
+    req = urllib.request.Request('http://localhost:$CLAUDEMACS_MCP_PORT/bash-command', data=data, headers={'Content-Type':'application/json'})
+    urllib.request.urlopen(req, timeout=1)
+except: pass
+\" &)
+    fi
+    return $exit_code
+}
+
+if [ -n \"$BASH_VERSION\" ]; then
+    if [ -n \"$PROMPT_COMMAND\" ]; then
+        PROMPT_COMMAND=\"__claudemacs_post_command; $PROMPT_COMMAND\"
+    else
+        PROMPT_COMMAND=\"__claudemacs_post_command\"
+    fi
+elif [ -n \"$ZSH_VERSION\" ]; then
+    if ! (( \${precmd_functions[(I)__claudemacs_post_command]} )); then
+        precmd_functions+=(__claudemacs_post_command)
+    fi
+fi
+")
+
+(defun claudemacs-ai-inject-bash-hooks (buffer-name)
+  "Inject bash/zsh completion hooks into shell BUFFER-NAME.
+This sets up PROMPT_COMMAND/precmd_functions to call back to MCP server."
+  (when-let ((buf (get-buffer buffer-name)))
+    (with-current-buffer buf
+      (when (and (boundp 'eat-terminal) eat-terminal)
+        ;; Write hook script to a temp file and source it
+        (let* ((temp-file (make-temp-file "claudemacs-hooks-" nil ".sh"))
+               (hook-script (claudemacs-ai-bash-hook-script)))
+          (with-temp-file temp-file
+            (insert hook-script))
+          ;; Source the file in the shell
+          (eat-term-send-string eat-terminal (format "source %s && rm %s" temp-file temp-file))
+          (eat-term-input-event eat-terminal 1 'return)
+          (message "Injected bash hooks into %s via %s" buffer-name temp-file))))))
+
+(defun claudemacs-ai-get-project-shell (directory &optional mcp-port)
+  "Get or create an eat shell for DIRECTORY with optional MCP-PORT.
 Returns the buffer name. Creates the shell if it doesn't exist.
+If MCP-PORT is provided, sets up bash/zsh hooks for event-driven command completion.
 Designed to be called via emacsclient by Claude AI."
   (require 'eat)
   (let* ((work-dir (expand-file-name directory))
@@ -1027,15 +1084,28 @@ Designed to be called via emacsclient by Claude AI."
                                               (directory-file-name work-dir))))
          (buffer-name (format "*%s*" shell-name)))
     (if (get-buffer buffer-name)
-        ;; Buffer exists - return it
+        ;; Buffer exists - return it (hooks were already injected when created)
         buffer-name
-      ;; Create new shell - eat-make adds *...* wrapper automatically
-      (let ((default-directory work-dir))
+      ;; Create new shell with environment variables for HTTP callback
+      (let* ((default-directory work-dir)
+             ;; Set environment variables for the shell process
+             ;; Use buffer-name as shell_id so Python and shell agree on the identifier
+             (process-environment
+              (if mcp-port
+                  (append process-environment
+                         (list (format "CLAUDEMACS_MCP_PORT=%d" mcp-port)
+                               (format "CLAUDEMACS_SHELL_ID=%s" buffer-name)))
+                process-environment)))
         (with-current-buffer (eat-make shell-name
                                        (or (getenv "SHELL") "/bin/bash")
                                        nil)
-          (setq-local default-directory work-dir)))
-      buffer-name)))
+          (setq-local default-directory work-dir))
+
+        ;; Inject hooks asynchronously after shell is ready
+        (when mcp-port
+          (run-at-time 2.0 nil #'claudemacs-ai-inject-bash-hooks buffer-name))
+
+        buffer-name))))
 
 (defun claudemacs-ai-project-shell-ready-p (buffer-name)
   "Check if project shell BUFFER-NAME has an active eat terminal.
@@ -1043,6 +1113,20 @@ Returns t if ready, nil otherwise."
   (when-let ((buf (get-buffer buffer-name)))
     (with-current-buffer buf
       (and (boundp 'eat-terminal) eat-terminal t))))
+
+(defun claudemacs-ai-interrupt-shell (buffer-name)
+  "Send interrupt signal (Ctrl+C) to shell BUFFER-NAME.
+This kills the currently running command and returns to the prompt.
+Designed to be called via emacsclient by Claude AI."
+  (if (get-buffer buffer-name)
+      (with-current-buffer buffer-name
+        (if (and (boundp 'eat-terminal) eat-terminal)
+            (progn
+              ;; Send Ctrl+C (interrupt signal)
+              (eat-term-send-string-as-yank eat-terminal "\C-c")
+              (format "Sent interrupt signal (Ctrl+C) to %s" buffer-name))
+          (error "Buffer '%s' is not an eat terminal" buffer-name)))
+    (error "Buffer '%s' does not exist" buffer-name)))
 
 ;;;; Elisp Debugging and Formatting
 

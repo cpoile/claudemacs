@@ -63,6 +63,46 @@ class WatchResult(TypedDict):
     line_num: int
 
 
+class BashCommandTracker:
+    """Track in-flight bash commands and their completion events.
+
+    This class manages the event-driven bash execution system where
+    shell hooks POST to the MCP HTTP server when commands complete.
+    Tracks by shell_id (one command per shell at a time).
+    """
+    def __init__(self):
+        self.shells: dict[str, asyncio.Event] = {}
+        self.results: dict[str, dict] = {}
+
+    def register_shell(self, shell_id: str) -> asyncio.Event:
+        """Register a shell as waiting for command completion, return Event to wait on."""
+        event = asyncio.Event()
+        self.shells[shell_id] = event
+        return event
+
+    def complete_command(self, shell_id: str, exit_code: int):
+        """Mark command as complete for this shell, wake up waiting coroutine."""
+        self.results[shell_id] = {
+            'exit_code': exit_code,
+            'timestamp': time.time()
+        }
+        if shell_id in self.shells:
+            self.shells[shell_id].set()
+
+    def get_result(self, shell_id: str) -> dict | None:
+        """Get command result and clean up."""
+        result = self.results.pop(shell_id, None)
+        self.shells.pop(shell_id, None)
+        return result
+
+
+# Global command tracker instance
+command_tracker = BashCommandTracker()
+
+# Global HTTP server port (set by server.py after starting HTTP server)
+http_server_port: int | None = None
+
+
 def get_session_cwd() -> str | None:
     """Get the claudemacs session's working directory.
 
@@ -420,7 +460,13 @@ async def get_or_create_project_shell(directory: str) -> str:
     Returns the buffer name.
     """
     escaped_dir = escape_elisp_string(directory)
-    elisp = f'(claudemacs-ai-get-project-shell "{escaped_dir}")'
+
+    # Pass HTTP server port if available
+    if http_server_port:
+        elisp = f'(claudemacs-ai-get-project-shell "{escaped_dir}" {http_server_port})'
+    else:
+        elisp = f'(claudemacs-ai-get-project-shell "{escaped_dir}")'
+
     result = await call_emacs_async(elisp)
     if result.startswith('"') and result.endswith('"'):
         return unescape_elisp_string(result)
@@ -445,97 +491,106 @@ async def wait_for_shell_ready(buffer_name: str, timeout: float = 10.0) -> bool:
     return False
 
 
+async def interrupt_shell_async(buffer_name: str) -> str:
+    """Send interrupt signal (Ctrl+C) to a shell buffer.
+
+    This kills the currently running command and returns to the prompt.
+    Useful for recovering from stuck commands.
+
+    Args:
+        buffer_name: Name of the shell buffer (e.g., "*eat-shell:dirname*")
+
+    Returns:
+        Confirmation message
+    """
+    escaped_name = escape_elisp_string(buffer_name)
+    elisp = f'(claudemacs-ai-interrupt-shell "{escaped_name}")'
+    result = await call_emacs_async(elisp)
+    if result.startswith('"') and result.endswith('"'):
+        return unescape_elisp_string(result)
+    return result
+
+
 async def bash_async(
     command: str,
     directory: str,
-    timeout: float = 120.0,
-    poll_interval: float = 0.2
+    timeout: float = 120.0
 ) -> BashResult:
     """Execute a bash command in a project shell and return the output.
 
-    Uses a marker-based approach for reliable completion detection.
+    Uses event-driven completion detection with shell hooks and HTTP callbacks.
+    Shell hooks (PROMPT_COMMAND/precmd_functions) POST to the MCP HTTP server
+    when commands complete, triggering asyncio.Event. No polling required!
 
     Args:
         command: The bash command to execute
         directory: Working directory (used to get/create project shell)
         timeout: Maximum seconds to wait for command completion
-        poll_interval: Seconds between polls
 
     Returns:
         Dict with 'output', 'exit_code', and 'buffer_name'
     """
-    import random
-
-    # Get or create the project shell
+    # Get or create project shell
     buffer_name = await get_or_create_project_shell(directory)
 
     # Wait for shell to be ready
     if not await wait_for_shell_ready(buffer_name):
         raise RuntimeError(f"Shell buffer {buffer_name} not ready after 10s")
 
-    # Generate unique markers
-    marker_id = random.randint(100000, 999999)
-    start_marker = f"__CLAUDEMACS_START_{marker_id}__"
-    end_marker = f"__CLAUDEMACS_END_{marker_id}__"
-    exit_marker = f"__CLAUDEMACS_EXIT_{marker_id}__"
+    # Wait for hooks to be injected (elisp injects them after 2s delay)
+    # Add small buffer time to ensure hooks are fully set up
+    await asyncio.sleep(2.5)
 
-    # Build command with markers
-    # Echo start marker, run command in subshell (to protect against `exit`), capture exit code
-    # The subshell (...) ensures `exit` doesn't kill the main shell
-    full_command = f'echo "{start_marker}"; ({command}); __ec=$?; echo "{end_marker}"; echo "{exit_marker}:$__ec"'
+    # Extract shell_id from buffer_name
+    # Buffer name format: *eat-shell:dirname*
+    # Shell ID format: shell_<md5>_<timestamp> (set in environment by elisp)
+    # We need to get it from the shell's environment
+    # Simplest: use buffer_name as the shell identifier
+    shell_id = buffer_name
 
-    # Send the command
-    await send_input_async(buffer_name, full_command)
+    # Register this shell as waiting for command completion
+    completion_event = command_tracker.register_shell(shell_id)
 
-    # Wait for exit marker pattern
-    # Search entire buffer since markers are unique per command
-    start_time = time.time()
+    # Get buffer content before command (for output capture)
+    content_before = await get_buffer_content_async(buffer_name)
+    before_length = len(content_before)
 
-    while (time.time() - start_time) < timeout:
-        content = await get_buffer_content_async(buffer_name)
+    # Send the command (just the command, no setup needed)
+    await send_input_async(buffer_name, command)
 
-        # Look for exit marker (on its own line) in entire content
-        match = re.search(r'\n' + re.escape(exit_marker) + r':(\d+)', content)
-        if match:
-            exit_code = int(match.group(1))
+    # Wait for completion event (with timeout)
+    try:
+        await asyncio.wait_for(completion_event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        # Timeout - try to get partial output
+        content_after = await get_buffer_content_async(buffer_name)
+        partial_output = content_after[before_length:].strip()
 
-            # Extract output between markers
-            # The command echo has markers in quotes: echo "__MARKER__"
-            # The output has markers on their own lines: \n__MARKER__\n
-            # Search for \n followed by marker in entire content
-            start_pattern = r'\n' + re.escape(start_marker) + r'\s*\n'
-            end_pattern = r'\n' + re.escape(end_marker) + r'\s*\n'
+        return {
+            'output': f"TIMEOUT after {timeout}s. Partial output:\n{partial_output}",
+            'exit_code': -1,
+            'buffer_name': buffer_name
+        }
 
-            start_match = re.search(start_pattern, content)
-            end_match = re.search(end_pattern, content)
+    # Command completed - get result from tracker
+    result = command_tracker.get_result(shell_id)
+    if not result:
+        raise RuntimeError(f"Shell {shell_id} completed but no result found")
 
-            if start_match and end_match and start_match.end() < end_match.start():
-                # Extract content between the markers
-                output = content[start_match.end():end_match.start()]
-                output = output.strip()
-            else:
-                # Fallback: couldn't find markers properly
-                output = f"[Error extracting output - markers not found correctly]"
+    # Get buffer content after command
+    content_after = await get_buffer_content_async(buffer_name)
 
-            return {
-                'output': output,
-                'exit_code': exit_code,
-                'buffer_name': buffer_name
-            }
+    # Extract new output (everything after our command)
+    output = content_after[before_length:].strip()
 
-        await asyncio.sleep(poll_interval)
+    # Remove the command echo line if present
+    lines = output.split('\n')
+    if lines and lines[0].strip() == command.strip():
+        output = '\n'.join(lines[1:])
 
-    # Timeout - try to extract whatever we can
-    content = await get_buffer_content_async(buffer_name)
-    # Try to find partial output using markers
-    start_match = re.search(r'\n' + re.escape(start_marker) + r'\s*\n', content)
-    if start_match:
-        partial = content[start_match.end():]
-    else:
-        partial = "[Could not find start marker]"
     return {
-        'output': f"TIMEOUT after {timeout}s. Partial output:\n{partial}",
-        'exit_code': -1,
+        'output': output.strip(),
+        'exit_code': result['exit_code'],
         'buffer_name': buffer_name
     }
 

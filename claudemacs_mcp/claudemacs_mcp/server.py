@@ -5,11 +5,14 @@ Tools are defined in tools.yaml and dynamically loaded at startup.
 Native async tools (like watch functions) are defined in Python.
 """
 
+import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 import yaml
+from aiohttp import web
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -73,6 +76,13 @@ NATIVE_TOOLS: dict = {
             "command": {"type": "string", "description": "The bash command to execute", "required": True},
             "directory": {"type": "string", "description": "Working directory for the shell (defaults to session cwd)"},
             "timeout": {"type": "integer", "description": "Maximum seconds to wait (default: 120)"},
+        },
+    },
+    "interrupt_shell": {
+        "description": "[EXECUTE] Send interrupt signal (Ctrl+C) to a shell buffer to kill the currently running command. Useful for recovering from stuck or unresponsive commands.",
+        "safe": False,
+        "args": {
+            "buffer_name": {"type": "string", "description": "Name of the shell buffer (e.g., '*eat-shell:dirname*')", "required": True},
         },
     },
     "reload_file": {
@@ -405,6 +415,9 @@ def wrap_with_context(elisp_expr: str, cwd: str | None = None, buffer_name: str 
     Returns:
         Wrapped elisp expression that executes in the proper context
     """
+    # Get session cwd for claudemacs-session-cwd binding
+    session_cwd = lib.get_session_cwd() if not cwd else cwd
+
     if file_path:
         # Execute in the context of a file buffer
         escaped_file = escape_elisp_string(file_path)
@@ -412,12 +425,21 @@ def wrap_with_context(elisp_expr: str, cwd: str | None = None, buffer_name: str 
                      {elisp_expr})'''
     elif buffer_name:
         # Execute in the context of a specific buffer
+        # Also set claudemacs-session-cwd for tools that need it
         escaped_buffer = escape_elisp_string(buffer_name)
-        # Check if buffer exists first
-        return f'''(if (get-buffer "{escaped_buffer}")
-                     (with-current-buffer "{escaped_buffer}"
-                       {elisp_expr})
-                     (error "Buffer %s does not exist" "{escaped_buffer}"))'''
+        if session_cwd:
+            escaped_cwd = escape_elisp_string(session_cwd)
+            return f'''(if (get-buffer "{escaped_buffer}")
+                         (with-current-buffer "{escaped_buffer}"
+                           (let ((claudemacs-session-cwd "{escaped_cwd}"))
+                             {elisp_expr}))
+                         (error "Buffer %s does not exist" "{escaped_buffer}"))'''
+        else:
+            # No session cwd available, use simple buffer context
+            return f'''(if (get-buffer "{escaped_buffer}")
+                         (with-current-buffer "{escaped_buffer}"
+                           {elisp_expr})
+                         (error "Buffer %s does not exist" "{escaped_buffer}"))'''
     elif cwd:
         # Execute with a specific default-directory
         escaped_cwd = escape_elisp_string(cwd)
@@ -482,6 +504,11 @@ async def handle_native_tool(name: str, arguments: dict) -> str:
             return f"{output}\n\n[exit code: {exit_code}, shell: {buffer_name}]"
         else:
             return f"{output}\n\n[exit code: {exit_code}, shell: {buffer_name}] (command failed)"
+
+    elif name == "interrupt_shell":
+        buffer_name = arguments["buffer_name"]
+        result = await lib.interrupt_shell_async(buffer_name)
+        return result
 
     elif name == "reload_file":
         # Support both single file_path and multiple file_paths
@@ -634,8 +661,56 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {str(e)}")]
 
 
+async def bash_command_callback(request):
+    """HTTP endpoint: POST /bash-command
+
+    Receives completion notifications from shell hooks.
+    Payload: {"shell_id": "xxx", "exit_code": 0}
+    """
+    try:
+        data = await request.json()
+        shell_id = data.get('shell_id')
+        exit_code = data.get('exit_code', -1)
+
+        if not shell_id:
+            return web.json_response({'error': 'shell_id required'}, status=400)
+
+        # Notify the waiting command via the global tracker
+        lib.command_tracker.complete_command(shell_id, exit_code)
+
+        return web.json_response({'status': 'ok'})
+
+    except Exception as e:
+        print(f"Error in bash_command_callback: {e}", file=sys.stderr)
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def start_http_server():
+    """Start HTTP server on random available port.
+
+    Returns (port, runner) tuple.
+    """
+    http_app = web.Application()
+    http_app.router.add_post('/bash-command', bash_command_callback)
+
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+
+    # Bind to localhost on random available port
+    site = web.TCPSite(runner, 'localhost', 0)
+    await site.start()
+
+    # Get actual port assigned
+    port = site._server.sockets[0].getsockname()[1]
+
+    # Print port to stderr for Emacs to capture
+    print(f"CLAUDEMACS_MCP_HTTP_PORT={port}", file=sys.stderr, flush=True)
+
+    return port, runner
+
+
 async def main():
-    """Run the MCP server."""
+    """Run the MCP server with HTTP endpoint for bash callbacks."""
     global SESSION_BUFFER_NAME
 
     # Initialize session buffer name from environment
@@ -644,12 +719,24 @@ async def main():
     # Load tools on startup
     load_tools()
 
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+    # Start HTTP server for bash command callbacks
+    http_port, http_runner = await start_http_server()
+    print(f"HTTP server listening on localhost:{http_port}", file=sys.stderr, flush=True)
+
+    # Store port in lib for use by bash_async
+    lib.http_server_port = http_port
+
+    try:
+        # Run stdio MCP server (this blocks until server exits)
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
+    finally:
+        # Clean up HTTP server
+        await http_runner.cleanup()
 
 
 def get_safe_tools() -> list[str]:
