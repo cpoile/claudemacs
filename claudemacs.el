@@ -272,6 +272,17 @@ use its name, otherwise fall back to the project root."
     (and (buffer-live-p buf)
          (string-match-p "^\\*claudemacs:" (buffer-name buf)))))
 
+(defun claudemacs--parse-buffer-name (buffer-name)
+  "Parse claudemacs buffer name into components.
+Buffer name format:
+  *claudemacs:/path/to/dir* or
+  *claudemacs:/path/to/dir:agent-name*
+Returns cons cell (directory . agent-name) or (directory . nil)."
+  (when (string-match "^\\*claudemacs:\\([^:*]+\\)\\(?::\\([^*]+\\)\\)?\\*$" buffer-name)
+    (let ((dir (match-string 1 buffer-name))
+          (agent (match-string 2 buffer-name)))
+      (cons dir agent))))
+
 (defun claudemacs--switch-to-buffer ()
   "Switch to the claudemacs buffer for current session.
 Returns t if switched successfully, nil if no buffer exists."
@@ -380,7 +391,7 @@ Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
           (message "Eat is ready, setting up integrations")
           (with-current-buffer buffer
             (claudemacs--setup-buffer-keymap)
-            (claudemacs-setup-bell-handler)
+            (claudemacs-setup-bell-handler buffer)
             ;; Run startup hook after setup is complete
             (run-hooks 'claudemacs-startup-hook)))
       ;; Eat not ready yet, retry if we haven't exceeded max attempts
@@ -391,15 +402,22 @@ Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
                           (claudemacs--setup-eat-integration buffer (1+ retry-count))))))))
 
 ;;;###autoload
-(defun claudemacs-setup-bell-handler ()
-  "Set up or re-setup the completion notification handler.
+(defun claudemacs-setup-bell-handler (&optional buffer)
+  "Set up or re-setup the completion notification handler for BUFFER.
+If BUFFER is not specified, uses the current buffer if it's a claudemacs buffer,
+otherwise finds the buffer using `claudemacs--get-buffer'.
 Use this if system notifications aren't working after starting a session."
   (interactive)
-  (with-current-buffer (claudemacs--get-buffer)
-    (when (boundp 'eat-terminal)
-      (setf (eat-term-parameter eat-terminal 'ring-bell-function)
-            #'claudemacs--bell-handler)
-      (message "Bell handler configured for claudemacs session"))))
+  (let ((target-buffer (or buffer
+                           (when (claudemacs--is-claudemacs-buffer-p)
+                             (current-buffer))
+                           (claudemacs--get-buffer))))
+    (when target-buffer
+      (with-current-buffer target-buffer
+        (when (boundp 'eat-terminal)
+          (setf (eat-term-parameter eat-terminal 'ring-bell-function)
+                #'claudemacs--bell-handler)
+          (message "Bell handler configured for claudemacs session"))))))
 
 (defun claudemacs--setup-repl-faces ()
   "Setup faces for the Claude REPL buffer.
@@ -816,36 +834,32 @@ Returns the UUID of the most recently modified session file, or nil if none foun
           ;; Extract UUID from filename (remove path and .jsonl extension)
           (file-name-sans-extension (file-name-nondirectory (car sorted-files))))))))
 
-(defun claudemacs--send-message-when-ready (work-dir message timeout &optional attempt)
-  "Send MESSAGE to Claude when ready, polling up to TIMEOUT seconds.
-WORK-DIR identifies the session. ATTEMPT tracks retry count."
-  (let ((attempt (or attempt 0))
-        (buffer-name (format "*claudemacs:%s*" work-dir)))
-    (if (>= attempt timeout)
-        (message "Timed out waiting for Claude to be ready")
-      (run-with-timer
-       1.0 nil
-       (lambda (dir msg timeout-secs attempt-num)
-         (let* ((buffer (get-buffer (format "*claudemacs:%s*" dir)))
-                (has-terminal (and buffer
-                                   (with-current-buffer buffer
-                                     (and (boundp 'eat-terminal) eat-terminal))))
-                (has-prompt (and buffer
-                                 (with-current-buffer buffer
-                                   (save-excursion
-                                     (goto-char (point-max))
-                                     (search-backward "? for shortcuts" (max (point-min) (- (point-max) 1000)) t))))))
-           (if (and has-terminal has-prompt)
-               ;; Claude is ready - send the message
-               (with-current-buffer buffer
-                 (sit-for 0.5)  ;; Small delay to ensure terminal is stable
-                 (eat-term-send-string eat-terminal msg)
-                 (sit-for 0.1)
-                 (eat-term-send-string eat-terminal "\r")  ;; Carriage return to submit
-                 (message "Continuation message sent to Claude"))
-             ;; Not ready yet - retry
-             (claudemacs--send-message-when-ready dir msg timeout-secs (1+ attempt-num)))))
-       work-dir message timeout attempt))))
+(defun claudemacs--send-message-when-ready (work-dir message delay &optional attempt target-buffer-name)
+  "Send MESSAGE to Claude after DELAY seconds.
+WORK-DIR identifies the session (can be nil if TARGET-BUFFER-NAME is provided).
+DELAY is the number of seconds to wait before sending.
+TARGET-BUFFER-NAME is the exact buffer name to use (optional)."
+  (let ((buffer-name (or target-buffer-name
+                         (when work-dir (format "*claudemacs:%s*" work-dir)))))
+    (unless buffer-name
+      (error "claudemacs--send-message-when-ready: Cannot determine buffer name. work-dir=%S target-buffer-name=%S"
+             work-dir target-buffer-name))
+    (run-with-timer
+     delay nil
+     (lambda (buf-name msg)
+       (let ((buffer (get-buffer buf-name)))
+         (if (and buffer
+                  (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (and (boundp 'eat-terminal) eat-terminal)))
+             ;; Send the message
+             (with-current-buffer buffer
+               (eat-term-send-string eat-terminal msg)
+               (sit-for 0.1)
+               (eat-term-send-string eat-terminal "\r")
+               (message "Continuation message sent to Claude"))
+           (message "Warning: Buffer %s not ready to receive message" buf-name))))
+     buffer-name message)))
 
 ;;;###autoload
 (defun claudemacs-restart (&optional target-work-dir target-buffer-name)
@@ -862,11 +876,24 @@ Otherwise, restart the session for the current project."
                                                            (claudemacs--get-buffer))))
                                          (with-current-buffer buf claudemacs--cwd)))))
                      (expand-file-name dir)))
+         ;; FIX: Find any claudemacs buffer for work-dir, not just simple pattern
          (claudemacs-buffer (or (when target-buffer-name
                                   (get-buffer target-buffer-name))
                                 (when work-dir
-                                  (get-buffer (format "*claudemacs:%s*" work-dir)))))
-         (buffer-name-to-restore (when claudemacs-buffer (buffer-name claudemacs-buffer)))
+                                  (cl-find-if
+                                   (lambda (buf)
+                                     (and (string-match-p "^\\*claudemacs:" (buffer-name buf))
+                                          (with-current-buffer buf
+                                            (equal (expand-file-name claudemacs--cwd) work-dir))))
+                                   (buffer-list)))))
+         ;; FIX: Parse buffer name to extract agent name
+         (buffer-components (when claudemacs-buffer
+                              (claudemacs--parse-buffer-name (buffer-name claudemacs-buffer))))
+         (agent-name (when buffer-components (cdr buffer-components)))
+         ;; FIX: Build work-dir-arg as list for agent-name sessions
+         (work-dir-arg (if agent-name
+                          (list work-dir agent-name)
+                        work-dir))
          ;; For now, don't try to restore specific sessions for multi-agent buffers
          ;; Just use --continue which will resume the most recent session
          (session-id nil)
@@ -904,15 +931,12 @@ Otherwise, restart the session for the current project."
                (car session-args)
                (or (cadr session-args) ""))
       (let ((claudemacs-switch-to-buffer-on-create nil)
-            (new-buffer-name nil))
-        ;; If restoring a custom-named agent, override the buffer name function
-        (if buffer-name-to-restore
-            (cl-letf (((symbol-function 'claudemacs--get-buffer-name)
-                       (lambda () buffer-name-to-restore)))
-              (apply #'claudemacs--start work-dir session-args)
-              (setq new-buffer-name buffer-name-to-restore))
-          (apply #'claudemacs--start work-dir session-args)
-          (setq new-buffer-name (format "*claudemacs:%s*" work-dir)))
+            ;; FIX: Compute expected buffer name from work-dir-arg
+            (new-buffer-name (if agent-name
+                                (format "*claudemacs:%s:%s*" work-dir agent-name)
+                              (format "*claudemacs:%s*" work-dir))))
+        ;; FIX: Pass work-dir-arg instead of just work-dir
+        (apply #'claudemacs--start work-dir-arg session-args)
 
         ;; If buffer wasn't visible before, hide it now
         (unless buffer-was-visible
@@ -920,11 +944,13 @@ Otherwise, restart the session for the current project."
                       (window (get-buffer-window new-buffer t)))
             (delete-window window)))
 
-        ;; Send continuation message after Claude is ready (poll for prompt)
+        ;; Send continuation message after a delay
         (claudemacs--send-message-when-ready
          work-dir
          "Session restarted - elisp and MCP server reloaded. Please continue."
-         30)
+         5  ;; delay in seconds
+         nil  ;; attempt parameter (unused but kept for backwards compatibility)
+         new-buffer-name)
 
         (message "Claudemacs restarted successfully for %s" work-dir)))))
 
@@ -1124,6 +1150,62 @@ Sends without newline so you can continue typing."
     (message "Added context: %s" (string-trim context-text))))
 
 ;;;###autoload
+(defun claudemacs-paste-context-to-shell ()
+  "Paste current point/selection context into claudemacs shell without sending.
+Shows buffer name, file name, line numbers, and the actual content with line number prefixes.
+Works with both file buffers and non-file buffers.
+This allows you to review and edit the context before sending to Claude."
+  (interactive)
+  (claudemacs--validate-process)
+
+  (let* ((has-file (buffer-file-name))
+         (context (when has-file
+                    (condition-case nil
+                        (claudemacs--get-file-context)
+                      (error nil))))
+         (relative-path (when context (plist-get context :relative-path)))
+         (buffer-identifier (if has-file
+                               (or relative-path (file-name-nondirectory has-file))
+                             (buffer-name)))
+         (has-region (use-region-p))
+         (start-pos (if has-region
+                        (region-beginning)
+                      (line-beginning-position)))
+         (end-pos (if has-region
+                      (region-end)
+                    (line-end-position)))
+         (start-line (line-number-at-pos start-pos))
+         (end-line (line-number-at-pos end-pos))
+         (content (buffer-substring-no-properties start-pos end-pos))
+         ;; Split content into lines and add line number prefixes
+         (content-lines (split-string content "\n"))
+         (numbered-lines (let ((line-num start-line)
+                               (result '()))
+                           (dolist (line content-lines)
+                             (push (format "%4d %s" line-num line) result)
+                             (setq line-num (1+ line-num)))
+                           (nreverse result)))
+         (numbered-content (string-join numbered-lines "\n"))
+         ;; Build header with buffer name and location
+         (header (if (= start-line end-line)
+                    (format "Buffer: %s\nFile: %s:%d\n"
+                            (buffer-name)
+                            buffer-identifier
+                            start-line)
+                  (format "Buffer: %s\nFile: %s:%d-%d\n"
+                          (buffer-name)
+                          buffer-identifier
+                          start-line
+                          end-line)))
+         (message-text (format "%s%s\n\n" header numbered-content)))
+
+    ;; Send to Claude without return and without switching
+    (claudemacs--send-message-to-claude message-text t t)
+    ;; Now switch to Claude buffer so user can see and edit
+    (claudemacs--switch-to-buffer)
+    (message "Pasted context to Claude shell (not sent)")))
+
+;;;###autoload
 (defun claudemacs-generate-commit-message ()
   "Generate a commit message using Claude based on staged git changes.
 This runs a one-shot Claude session in the background and inserts the result.
@@ -1317,7 +1399,8 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("c" "Generate Commit Message" claudemacs-generate-commit-message)
     ("f" "Add File Reference" claudemacs-add-file-reference)
     ("F" "Add Current File" claudemacs-add-current-file-reference)
-    ("a" "Add Context" claudemacs-add-context)]
+    ("a" "Add Context" claudemacs-add-context)
+    ("p" "Paste Context to Shell" claudemacs-paste-context-to-shell)]
    ["Quick Responses"
      ("y" "Send Yes (RET)" claudemacs-send-yes)
      ("n" "Send No (ESC)" claudemacs-send-no)]]
@@ -1327,7 +1410,6 @@ Hide if current, focus if visible elsewhere, show if hidden."
 ;;;###autoload
 (defvar claudemacs-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-e") #'claudemacs-transient-menu)
     (define-key map (kbd "C-c t") #'claudemacs-clear-buffer)
     (define-key map (kbd "C-c s") #'claudemacs-spawn-agent)
     map)
