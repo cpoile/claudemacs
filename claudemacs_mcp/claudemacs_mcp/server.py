@@ -587,6 +587,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # Check tool definition for context hints
             context_hint = tool_def.get("context", "auto")  # Default to auto
 
+            # Notes tools should always use session context, not infer from arguments
+            # (e.g., file_path in notes_add_documentation is metadata, not execution context)
+            if needs_session_cwd(name):
+                context_hint = "none"
+
             # Always try to auto-detect unless explicitly disabled
             if context_hint != "none":
                 # Look for file-related arguments (highest priority)

@@ -351,7 +351,227 @@ tools:
         description: "The elisp expression to evaluate"
         required: true
 
-  # Org-mode notes operations (all safe - persisted to .claude/claudemacs-notes.org)
+  # Structured notes query tools (database-like access to notes sections)
+  # The notes file is organized into sections: SUMMARIES, TODOS, CONCEPTS, TOOLS, DOCUMENTATION, ARCHIVE
+  # Use these tools to query specific sections without reading the entire file
+
+  notes_list_sections:
+    description: "List all top-level sections in the notes file with descriptions and item counts. Use this to see what's in your knowledge base."
+    elisp: claudemacs-ai-notes-list-sections
+    safe: true
+
+  notes_get_section_headings:
+    description: "Get all headings within a specific section (e.g., TODOS, CONCEPTS). Returns structured list with title, tags, dates. Optionally include body preview."
+    elisp: claudemacs-ai-notes-get-section-headings
+    safe: true
+    args:
+      section_name:
+        type: string
+        description: "Section name: SUMMARIES, TODOS, CONCEPTS, TOOLS, DOCUMENTATION, or ARCHIVE"
+        required: true
+      include_body:
+        type: boolean
+        description: "If true, include first ~200 chars of body text"
+
+  notes_get_todos:
+    description: "Get all TODO items from the TODOS section. Quick way to see pending tasks."
+    elisp: claudemacs-ai-notes-get-todos
+    safe: true
+    args:
+      include_body:
+        type: boolean
+        description: "If true, include body text preview"
+
+  notes_get_concepts:
+    description: "Get all items from the CONCEPTS section. Quick way to review learned concepts."
+    elisp: claudemacs-ai-notes-get-concepts
+    safe: true
+    args:
+      include_body:
+        type: boolean
+        description: "If true, include body text preview"
+
+  notes_get_tools:
+    description: "Get all items from the TOOLS section. Quick way to see tool/command notes."
+    elisp: claudemacs-ai-notes-get-tools
+    safe: true
+    args:
+      include_body:
+        type: boolean
+        description: "If true, include body text preview"
+
+  notes_get_documentation:
+    description: "Get all items from the DOCUMENTATION section. Quick way to see file/API docs."
+    elisp: claudemacs-ai-notes-get-documentation
+    safe: true
+    args:
+      include_body:
+        type: boolean
+        description: "If true, include body text preview"
+
+  notes_get_summaries:
+    description: "Get all session summaries from the SUMMARIES section."
+    elisp: claudemacs-ai-notes-get-summaries
+    safe: true
+    args:
+      include_body:
+        type: boolean
+        description: "If true, include body text preview"
+
+  # Section-specific add tools (with auto-timestamps)
+  notes_add_todo_item:
+    description: "Add a TODO item to the TODOS section. Automatically adds ADDED date property."
+    elisp: claudemacs-ai-notes-add-todo-item
+    safe: true
+    args:
+      title:
+        type: string
+        description: "The TODO title"
+        required: true
+      body:
+        type: string
+        description: "Optional body text with details"
+      tags:
+        type: string
+        description: "Optional tags like ':urgent:bug:'"
+      priority:
+        type: string
+        description: "Optional priority: A, B, or C"
+
+  notes_add_concept:
+    description: "Add a concept to the CONCEPTS section. Use for architecture, patterns, key understanding."
+    elisp: claudemacs-ai-notes-add-concept
+    safe: true
+    args:
+      title:
+        type: string
+        description: "The concept name"
+        required: true
+      body:
+        type: string
+        description: "Explanation and notes"
+      tags:
+        type: string
+        description: "Optional tags"
+
+  notes_add_tool:
+    description: "Add a tool/command note to the TOOLS section. Use for useful commands, scripts, helpers."
+    elisp: claudemacs-ai-notes-add-tool
+    safe: true
+    args:
+      title:
+        type: string
+        description: "The tool/command name"
+        required: true
+      body:
+        type: string
+        description: "Usage notes and examples"
+      tags:
+        type: string
+        description: "Optional tags"
+
+  notes_add_documentation:
+    description: "Add documentation to the DOCUMENTATION section. Use for file/directory/API docs."
+    elisp: claudemacs-ai-notes-add-documentation
+    safe: true
+    args:
+      title:
+        type: string
+        description: "The file/directory/API name"
+        required: true
+      body:
+        type: string
+        description: "Documentation text"
+      tags:
+        type: string
+        description: "Optional tags"
+      file_path:
+        type: string
+        description: "Optional: associated file path (stored as FILE property)"
+
+  notes_add_summary:
+    description: "Add a session summary to the SUMMARIES section. Use to record what was accomplished."
+    elisp: claudemacs-ai-notes-add-summary
+    safe: true
+    args:
+      title:
+        type: string
+        description: "Brief summary title"
+        required: true
+      body:
+        type: string
+        description: "Detailed summary text"
+
+  # Query tools
+  notes_query_by_tag:
+    description: "Find all entries with a specific tag, optionally limited to a section."
+    elisp: claudemacs-ai-notes-query-by-tag
+    safe: true
+    args:
+      tag:
+        type: string
+        description: "Tag to search for (e.g., 'urgent' or ':urgent:')"
+        required: true
+      section_name:
+        type: string
+        description: "Optional: limit search to this section"
+
+  notes_get_entry:
+    description: "Get full content of a specific entry by title. Returns complete text including body."
+    elisp: claudemacs-ai-notes-get-entry
+    safe: true
+    args:
+      title:
+        type: string
+        description: "The entry title to retrieve"
+        required: true
+      section_name:
+        type: string
+        description: "Optional: section to search in"
+
+  notes_update_entry:
+    description: "Update the body text of an existing entry. Also sets UPDATED property."
+    elisp: claudemacs-ai-notes-update-entry
+    safe: true
+    args:
+      title:
+        type: string
+        description: "Title of entry to update"
+        required: true
+      new_body:
+        type: string
+        description: "New body content"
+        required: true
+      section_name:
+        type: string
+        description: "Optional: section to search in"
+
+  notes_complete_todo:
+    description: "Mark a TODO as DONE and optionally archive it."
+    elisp: claudemacs-ai-notes-complete-todo
+    safe: true
+    args:
+      title:
+        type: string
+        description: "Title of the TODO to complete"
+        required: true
+      archive:
+        type: boolean
+        description: "If true, also move to ARCHIVE section"
+
+  notes_get_recent:
+    description: "Get entries added within the last N days. Useful to see recent context."
+    elisp: claudemacs-ai-notes-get-recent
+    safe: true
+    args:
+      days:
+        type: integer
+        description: "Number of days to look back (default: 7)"
+      section_name:
+        type: string
+        description: "Optional: limit to this section"
+
+  # Original org-mode notes operations (all safe - persisted to .claude/claudemacs-notes.org)
   notes_add_heading:
     description: "Add an org heading to the notes file. Use this to organize notes and context."
     elisp: claudemacs-ai-notes-add-heading

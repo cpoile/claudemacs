@@ -18,70 +18,75 @@ Use the standard Bash tool only when:
 The notes MCP tools store persistent notes in `.claude/claudemacs-notes.org` (org-mode format). Use these tools to:
 
 - **Track context and progress**: Record what you've learned about the codebase, decisions made, and work completed
-- **Organize TODOs**: Create structured task lists with `notes_add_todo`
-- **Structure information**: Use headings (`notes_add_heading`) to organize notes by topic
-- **Add timestamps**: Mark when things happened with `notes_add_timestamp`
-- **Track time**: Use `notes_clock_in`/`notes_clock_out` for time tracking on tasks
+- **Organize TODOs**: Create structured task lists with `notes_add_todo_item`
+- **Document code**: Use `notes_add_documentation` for file/API docs
+- **Record concepts**: Use `notes_add_concept` for architecture and patterns
+- **Track tools**: Use `notes_add_tool` for useful commands and scripts
+- **Summarize sessions**: Use `notes_add_summary` to record what was accomplished
+
+### Structured Sections
+
+The notes file is organized into standard sections. Use section-specific tools for database-like access:
+
+| Section | Query Tool | Add Tool | Purpose |
+|---------|-----------|----------|---------|
+| SUMMARIES | `notes_get_summaries` | `notes_add_summary` | Session summaries, work history |
+| TODOS | `notes_get_todos` | `notes_add_todo_item` | Tasks, bugs, enhancements |
+| CONCEPTS | `notes_get_concepts` | `notes_add_concept` | Architecture, patterns, key understanding |
+| TOOLS | `notes_get_tools` | `notes_add_tool` | Commands, scripts, project helpers |
+| DOCUMENTATION | `notes_get_documentation` | `notes_add_documentation` | File/directory docs, API notes |
+| ARCHIVE | - | - | Completed/archived items |
+
+### Query Tools
+
+- `notes_list_sections` - See all sections with item counts
+- `notes_query_by_tag` - Find entries by tag across sections
+- `notes_get_entry` - Get full content of a specific entry
+- `notes_get_recent` - Find recently added items
 
 ### Recommended Usage Patterns
 
-1. **Starting a session**: Check existing notes with `get_notes` to restore context
-2. **During work**: Update notes as you learn things or make decisions
-3. **Complex tasks**: Create TODO items and mark them DONE as you complete them
-4. **Before ending**: Summarize key findings or next steps in notes
+1. **Starting a session**: Use `notes_list_sections` to see what context exists, then query relevant sections
+2. **Learning about code**: Add to CONCEPTS when you understand important patterns or architecture
+3. **Modifying files**: Update DOCUMENTATION for any files you significantly change (see below)
+4. **Finding useful commands**: Add to TOOLS when you discover helpful commands for the project
+5. **Completing work**: Add to SUMMARIES at end of significant work sessions
+6. **Tracking issues**: Add to TODOS for bugs found or enhancements identified
 
-### Notes Template
+### Keeping Documentation Updated
 
-When starting fresh or reorganizing notes, use this structure:
+**IMPORTANT**: When you make significant changes to files in this codebase, update the DOCUMENTATION section with relevant information:
 
-```org
-* Session Context
-Brief description of what we're working on.
-
-** Key Files
-- path/to/important/file.py - description
-- path/to/another.rs - description
-
-** Decisions Made
-- [2024-01-15] Chose X approach because Y
-- [2024-01-15] Using Z library for W
-
-* Current Work
-** TODO Active task description                                    :tag:
-:PROPERTIES:
-:EFFORT: 1:00
-:END:
-Notes about the task...
-
-*** Subtask 1
-*** Subtask 2
-
-** DONE Completed task                                             :done:
-CLOSED: [2024-01-15 Mon 14:30]
-What was accomplished.
-
-* Research & Notes
-** Topic Name
-Notes, findings, code snippets...
-
-#+begin_src python
-# Code examples
-#+end_src
-
-* Questions & Blockers
-- [ ] Open question needing user input
-- [X] Resolved question
-
-* Archive                                                        :ARCHIVE:
-Completed work gets refiled here.
 ```
+notes_add_documentation(
+  title="filename.el",
+  body="Description of what the file does, key functions, and any important notes",
+  tags=":elisp:category:",
+  file_path="/full/path/to/filename.el"
+)
+```
+
+For this project (claudemacs), key files to document:
+- `claudemacs.el` - Main entry point, session management
+- `claudemacs-ai.el` - MCP tool implementations (buffer ops, watching, agents)
+- `claudemacs-ai-notes.el` - Structured org-mode notes system
+- `claudemacs-ai-messaging.el` - Inter-agent messaging
+- `claudemacs-ai-magit.el` - Magit section querying
+- `claudemacs_mcp/` - Python MCP server
+
+### Tag Guidelines
+
+- Tags must match `[[:alnum:]_@#%]+` (no hyphens allowed)
+- Use underscores instead: `:package_manager:` not `:package-manager:`
+- Common tags: `:bug:`, `:enhancement:`, `:elisp:`, `:python:`, `:claudemacs:`
+- Require 2+ spaces before tags in org headings for recognition
 
 ### Org-Mode Formatting Tips
 
 - Use `*` for headings (more stars = deeper nesting)
 - Use `- [ ]` for checkboxes, `- [X]` for checked
 - Use `TODO`/`DONE` keywords after heading stars
-- Use `:tag:` syntax at end of headings for tags
+- Use `:tag:` syntax at end of headings for tags (with 2+ spaces before)
 - Use `#+begin_src lang ... #+end_src` for code blocks
 - Use `:PROPERTIES:` drawer for metadata
 - Timestamps: `<2024-01-15 Mon>` (active) or `[2024-01-15 Mon]` (inactive)
