@@ -25,3 +25,6 @@ test-*.sh
 *.bak
 *~
 
+# Runtime-generated notes files
+.claude/claudemacs-notes.org
+**/claudemacs-notes.org
