@@ -639,7 +639,8 @@ WORK-DIR can be either:
                               (expand-file-name "server" server-socket-dir)))
          (process-environment
           (append (list (format "PATH=%s:%s" cli-dir (getenv "PATH"))
-                        "TERM=xterm-256color")
+                        "TERM=xterm-256color"
+                        "CLAUDEMACS_SESSION=1")
                   (when claudemacs-socket
                     (list (format "CLAUDEMACS_SOCKET=%s" claudemacs-socket)))
                   process-environment)))
@@ -656,7 +657,7 @@ WORK-DIR can be either:
             ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
             ;; Explicitly set environment variables in the shell command to survive shell config sourcing
             (let* ((shell (claudemacs--get-shell-name))
-                   (env-vars (format "PATH=%s:$PATH%s"
+                   (env-vars (format "PATH=%s:$PATH CLAUDEMACS_SESSION=1%s"
                                    cli-dir
                                    (if claudemacs-socket
                                        (format " CLAUDEMACS_SOCKET=%s" claudemacs-socket)
@@ -993,16 +994,20 @@ Returns a plist with :file-path, :project-cwd, and :relative-path."
           :project-cwd cwd
           :relative-path relative-path)))
 
-(defun claudemacs--send-message-to-claude (message &optional no-return no-switch)
+(defun claudemacs--send-message-to-claude (message &optional no-return no-switch clear-first)
   "Send MESSAGE to the active Claudemacs session.
 If NO-RETURN is non-nil, don't send a return/newline.
-If NO-SWITCH is non-nil, don't switch to the Claude buffer."
+If NO-SWITCH is non-nil, don't switch to the Claude buffer.
+If CLEAR-FIRST is non-nil, send C-u to clear any partial input first."
   (claudemacs--validate-process)
   (let ((claude-buffer (claudemacs--get-buffer)))
     (with-current-buffer claude-buffer
+      (when clear-first
+        (eat-term-send-string eat-terminal "\C-u"))
       (eat-term-send-string eat-terminal message)
       (unless no-return
-        (eat-term-send-string eat-terminal (kbd "RET"))))
+        ;; Use eat-term-input-event for proper terminal input handling
+        (eat-term-input-event eat-terminal 1 'return)))
     (unless no-switch
       (claudemacs--switch-to-buffer))))
 
