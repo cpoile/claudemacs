@@ -905,3 +905,75 @@ tools:
     description: "A test tool added dynamically during runtime"
     elisp: test-dynamic-tool
     safe: true
+
+  # Project TODO management tools
+  # These tools work with org-roam based project TODOs
+
+  todo_list_all:
+    description: "List all project TODOs from org-roam. Returns JSON array of TODOs with id, title, project, status, file, created. Sorted by status (draft, active, done, rejected) then by date."
+    elisp: claudemacs-ai-todo-list-all
+    safe: true
+    args:
+      project:
+        type: string
+        description: "Optional: filter by project name or project root path"
+
+  todo_get_assigned:
+    description: "Get the TODO assigned to the current worktree session. Returns JSON with full TODO details including content, or null if not in a worktree with an assigned TODO. Use this when working in a worktree to get your task context."
+    elisp: claudemacs-ai-todo-get-assigned
+    safe: true
+
+  todo_add_progress:
+    description: "Add a timestamped progress entry to a TODO's Progress Log section. Use this to record milestones, blockers, decisions, or any notable progress."
+    elisp: claudemacs-ai-todo-add-progress
+    safe: true
+    args:
+      file_or_title:
+        type: string
+        description: "The TODO file path or title to update"
+        required: true
+      message:
+        type: string
+        description: "Progress message to add (will be timestamped automatically)"
+        required: true
+
+  todo_update_status:
+    description: "Update the status of a TODO. Valid statuses are: draft, active, done, rejected."
+    elisp: claudemacs-ai-todo-update-status
+    safe: true
+    args:
+      file_or_title:
+        type: string
+        description: "The TODO file path or title to update"
+        required: true
+      status:
+        type: string
+        description: "New status: draft, active, done, or rejected"
+        required: true
+
+  todo_get_acceptance_criteria:
+    description: "Get all acceptance criteria items from a TODO. Returns JSON array of {text, checked} objects."
+    elisp: claudemacs-ai-todo-get-acceptance-criteria
+    safe: true
+    args:
+      file_or_title:
+        type: string
+        description: "The TODO file path or title"
+        required: true
+
+  todo_check_acceptance:
+    description: "Check or uncheck an acceptance criteria item in a TODO. Use partial text matching to find the item."
+    elisp: claudemacs-ai-todo-check-acceptance
+    safe: true
+    args:
+      file_or_title:
+        type: string
+        description: "The TODO file path or title"
+        required: true
+      item_text:
+        type: string
+        description: "Text of the acceptance criteria item to find (partial match)"
+        required: true
+      checked:
+        type: boolean
+        description: "True to check the item, false to uncheck (default: true)"

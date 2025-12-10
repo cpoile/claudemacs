@@ -28,6 +28,7 @@
 (require 'claudemacs-comment)
 (require 'claudemacs-ai)
 (require 'claudemacs-sessions)
+(require 'claudemacs-ai-notes-todo)
 
 ;; Declare functions from optional packages
 (declare-function safe-persp-name "perspective")
