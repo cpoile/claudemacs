@@ -27,6 +27,7 @@
 (require 'eat nil 'noerror)
 (require 'claudemacs-comment)
 (require 'claudemacs-ai)
+(require 'claudemacs-sessions)
 
 ;; Declare functions from optional packages
 (declare-function safe-persp-name "perspective")
@@ -1395,7 +1396,8 @@ Hide if current, focus if visible elsewhere, show if hidden."
     ("r" "Start with Resume" claudemacs-resume)
     ("R" "Restart Session" claudemacs-restart)
     ("k" "Kill Session" claudemacs-kill)
-    ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
+    ("t" "Toggle Buffer" claudemacs-toggle-buffer)
+    ("l" "List All Sessions" claudemacs-list-sessions)]
    ["Actions"
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
     ("x" "Execute Request (with context)" claudemacs-execute-request)
