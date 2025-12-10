@@ -1450,7 +1450,9 @@ BRANCH-NAME is the git branch name.
 
 Spawns a claudemacs session in the worktree and sends the task context."
   (require 'claudemacs)
-  (let* ((buffer-name (claudemacs-spawn-agent worktree-path branch-name))
+  ;; Pass --trust-directory to auto-trust the worktree without prompting
+  (let* ((buffer-name (claudemacs-spawn-agent worktree-path branch-name
+                                               "--trust-directory" worktree-path))
          (task-content (claudemacs-worktree--get-node-content node-id)))
     ;; Wait for session to be ready, then send context and update node
     (run-with-timer
@@ -1537,6 +1539,33 @@ Call this after both claudemacs and org-roam-worktree are loaded."
     (add-hook 'org-roam-worktree-after-create-hook #'claudemacs-worktree-hook)
     (add-hook 'org-roam-worktree-after-start-hook #'claudemacs-worktree-start-hook)
     (message "Claudemacs worktree hooks registered")))
+
+(defun claudemacs-worktree-send-task ()
+  "Send the current worktree task content to its claudemacs session.
+Must be called from a worktree task node buffer."
+  (interactive)
+  (unless (and (derived-mode-p 'org-mode)
+               (save-excursion
+                 (goto-char (point-min))
+                 (re-search-forward "^:TASK_TYPE:\\s-*worktree" nil t)))
+    (user-error "Not in a worktree task node"))
+  (let* ((node-id (org-entry-get (point-min) "ID"))
+         (worktree-path (org-entry-get (point-min) "WORKTREE_PATH"))
+         (task-content (claudemacs-worktree--get-node-content node-id)))
+    (unless worktree-path
+      (user-error "No WORKTREE_PATH property - run org-roam-worktree-start first"))
+    (let ((claude-buffer (claudemacs-worktree--find-session-buffer worktree-path)))
+      (unless claude-buffer
+        (user-error "No claudemacs session found for worktree: %s" worktree-path))
+      (with-current-buffer claude-buffer
+        (when (and (boundp 'eat-terminal) eat-terminal)
+          (let ((message (format "[WORKTREE TASK]\n\n%s\n\nWorktree: %s\nPlease help me with this task."
+                                 task-content worktree-path)))
+            (eat-term-send-string eat-terminal "\C-u")
+            (eat-term-send-string eat-terminal message)
+            (sit-for 0.1)
+            (eat-term-send-string eat-terminal "\r"))))
+      (message "Sent task content to claudemacs session"))))
 
 ;; Auto-setup when org-roam-worktree is loaded
 (with-eval-after-load 'org-roam-worktree

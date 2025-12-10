@@ -781,11 +781,12 @@ Removes accumulated history, keeping only the last 10KB of content."
     (error "Not in a claudemacs buffer")))
 
 ;;;###autoload
-(defun claudemacs-spawn-agent (directory &optional agent-name)
+(defun claudemacs-spawn-agent (directory &optional agent-name &rest extra-args)
   "Spawn a new claudemacs agent in DIRECTORY with optional AGENT-NAME.
 When called interactively, uses current directory and prompts for agent identifier.
 If AGENT-NAME is nil or empty, buffer will be named *claudemacs:/path*.
 If provided, buffer will be named *claudemacs:/path:agent-name*.
+EXTRA-ARGS are additional command-line arguments to pass to Claude.
 Returns the buffer name."
   (interactive
    (list (if (claudemacs--is-claudemacs-buffer-p)
@@ -808,8 +809,8 @@ Returns the buffer name."
     (unless (file-directory-p expanded-dir)
       (error "Directory does not exist: %s" expanded-dir))
 
-    ;; Spawn the agent
-    (claudemacs--start work-dir-arg)
+    ;; Spawn the agent with any extra args
+    (apply #'claudemacs--start work-dir-arg extra-args)
 
     (when (called-interactively-p 'interactive)
       (message "Spawned agent: %s" buffer-name))
