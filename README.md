@@ -352,6 +352,10 @@ You could also add them to a project's `.dir-locals.el` and have it customized p
 
 Claudemacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
 
+Switches
+- `-d` - Skip permissions on start
+- `-f` - Add custom flag (prompts for input, passes `--flag=<value>` to start command)
+
 Core Commands
 - `s` - Start Claude Code session (or switch to existing)
 - `r` - Start Claude Code with resume option (or switch to existing)

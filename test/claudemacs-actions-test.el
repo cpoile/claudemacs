@@ -78,8 +78,8 @@ Returns the created buffer. Caller responsible for cleanup."
     ;; Mock the validation function
     (cl-letf (((symbol-function 'claudemacs--validate-process)
                (lambda () (setq validation-called t) t))
-              ((symbol-function 'read-string)
-               (lambda (prompt) "test request"))
+              ((symbol-function 'read-from-minibuffer)
+               (lambda (prompt &optional initial keymap &rest _) "test request"))
               ((symbol-function 'claudemacs--send-message-to-claude)
                (lambda (message &optional no-return no-switch) nil)))
       
@@ -100,8 +100,8 @@ Returns the created buffer. Caller responsible for cleanup."
                (lambda () (setq file-validation-called t)))
               ((symbol-function 'claudemacs--validate-process)
                (lambda () (setq process-validation-called t) t))
-              ((symbol-function 'read-string)
-               (lambda (prompt) "test request"))
+              ((symbol-function 'read-from-minibuffer)
+               (lambda (prompt &optional initial keymap &rest _) "test request"))
               ((symbol-function 'claudemacs--send-message-to-claude)
                (lambda (message &optional no-return no-switch) nil)))
       
@@ -120,8 +120,8 @@ Returns the created buffer. Caller responsible for cleanup."
     ;; Mock the necessary functions
     (cl-letf (((symbol-function 'claudemacs--validate-process)
                (lambda () t))
-              ((symbol-function 'read-string)
-               (lambda (prompt) "test request"))
+              ((symbol-function 'read-from-minibuffer)
+               (lambda (prompt &optional initial keymap &rest _) "test request"))
               ((symbol-function 'claudemacs--send-message-to-claude)
                (lambda (message &optional no-return no-switch) 
                  (setq sent-message message))))
@@ -139,8 +139,8 @@ Returns the created buffer. Caller responsible for cleanup."
   :tags '(:unit :ask-without-context)
   (cl-letf (((symbol-function 'claudemacs--validate-process)
              (lambda () t))
-            ((symbol-function 'read-string)
-             (lambda (prompt) "")))
+            ((symbol-function 'read-from-minibuffer)
+             (lambda (prompt &optional initial keymap &rest _) "")))
     
     ;; Should error on empty input
     (should-error (claudemacs-ask-without-context))))
@@ -150,8 +150,8 @@ Returns the created buffer. Caller responsible for cleanup."
   :tags '(:unit :ask-without-context)
   (cl-letf (((symbol-function 'claudemacs--validate-process)
              (lambda () t))
-            ((symbol-function 'read-string)
-             (lambda (prompt) "   \t\n  ")))
+            ((symbol-function 'read-from-minibuffer)
+             (lambda (prompt &optional initial keymap &rest _) "   \t\n  ")))
     
     ;; Should error on whitespace-only input
     (should-error (claudemacs-ask-without-context))))
@@ -180,8 +180,8 @@ This test should FAIL initially, then we make it pass."
   :tags '(:tdd :basic :batch-mode)
   
   ;; TDD Test: Verify basic claudemacs functions exist and work
-  ;; Step 1: Check that claudemacs-run function exists
-  (should (fboundp 'claudemacs-run))
+  ;; Step 1: Check that claudemacs-switch-to-session function exists
+  (should (fboundp 'claudemacs-switch-to-session))
   
   ;; Step 2: Check that buffer name generation works
   (let ((buffer-name (claudemacs--get-buffer-name)))
@@ -224,8 +224,8 @@ This is the critical missing test that verifies our function actually works!"
           (setq session-buffer (claudemacs-test--create-fake-session))
           
           ;; Step 2: Mock only external I/O, not our functions
-          (cl-letf (((symbol-function 'read-string)
-                     (lambda (prompt) "What is 2+2?"))
+          (cl-letf (((symbol-function 'read-from-minibuffer)
+                     (lambda (prompt &optional initial keymap &rest _) "What is 2+2?"))
                     ((symbol-function 'claudemacs--send-message-to-claude)
                      (lambda (message &optional no-return no-switch)
                        (setq sent-message message))))
@@ -273,8 +273,8 @@ This is the critical missing test that verifies our function actually works!"
                (lambda (&optional pos) 42))
               ((symbol-function 'claudemacs--format-context-line-range)
                (lambda (path start end) "File context: test.el:42\n"))
-              ((symbol-function 'read-string)
-               (lambda (prompt) "test request"))
+              ((symbol-function 'read-from-minibuffer)
+               (lambda (prompt &optional initial keymap &rest _) "test request"))
               ((symbol-function 'claudemacs--send-message-to-claude)
                (lambda (message &optional no-return no-switch) nil)))
       
@@ -300,8 +300,8 @@ This is the critical missing test that verifies our function actually works!"
                (lambda (&optional pos) 42))
               ((symbol-function 'claudemacs--format-context-line-range)
                (lambda (path start end) "File context: src/test.el:42\n"))
-              ((symbol-function 'read-string)
-               (lambda (prompt) "test request"))
+              ((symbol-function 'read-from-minibuffer)
+               (lambda (prompt &optional initial keymap &rest _) "test request"))
               ((symbol-function 'claudemacs--send-message-to-claude)
                (lambda (message &optional no-return no-switch) 
                  (setq sent-message message))))
@@ -337,8 +337,8 @@ This is the critical missing test that verifies our function actually works!"
                        (t 10))))  ; fallback
               ((symbol-function 'claudemacs--format-context-line-range)
                (lambda (path start end) "File context: src/test.el:10-15\n"))
-              ((symbol-function 'read-string)
-               (lambda (prompt) "test region request"))
+              ((symbol-function 'read-from-minibuffer)
+               (lambda (prompt &optional initial keymap &rest _) "test region request"))
               ((symbol-function 'claudemacs--send-message-to-claude)
                (lambda (message &optional no-return no-switch) 
                  (setq sent-message message))))
@@ -364,8 +364,8 @@ This is the critical missing test that verifies our function actually works!"
              (lambda (&optional pos) 42))
             ((symbol-function 'claudemacs--format-context-line-range)
              (lambda (path start end) "File context: test.el:42\n"))
-            ((symbol-function 'read-string)
-             (lambda (prompt) "")))
+            ((symbol-function 'read-from-minibuffer)
+             (lambda (prompt &optional initial keymap &rest _) "")))
     
     ;; Should error on empty input
     (should-error (claudemacs-execute-request))))
@@ -383,8 +383,8 @@ This is the critical missing test that verifies our function actually works!"
              (lambda (&optional pos) 42))
             ((symbol-function 'claudemacs--format-context-line-range)
              (lambda (path start end) "File context: test.el:42\n"))
-            ((symbol-function 'read-string)
-             (lambda (prompt) "   \t\n  ")))
+            ((symbol-function 'read-from-minibuffer)
+             (lambda (prompt &optional initial keymap &rest _) "   \t\n  ")))
     
     ;; Should error on whitespace-only input
     (should-error (claudemacs-execute-request))))
@@ -444,8 +444,8 @@ This tests our function actually works with file context!"
             (forward-line 1) ; Go to line 2: "(defun test-function ()"
             
             ;; Step 5: Mock only external I/O, not our functions
-            (cl-letf (((symbol-function 'read-string)
-                       (lambda (prompt) "Please add a docstring"))
+            (cl-letf (((symbol-function 'read-from-minibuffer)
+                       (lambda (prompt &optional initial keymap &rest _) "Please add a docstring"))
                       ((symbol-function 'claudemacs--send-message-to-claude)
                        (lambda (message &optional no-return no-switch)
                          (setq sent-message message))))
@@ -893,58 +893,6 @@ This tests our function actually works with error detection!"
         (delete-file temp-file))
       (when (file-exists-p temp-dir)
         (delete-directory temp-dir t)))))
-
-(ert-deftest claudemacs-test-batch-ask-without-context-error-behavior ()
-  "Test real error behavior of ask-without-context in batch mode.
-  
-Tests real function behavior without mocking:
-- Real validation logic (claudemacs--validate-process)
-- Real error messages and handling
-- Real function call chain
-- Real cleanup behavior
-
-This verifies our function integrates correctly with the validation system."
-  :tags '(:e2e :batch)
-  :expected-result :failed
-  
-  (let ((temp-dir (make-temp-file "batch-e2e-test" t)))
-    (unwind-protect
-        (let ((default-directory temp-dir))
-          ;; Test: Call ask-without-context with no active session
-          ;; Expected: Should fail with "No Claudemacs session is active" error
-          (condition-case err
-              (claudemacs-ask-without-context)
-            (error 
-             ;; Verify we get the expected validation error
-             (should (string-match-p "No Claudemacs session is active" (error-message-string err)))
-             ;; Re-signal to maintain expected failure behavior
-             (signal (car err) (cdr err)))))
-      
-      ;; Cleanup
-      (when (file-exists-p temp-dir)
-        (delete-directory temp-dir t)))))
-
-(ert-deftest claudemacs-test-real-transient-menu-key-binding ()
-  "Test that 'a' key in the actual transient menu is properly bound.
-  
-Tests real menu integration without mocking:
-- Real transient menu definition
-- Real key binding verification  
-- Real function binding"
-  :tags '(:e2e :integration)
-  
-  ;; Test the actual transient menu definition exists
-  (should (fboundp 'claudemacs-transient-menu))
-  
-  ;; Get the actual transient layout
-  (let ((layout (get 'claudemacs-transient-menu 'transient--layout)))
-    (should layout)
-    
-    ;; Convert layout to string for inspection
-    (let ((layout-str (format "%S" layout)))
-      ;; Verify "X" key is bound to claudemacs-ask-without-context
-      (should (string-match-p "\"X\"" layout-str))
-      (should (string-match-p "claudemacs-ask-without-context" layout-str)))))
 
 (provide 'claudemacs-actions-test)
 ;;; claudemacs-actions-test.el ends here

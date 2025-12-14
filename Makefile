@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-e2e test-all clean-test
+.PHONY: test test-unit test-integration test-e2e test-e2e-interactive test-e2e-client test-e2e-debug test-all clean-test
 
 # Configuration
 EMACS ?= emacs
@@ -6,6 +6,7 @@ EMACSCLIENT ?= emacsclient
 TEST_FILE = test/claudemacs-test.el
 ACTIONS_TEST_FILE = test/claudemacs-actions-test.el
 PROJECTILE_INTEGRATION_TEST_FILE = test/claudemacs-projectile-integration-test.el
+E2E_TEST_FILE = test/claudemacs-e2e-test.el
 
 # Default target
 test: test-unit
@@ -30,15 +31,37 @@ test-integration:
 	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 
-# End-to-end tests - requires Claude CLI
+# End-to-end tests - informational target
 test-e2e:
-	@echo "Running end-to-end tests..."
-	@if command -v claude >/dev/null 2>&1; then \
-		$(EMACS) -batch -l $(TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :e2e))"; \
-		$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :e2e))"; \
-	else \
-		echo "⚠ Skipping e2e tests (Claude CLI not found)"; \
-	fi
+	@echo "E2E tests require interactive Emacs with a display."
+	@echo "Run: make test-e2e-interactive"
+	@echo ""
+	@echo "This will open Emacs and run tests that:"
+	@echo "  - Start real Claude sessions"
+	@echo "  - Send actual messages"
+	@echo "  - Verify session lifecycle"
+
+# Interactive E2E tests - use test-e2e-client (recommended)
+test-e2e-interactive:
+	@echo "E2E tests need your full Emacs config (for eat package)."
+	@echo ""
+	@echo "Option 1 - Via emacsclient (recommended):"
+	@echo "  make test-e2e-client"
+	@echo ""
+	@echo "Option 2 - From within Emacs:"
+	@echo "  M-x load-file RET test/claudemacs-e2e-test.el RET"
+	@echo "  M-x claudemacs-run-e2e-tests"
+
+# E2E tests via emacsclient (use your running Emacs with full config)
+test-e2e-client:
+	@echo "Running E2E tests in your running Emacs..."
+	$(EMACSCLIENT) -e '(progn (load "$(shell pwd)/claudemacs.el") (load "$(shell pwd)/$(E2E_TEST_FILE)") (claudemacs-run-e2e-tests))'
+
+# E2E tests with debug logging (output in *claudemacs-e2e-debug* buffer)
+test-e2e-debug:
+	@echo "Running E2E tests with debug logging..."
+	@echo "Check *claudemacs-e2e-debug* buffer for output"
+	$(EMACSCLIENT) -e '(progn (load "$(shell pwd)/claudemacs.el") (load "$(shell pwd)/$(E2E_TEST_FILE)") (claudemacs-run-e2e-tests t))'
 
 # Run all test categories
 test-all: test-unit test-integration test-e2e
@@ -55,6 +78,7 @@ test-load:
 	$(EMACS) -batch -l $(TEST_FILE) --eval "(message \"✓ Test file loaded successfully\")"
 	$(EMACS) -batch -l $(ACTIONS_TEST_FILE) --eval "(message \"✓ Actions test file loaded successfully\")"
 	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(message \"✓ Projectile integration test file loaded successfully\")"
+	$(EMACS) -batch -l $(E2E_TEST_FILE) --eval "(message \"✓ E2E test file loaded successfully\")"
 
 # Clean up test artifacts
 clean-test:
@@ -65,12 +89,13 @@ clean-test:
 # Help target
 help:
 	@echo "Claudemacs Test Targets:"
-	@echo "  test            - Run unit tests (default)"
-	@echo "  test-unit       - Run unit tests only"
-	@echo "  test-integration- Run integration tests"
-	@echo "  test-e2e        - Run end-to-end tests (requires Claude CLI)"
-	@echo "  test-all        - Run all test categories"
-	@echo "  test-specific   - Run specific pattern (use TEST_PATTERN=...)"
-	@echo "  test-load       - Validate test file loads correctly"
-	@echo "  clean-test      - Clean up test artifacts"
-	@echo "  help            - Show this help"
+	@echo "  test                - Run unit tests (default)"
+	@echo "  test-unit           - Run unit tests only"
+	@echo "  test-integration    - Run integration tests"
+	@echo "  test-e2e-client     - Run real E2E tests via emacsclient"
+	@echo "  test-e2e-debug      - Run E2E tests with debug logging"
+	@echo "  test-all            - Run all batch-mode test categories"
+	@echo "  test-specific       - Run specific pattern (use TEST_PATTERN=...)"
+	@echo "  test-load           - Validate test files load correctly"
+	@echo "  clean-test          - Clean up test artifacts"
+	@echo "  help                - Show this help"
