@@ -10,19 +10,23 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 
 ## Features
 
-- Project-based Claude Code, with Workspace-aware sessions (see [Sessions](#workspace-and-project-aware-sessions))
-- System notifications: Growl notifications with sound when waiting for input (see [System Notifications](#system-notifications) for setup)
-- Terminal fixes: Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks) section)
-- Session resume: Resume previous Claude Code sessions
-- Execute request with context: Send request to Claude, will add file and line/region context
-- Fix error at point: Will send flycheck error to Claude, with context
-- Implement comment at point: Extracts all comment text and sends it to Claude, with context
-- Add file or current file: Will add file with Claude's @ symbol convention
-- C-g sends Esc: Old habits die hard
-- Option: Swap RET and M-RET - Optionally swap keys (Claude maps RET to submit, and M-RET to newline)
-- Option: S-RET as newline - May be more natural (Claude maps S-RET to submit)
-- Option: Shell environment loading - Load shell rc files (.zshrc, .bashrc) for PATH and environment variables
-- Transient interface: Easy-to-use menu system (customizable keybinding; default: `C-c C-e`)
+- **Multi-tool support**: Use Claude, Codex, Gemini, or other AI coding tools via configurable tool registry
+- **Multiple instances**: Run multiple sessions of the same tool per workspace (claude, claude-2, etc.)
+- **Broadcast to all sessions**: Use `C-u` prefix to send actions to all active sessions
+- **Workspace-aware sessions**: Project-based sessions with Doom/Perspective workspace support (see [Sessions](#workspace-and-project-aware-sessions))
+- **Session management**: Switch between sessions, switch to "other" session, kill specific sessions
+- **System notifications**: OS notifications with sound when awaiting input (see [System Notifications](#system-notifications))
+- **Terminal fixes**: Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks))
+- **Session resume**: Resume previous sessions with tool-specific resume flags
+- **Execute request with context**: Send request with file and line/region context
+- **Fix error at point**: Send flycheck error to Claude with context
+- **Implement comment at point**: Extract comment text and ask Claude to implement it
+- **Add file or current file**: Add files with Claude's @ symbol convention
+- **C-g sends Esc**: Old habits die hard
+- **Option: Swap RET and M-RET**: Optionally swap keys (Claude maps RET to submit, M-RET to newline)
+- **Option: S-RET as newline**: May be more natural
+- **Option: Shell environment loading**: Load shell rc files for PATH and environment variables
+- **Transient interface**: Easy-to-use menu system (default: `C-c C-e`)
 
 ## Table of Contents
 
@@ -36,6 +40,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
   - [Workspace and Project-aware Sessions](#workspace-and-project-aware-sessions)
   - [Commands](#commands)
   - [Customization](#customization)
+    - [Tool Registry](#tool-registry)
     - [Basic Configuration](#basic-configuration)
     - [System Notifications](#system-notifications)
 - [Buffer Naming](#buffer-naming)
@@ -298,8 +303,8 @@ I'm not sure of the built in fonts for Windows, or which ones should be used as 
 - The Claudemacs session is based on Doom/Perspective workspace, and the Claude Code's `cwd` is the project's git-root (by default -- see below). 
 - Why?
   - This allows you to have multiple workspaces in a monorepo, and a separate Claudemacs session per workspace, but each session will be correctly rooted to the project's git root.
-- If you don't use workspaces, the decision sequence is: Workspace name -> Perspective name -> project root dir name
-- Open to adding other workspace package support, or options for other logic
+- If you don't use workspaces, the decision sequence is: Doom workspace -> Perspective name -> project root dir name
+- Supports: Doom Emacs workspaces, perspective.el (vanilla), and fallback to project root
 
 --- Claude Code CWD ---
 
@@ -352,17 +357,28 @@ You could also add them to a project's `.dir-locals.el` and have it customized p
 
 Claudemacs provides a transient menu accessible via `C-c C-e` (or your own keybinding):
 
-Switches
-- `-d` - Skip permissions on start
-- `-f` - Add custom flag (prompts for input, passes `--flag=<value>` to start command)
+**Core Commands**
+- `s` - Switch to session (or select from multiple)
+- `S` - Start Session submenu (select tool, with switches)
+- `o` - Switch to other session (second most recent)
+- `r` - Resume Session submenu (select tool to resume)
+- `k` - Kill session (select from active sessions)
+- `t` - Toggle buffer visibility
 
-Core Commands
-- `s` - Start Claude Code session (or switch to existing)
-- `r` - Start Claude Code with resume option (or switch to existing)
-- `k` - Kill active Claudemacs session
-- `t` - Toggle Claudemacs buffer visibility
+**Start/Resume Submenus** (`S` and `r`)
 
-Action Commands
+These open a submenu where you can select which tool to start/resume:
+- `1` - First tool in registry (default: claude)
+- `2` - Second tool (default: codex)
+- `3` - Third tool (default: gemini)
+- `RET` - Start/resume default tool
+
+Switches available in submenus:
+- `-d` - Skip permissions on start (`--dangerously-skip-permissions` or equivalent)
+- `-p` - Prompt for project root directory
+- `-f` - Add custom flag (prompts for input)
+
+**Action Commands** (use `C-u` prefix to send to all sessions)
 - `e` - Fix error at point (using flycheck if available)
 - `x` - eXecute request with file context (current line or region)
 - `X` - eXecute request with no context
@@ -371,28 +387,50 @@ Action Commands
 - `F` - Add current file reference to conversation
 - `a` - Add context (sends file:line or file:line-range without newline)
 
-Quick Responses
+**Quick Responses**
 - `y` - Send Yes (RET)
 - `n` - Send No (ESC)
 
-Maintenance Commands
+**Maintenance**
 - `u` - Unstick Claude input box (reset buffer tracking)
 
-The following commands are available via `M-x` but not in the transient menu:
-- `M-x claudemacs-setup-bell-handler` - Re-setup system notification handler if notifications stop working
+**Additional M-x commands:**
+- `M-x claudemacs-setup` - Re-run setup (hooks/advice)
+- `M-x claudemacs-setup-bell-handler` - Re-setup notification handler
 
 ### Customization
 
 Claudemacs provides several customization variables to tailor the experience to your workflow:
 
+#### Tool Registry
+
+Configure which AI coding tools are available:
+
+```elisp
+;; Default registry includes Claude, Codex, and Gemini
+(setq claudemacs-tool-registry
+  '((claude :program "claude" :switches nil)
+    (codex :program "codex" :switches nil)
+    (gemini :program "gemini-cli" :switches nil)))
+
+;; Add a custom tool or modify switches
+(setq claudemacs-tool-registry
+  '((claude :program "claude" :switches ("--verbose"))
+    (codex :program "codex" :switches nil)
+    (aider :program "aider" :switches ("--no-auto-commits"))))
+
+;; Set the default tool (default: 'claude)
+(setq claudemacs-default-tool 'claude)
+```
+
 #### Basic Configuration
 
 ```elisp
-;; Custom Claude Code executable path (default: "claude")
+;; Fallback executable path if not in tool registry (default: "claude")
 (setq claudemacs-program "/usr/local/bin/claude")
 
-;; Add command line switches (default: nil)
-(setq claudemacs-program-switches '("--verbose" "--dangerously-skip-permissions"))
+;; Fallback switches if not in tool registry (default: nil)
+(setq claudemacs-program-switches '("--verbose"))
 ```
 
 ```elisp
@@ -471,11 +509,17 @@ Claudemacs provides a startup hook that runs after a session has finished initia
 
 ## Buffer Naming
 
-Claudemacs creates workspace-aware buffer names:
-- With workspace: `*claudemacs:workspace-name*`
-- Without workspace: `*claudemacs:/path/to/project*`
+Claudemacs creates workspace-aware buffer names that include the tool name:
+- With workspace: `*claudemacs:claude:workspace-name*`
+- Without workspace: `*claudemacs:claude:/path/to/project*`
+- Multiple instances: `*claudemacs:claude-2:workspace-name*`
 
-Currently supports Doom Emacs workspaces and Perspective mode. If you use another workspace package and would like support added, please open an issue - I'm happy to add support for others.
+The format is `*claudemacs:TOOL(-N):SESSION-ID*` where:
+- `TOOL` is the tool name (claude, codex, gemini, etc.)
+- `-N` is the instance number (omitted for first instance)
+- `SESSION-ID` is the workspace name or project path
+
+Currently supports Doom Emacs workspaces and Perspective mode. Open an issue if you use another workspace package.
 
 ## Tips and Tricks
 
@@ -505,8 +549,9 @@ But there's an edge case to be aware of: if a window was originally created for 
 ## Requirements
 
 - Emacs 28.1+
-- [eat](https://github.com/kephale/emacs-eat) package
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview)
+- [eat](https://codeberg.org/akib/emacs-eat) package
+- [transient](https://github.com/magit/transient) (built-in since Emacs 28)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview) (or other supported tool)
 
 ## Credits
 
