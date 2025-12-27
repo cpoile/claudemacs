@@ -509,12 +509,12 @@ Format: 'TOOL(-N):SESSION-ID (current)' or 'TOOL(-N):SESSION-ID'."
   "Switch to a session in current workspace.
 If one session exists, switch directly to it.
 If multiple sessions exist, prompt for selection.
-Errors if no sessions exist (use Start submenu to create one)."
+If no sessions exist, open the Start Session menu."
   (let ((active-sessions (claudemacs--list-sessions-for-workspace)))
     (cond
-     ;; No sessions
+     ;; No sessions - open start menu
      ((null active-sessions)
-      (error "No active sessions. Use 'S' to start a new session"))
+      (claudemacs-start-menu))
      ;; Exactly one session - switch directly
      ((= (length active-sessions) 1)
       (let ((tool (plist-get (car active-sessions) :tool)))
