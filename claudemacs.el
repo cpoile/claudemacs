@@ -956,13 +956,17 @@ Works with the most relevant session (current buffer, or most recent)."
 
 (defun claudemacs--get-file-context ()
   "Get file context information for the current buffer.
-Returns a plist with :file-path, :project-cwd, and :relative-path."
+Returns a plist with :file-path, :project-cwd, :relative-path,
+:absolute-path, and :outside-cwd."
   (let* ((file-path (buffer-file-name))
          (cwd (claudemacs--get-session-cwd))
-         (relative-path (file-relative-name file-path cwd)))
+         (relative-path (file-relative-name file-path cwd))
+         (outside-cwd (not (file-in-directory-p file-path cwd))))
     (list :file-path file-path
           :project-cwd cwd
-          :relative-path relative-path)))
+          :relative-path relative-path
+          :absolute-path file-path
+          :outside-cwd outside-cwd)))
 
 (defun claudemacs--send-return-for-tool (terminal _buffer &optional _tool)
   "Send return key event to TERMINAL.
@@ -1094,15 +1098,17 @@ Otherwise, send to current/active session only."
   "Generate fix error action message. Returns plist for action processor."
   (claudemacs--validate-file-and-session)
   (let* ((context (claudemacs--get-file-context))
-         (relative-path (plist-get context :relative-path))
+         (path (if (plist-get context :outside-cwd)
+                   (plist-get context :absolute-path)
+                 (plist-get context :relative-path)))
          (line-number (line-number-at-pos))
          (errors (claudemacs--get-flycheck-errors-on-line))
          (error-message (claudemacs--format-flycheck-errors errors))
          (message-text (if (string-empty-p error-message)
                           (format "Please fix any issues at %s:%d"
-                                  relative-path line-number)
+                                  path line-number)
                         (format "Please fix the error at %s:%d, error message: %s"
-                                relative-path line-number error-message))))
+                                path line-number error-message))))
     (list :message message-text
           :no-return nil
           :no-switch (not claudemacs-switch-to-buffer-on-send-error)
@@ -1119,7 +1125,9 @@ With prefix argument (C-u), send to all active sessions."
   "Generate execute request action message. Returns plist for action processor."
   (claudemacs--validate-file-and-session)
   (let* ((context (claudemacs--get-file-context))
-         (relative-path (plist-get context :relative-path))
+         (path (if (plist-get context :outside-cwd)
+                   (plist-get context :absolute-path)
+                 (plist-get context :relative-path)))
          (has-region (use-region-p))
          (start-line (if has-region
                          (line-number-at-pos (region-beginning))
@@ -1127,7 +1135,7 @@ With prefix argument (C-u), send to all active sessions."
          (end-line (if has-region
                        (line-number-at-pos (region-end))
                      (line-number-at-pos)))
-         (context-text (claudemacs--format-context-line-range relative-path start-line end-line))
+         (context-text (claudemacs--format-context-line-range path start-line end-line))
          (request (claudemacs--read-multiline-string (claudemacs--build-prompt "request (with context)")))
          (message-text (concat context-text request)))
     (when (string-empty-p (string-trim request))
@@ -1191,12 +1199,14 @@ With prefix argument (C-u), send to all active sessions."
   "Generate add current file reference action message. Returns plist for action processor."
   (claudemacs--validate-file-and-session)
   (let* ((context (claudemacs--get-file-context))
-         (relative-path (plist-get context :relative-path))
-         (reference-text (format "@%s " relative-path)))
+         (path (if (plist-get context :outside-cwd)
+                   (plist-get context :absolute-path)
+                 (plist-get context :relative-path)))
+         (reference-text (format "@%s " path)))
     (list :message reference-text
           :no-return t
           :no-switch (not claudemacs-switch-to-buffer-on-file-add)
-          :user-message (format "Added current file reference: @%s" relative-path))))
+          :user-message (format "Added current file reference: @%s" path))))
 
 ;;;###autoload
 (defun claudemacs-add-current-file-reference (&optional send-to-all)
@@ -1210,7 +1220,9 @@ With prefix argument (C-u), send to all active sessions."
   "Generate add context action message. Returns plist for action processor."
   (claudemacs--validate-file-and-session)
   (let* ((context (claudemacs--get-file-context))
-         (relative-path (plist-get context :relative-path))
+         (path (if (plist-get context :outside-cwd)
+                   (plist-get context :absolute-path)
+                 (plist-get context :relative-path)))
          (has-region (use-region-p))
          (start-line (if has-region
                          (line-number-at-pos (region-beginning))
@@ -1219,8 +1231,8 @@ With prefix argument (C-u), send to all active sessions."
                        (line-number-at-pos (region-end))
                      (line-number-at-pos)))
          (context-text (if (and has-region (not (= start-line end-line)))
-                           (format "%s:%d-%d " relative-path start-line end-line)
-                         (format "%s:%d " relative-path start-line))))
+                           (format "%s:%d-%d " path start-line end-line)
+                         (format "%s:%d " path start-line))))
     (list :message context-text
           :no-return t
           :no-switch (not claudemacs-switch-to-buffer-on-add-context)
@@ -1241,7 +1253,9 @@ With prefix argument (C-u), send to all active sessions."
   "Generate implement comment action message. Returns plist for action processor."
   (claudemacs--validate-file-and-session)
   (let* ((context (claudemacs--get-file-context))
-         (relative-path (plist-get context :relative-path))
+         (path (if (plist-get context :outside-cwd)
+                   (plist-get context :absolute-path)
+                 (plist-get context :relative-path)))
          comment-bounds
          comment-text
          start-line
@@ -1273,7 +1287,7 @@ With prefix argument (C-u), send to all active sessions."
 
     ;; Format the message with file context and implementation request
     (let* ((context-text (claudemacs--format-context-line-range
-                         relative-path start-line end-line))
+                         path start-line end-line))
            (message-text (format "%sPlease implement this comment:\n\n%s"
                                 context-text comment-text)))
       (list :message message-text
