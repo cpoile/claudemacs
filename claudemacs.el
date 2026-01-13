@@ -1028,6 +1028,16 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
       (display-buffer claude-buffer)
       (select-window (get-buffer-window claude-buffer)))))
 
+(defun claudemacs--region-end-line ()
+  "Return line number of last line with actual selected content.
+If region ends at column 0, returns the previous line since no
+content from that line is actually selected."
+  (save-excursion
+    (goto-char (region-end))
+    (if (bolp)
+        (1- (line-number-at-pos))
+      (line-number-at-pos))))
+
 (defun claudemacs--format-context-line-range (relative-path start-line end-line)
   "Format context for a line range in RELATIVE-PATH from START-LINE to END-LINE."
   (if (= start-line end-line)
@@ -1133,7 +1143,7 @@ With prefix argument (C-u), send to all active sessions."
                          (line-number-at-pos (region-beginning))
                        (line-number-at-pos)))
          (end-line (if has-region
-                       (line-number-at-pos (region-end))
+                       (claudemacs--region-end-line)
                      (line-number-at-pos)))
          (context-text (claudemacs--format-context-line-range path start-line end-line))
          (request (claudemacs--read-multiline-string (claudemacs--build-prompt "request (with context)")))
@@ -1228,7 +1238,7 @@ With prefix argument (C-u), send to all active sessions."
                          (line-number-at-pos (region-beginning))
                        (line-number-at-pos)))
          (end-line (if has-region
-                       (line-number-at-pos (region-end))
+                       (claudemacs--region-end-line)
                      (line-number-at-pos)))
          (context-text (if (and has-region (not (= start-line end-line)))
                            (format "%s:%d-%d " path start-line end-line)
@@ -1267,7 +1277,7 @@ With prefix argument (C-u), send to all active sessions."
       (let ((region-start (region-beginning))
             (region-end (region-end)))
         (setq start-line (line-number-at-pos region-start))
-        (setq end-line (line-number-at-pos region-end))
+        (setq end-line (claudemacs--region-end-line))
         (setq comment-text (claudemacs--extract-comment-text region-start region-end))))
 
      ;; Case 2: No region - find comment at point
