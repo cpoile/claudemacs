@@ -28,17 +28,19 @@
 
 ;;; Test Utilities
 
-(defun claudemacs-test--create-fake-session ()
+(defun claudemacs-test--create-fake-session (&optional cwd)
   "Create minimal fake session that satisfies claudemacs--validate-process.
-  
+CWD is the working directory for the session (defaults to default-directory).
 Returns the created buffer. Caller responsible for cleanup."
   (let* ((session-buffer-name (claudemacs--get-buffer-name))
          (session-buffer (get-buffer-create session-buffer-name))
          (fake-process (start-process "fake-claude" nil "sleep" "60")))
-    
+
     (with-current-buffer session-buffer
       ;; Create fake eat-terminal - must be non-nil to pass validation
-      (setq-local eat-terminal 'fake-terminal))
+      (setq-local eat-terminal 'fake-terminal)
+      ;; Set the working directory for file context
+      (setq-local claudemacs--cwd (or cwd default-directory)))
     
     ;; Define eat-term-parameter if it doesn't exist, or override if it does
     (setq claudemacs-test--fake-process fake-process)
@@ -221,7 +223,7 @@ This is the critical missing test that verifies our function actually works!"
     (unwind-protect
         (let ((default-directory temp-dir))
           ;; Step 1: Create minimal fake session that satisfies validation
-          (setq session-buffer (claudemacs-test--create-fake-session))
+          (setq session-buffer (claudemacs-test--create-fake-session temp-dir))
           
           ;; Step 2: Mock only external I/O, not our functions
           (cl-letf (((symbol-function 'read-from-minibuffer)
@@ -434,7 +436,7 @@ This tests our function actually works with file context!"
             (insert "  \"A test function\")\n"))
           
           ;; Step 3: Create minimal fake session that satisfies validation
-          (setq session-buffer (claudemacs-test--create-fake-session))
+          (setq session-buffer (claudemacs-test--create-fake-session temp-dir))
           
           ;; Step 4: Set up file context by visiting the file
           (with-temp-buffer
@@ -548,18 +550,20 @@ This tests our function actually works with file context!"
               ((symbol-function 'region-end)
                (lambda () 200))
               ((symbol-function 'line-number-at-pos)
-               (lambda (&optional pos) 
+               (lambda (&optional pos)
                  (cond ((eq pos 100) 10)  ; start line
                        ((eq pos 200) 15)  ; end line
                        (t 10))))  ; fallback
+              ((symbol-function 'claudemacs--region-end-line)
+               (lambda () 15))  ; mock the region end line
               ((symbol-function 'claudemacs--send-message-to-claude)
-               (lambda (message &optional no-return no-switch) 
+               (lambda (message &optional no-return no-switch)
                  (setq sent-message message)
                  (setq no-return-flag no-return))))
-      
+
       ;; Call the function
       (claudemacs-add-context)
-      
+
       ;; Verify message format for region and no-return flag
       (should sent-message)
       (should (string= sent-message "src/test.el:10-15 "))
@@ -583,13 +587,15 @@ This tests our function actually works with file context!"
                (lambda () 150))
               ((symbol-function 'line-number-at-pos)
                (lambda (&optional pos) 42)) ; Same line for both start and end
+              ((symbol-function 'claudemacs--region-end-line)
+               (lambda () 42))  ; same line
               ((symbol-function 'claudemacs--send-message-to-claude)
-               (lambda (message &optional no-return no-switch) 
+               (lambda (message &optional no-return no-switch)
                  (setq sent-message message))))
-      
+
       ;; Call the function
       (claudemacs-add-context)
-      
+
       ;; Should format as single line when start and end are same
       (should sent-message)
       (should (string= sent-message "src/test.el:42 "))))
@@ -785,7 +791,7 @@ This tests our function actually works with file context!"
             (insert "  \"A test function\")\n"))
           
           ;; Step 3: Create minimal fake session that satisfies validation
-          (setq session-buffer (claudemacs-test--create-fake-session))
+          (setq session-buffer (claudemacs-test--create-fake-session temp-dir))
           
           ;; Step 4: Set up file context by visiting the file
           (with-temp-buffer
@@ -859,7 +865,7 @@ This tests our function actually works with error detection!"
             (insert "  undefined-variable)\n")) ; Intentional error
           
           ;; Step 3: Create minimal fake session that satisfies validation
-          (setq session-buffer (claudemacs-test--create-fake-session))
+          (setq session-buffer (claudemacs-test--create-fake-session temp-dir))
           
           ;; Step 4: Set up file context by visiting the file
           (with-temp-buffer
