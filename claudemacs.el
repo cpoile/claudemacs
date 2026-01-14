@@ -163,6 +163,18 @@ This preserves backward compatibility for users whose existing setup works corre
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-process-environment
+  '("TERM=xterm-256color" "COLORTERM=truecolor")
+  "Additional environment variables for Claude processes.
+Each entry should be a string in \"VAR=value\" format.
+These are prepended to `process-environment' when starting sessions.
+
+The defaults enable 24-bit truecolor support:
+- TERM=xterm-256color: Standard terminal type recognized by most CLI tools
+- COLORTERM=truecolor: Signals that 24-bit color is supported"
+  :type '(repeat string)
+  :group 'claudemacs)
+
 (defcustom claudemacs-switch-to-buffer-on-send-error nil
   "Whether to switch to the Claudemacs buffer when sending error fix requests.
 If non-nil, automatically switch to the Claude buffer after sending
@@ -768,8 +780,7 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
          (program-switches (or (plist-get tool-config :switches) claudemacs-program-switches))
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
-          (append '("TERM=xterm-256color")
-                  process-environment)))
+          (append claudemacs-process-environment process-environment)))
     ;; Verify program exists before attempting to start
     (unless (or use-shell-env (executable-find program))
       (kill-buffer buffer)
@@ -777,7 +788,10 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
 
     (with-current-buffer buffer
       (cd work-dir)
-      (setq-local eat-term-name "xterm-256color")
+      ;; Sync eat-term-name with TERM from claudemacs-process-environment
+      (when-let ((term-entry (seq-find (lambda (s) (string-prefix-p "TERM=" s))
+                                       claudemacs-process-environment)))
+        (setq-local eat-term-name (substring term-entry 5)))
       (let ((process-adaptive-read-buffering nil)
             (switches (remove nil (append args program-switches))))
         (condition-case err
