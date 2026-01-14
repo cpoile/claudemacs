@@ -46,6 +46,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 - [Buffer Naming](#buffer-naming)
 - [Tips and Tricks](#tips-and-tricks)
   - [Using eat-mode effectively](#using-eat-mode-effectively)
+  - [Copy file path with line number](#copy-file-path-with-line-number)
   - [Scroll-popping, input box sticking, input box border draw issues](#scroll-popping-input-box-sticking-input-box-border-draw-issues)
   - [Buffer Toggle Edge Case](#buffer-toggle-edge-case)
 - [Requirements](#requirements)
@@ -531,6 +532,30 @@ Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use
 Press `C-c C-j` to re-enter semi-char mode and continue typing to Claude.
 
 Press `C-v` to paste an image from the clipboard.
+
+### Copy file path with line number
+
+Useful helper to copy the current file path with line number (or range) for pasting into Claude:
+
+```elisp
+(defun copy-file-path-with-line ()
+  "Copy the current file path with line number (or range) to clipboard.
+If a region is active, uses the range of lines."
+  (interactive)
+  (let* ((file-path (buffer-file-name))
+         (line-start (line-number-at-pos (if (use-region-p) (region-beginning) (point))))
+         (line-end (when (use-region-p) (line-number-at-pos (region-end))))
+         (result (if line-end
+                     (format "%s:%d-%d" file-path line-start line-end)
+                   (format "%s:%d" file-path line-start))))
+    (if file-path
+        (progn
+          (kill-new result)
+          (message "Copied: %s" result))
+      (message "Buffer is not visiting a file"))))
+```
+
+Bind it to a key and use it to quickly copy file references to paste into Claude.
 
 ### Scroll-popping, input box sticking, input box border draw issues
 
