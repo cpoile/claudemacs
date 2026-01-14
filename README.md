@@ -5,7 +5,7 @@ AI pair programming with [Claude Code](https://docs.anthropic.com/en/docs/claude
 https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 
 ## What makes this project different? Simplicity
-- Let Claude Code shine in the terminal
+- Let your LLM cli shine in the terminal
 - No agents, MCP, or IDE integration -- these eat up context
 
 ## Features
@@ -42,6 +42,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
   - [Customization](#customization)
     - [Tool Registry](#tool-registry)
     - [Basic Configuration](#basic-configuration)
+    - [Process Environment](#process-environment)
     - [System Notifications](#system-notifications)
 - [Buffer Naming](#buffer-naming)
 - [Tips and Tricks](#tips-and-tricks)
@@ -472,6 +473,19 @@ Configure which AI coding tools are available:
 ;; Useful if Claude can't find commands that are in your shell's PATH.
 ;; NOTE: Changes only apply to new sessions - kill and restart to take effect.
 (setq claudemacs-use-shell-env t)
+```
+
+#### Process Environment
+
+Customize environment variables passed to Claude processes:
+
+```elisp
+;; Default enables 24-bit truecolor for Claude Code's syntax highlighting
+(setq claudemacs-process-environment
+  '("TERM=xterm-256color" "COLORTERM=truecolor"))
+
+;; Add additional environment variables as needed
+(add-to-list 'claudemacs-process-environment "CLAUDE_CODE_SYNTAX_HIGHLIGHT=off")
 ```
 
 #### System Notifications

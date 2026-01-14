@@ -1,6 +1,6 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
@@ -17,6 +17,16 @@
 ;; claude-code.el: https://github.com/stevemolitor/claude-code.el
 
 ;;; Changelog:
+
+;; Version 0.3.0 (2025-01-14)
+;; - Default opens "start a new session" when pressing 's' without a cur session
+;; - Files outside the session's working directory now use absolute paths
+;;   (less confusing for LLMs)
+;; - Region selection now sends exact lines selected (not line with cursor)
+;; - New `claudemacs-process-environment' custom variable for customizing
+;;   environment variables passed to LLM processes
+;; - Default enables 24-bit truecolor support for Claude Code's syntax
+;;   highlighting (TERM=xterm-256color, COLORTERM=truecolor)
 
 ;; Version 0.2.0 (2025-12-14)
 ;; - Multi-tool support: Added `claudemacs-tool-registry' to support multiple
