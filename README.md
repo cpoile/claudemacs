@@ -571,6 +571,16 @@ If a region is active, uses the range of lines."
 
 Bind it to a key and use it to quickly copy file references to paste into Claude.
 
+### Sending keycodes to Claude Code
+
+Claude Code uses some keybindings that conflict with Emacs defaults. For example, `Ctrl-g` is used by Claude Code to edit your plan in your editor, but in Emacs `C-g` is the universal quit key (which claudemacs maps to send ESC to the terminal).
+
+To send the actual `Ctrl-g` character (or any other control character) to the terminal, use Emacs' built-in `quoted-insert` command:
+
+- `C-q C-g` - Send Ctrl-g to Claude Code (e.g., to edit your plan)
+- `C-q C-c` - Send Ctrl-c to Claude Code
+- `C-q <any-key>` - Send that key literally to the terminal
+
 ### Scroll-popping, input box sticking, input box border draw issues
 
 There is a tricky interaction between Eat-mode and Claude Code, probably because Claude Code uses some input libraries that eat has trouble with. It was causing the eat-mode buffer to "scroll-pop" to the top whenever you change the other window's buffer. This is mostly fixed now, but a side effect is sometimes the Claude Clode input box gets stuck halfway up the buffer and won't move.
