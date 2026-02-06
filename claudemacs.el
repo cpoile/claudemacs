@@ -309,6 +309,18 @@ Returns '--resume' for claude, 'resume' for codex, '--resume' for others."
     ('codex "resume")
     (_ "--resume")))
 
+(defun claudemacs--get-continue-args (tool)
+  "Get the continue/branch arguments for TOOL.
+Returns a list of arguments to branch from the most recent session.
+- claude: (\"--continue\")
+- codex: (\"resume\" \"--last\")
+- gemini: (\"--resume\")"
+  (pcase tool
+    ('claude '("--continue" "--fork-session"))
+    ('codex '("resume" "--last"))
+    ('gemini '("--resume"))
+    (_ '("--continue"))))
+
 (defun claudemacs--get-current-tool-name ()
   "Get the display name (capitalized) of the current session's tool.
 Returns the tool name as a string (e.g., \"Claude\", \"Codex\").
@@ -948,6 +960,26 @@ Presents a list of all active sessions in the workspace for selection."
                 (kill-buffer buffer))
               (message "Claudemacs session (%s) killed" tool))))))))
 
+;;;###autoload
+(defun claudemacs-branch-session ()
+  "Branch from the most recent session of the current tool.
+Creates a new session that continues from where the previous session left off,
+using the same working directory as the original session.
+Uses tool-specific flags: --continue and --fork-session for Claude, resume --last for Codex,
+--resume for Gemini."
+  (interactive)
+  (let* ((sessions (claudemacs--list-sessions-for-workspace))
+         (session (car sessions))
+         (tool (if session
+                   (plist-get session :tool)
+                 claudemacs-default-tool))
+         (session-buffer (plist-get session :buffer))
+         (work-dir (if (and session-buffer (buffer-live-p session-buffer))
+                       (buffer-local-value 'claudemacs--cwd session-buffer)
+                     (claudemacs--project-root)))
+         (continue-args (claudemacs--get-continue-args tool)))
+    (apply #'claudemacs--start work-dir tool nil continue-args)))
+
 (defun claudemacs--validate-process ()
   "Validate that the Claudemacs process is alive and running.
 Works with the most relevant session (current buffer, or most recent)."
@@ -1542,6 +1574,7 @@ Returns a list of parsed transient suffix objects."
     ("o" "Switch Other Session" claudemacs-switch-other)
     ("r" "Resume Session..." claudemacs-resume-menu)
     ("k" "Kill Session..." claudemacs-kill-specific-session)
+    ("b" "Branch Current Session" claudemacs-branch-session)
     ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
    ["Actions (Use C-u to send to all sessions)"
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)

@@ -1010,5 +1010,29 @@ This function is called by the transient menu and must never error."
     (when (get-buffer "*claudemacs:codex:workspace-b*")
       (kill-buffer "*claudemacs:codex:workspace-b*"))))
 
+;;; Branch/Continue Session Tests
+
+(ert-deftest claudemacs-test-get-continue-args-per-tool ()
+  "Test that each tool returns correct continue/branch arguments."
+  :tags '(:unit :branch)
+  ;; Claude uses --continue to branch from previous session
+  (should (equal (claudemacs--get-continue-args 'claude) '("--continue" "--fork-session")))
+  ;; Codex uses 'resume --last' subcommand
+  (should (equal (claudemacs--get-continue-args 'codex) '("resume" "--last")))
+  ;; Gemini uses --resume
+  (should (equal (claudemacs--get-continue-args 'gemini) '("--resume")))
+  ;; Unknown tools default to --continue
+  (should (equal (claudemacs--get-continue-args 'unknown-tool) '("--continue"))))
+
+(ert-deftest claudemacs-test-get-resume-flag-per-tool ()
+  "Test that each tool returns correct resume flag."
+  :tags '(:unit :branch)
+  ;; Claude uses --resume
+  (should (equal (claudemacs--get-resume-flag 'claude) "--resume"))
+  ;; Codex uses 'resume' subcommand (no dashes)
+  (should (equal (claudemacs--get-resume-flag 'codex) "resume"))
+  ;; Unknown tools default to --resume
+  (should (equal (claudemacs--get-resume-flag 'unknown-tool) "--resume")))
+
 (provide 'claudemacs-test)
 ;;; claudemacs-test.el ends here
