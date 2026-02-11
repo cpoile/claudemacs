@@ -1074,10 +1074,19 @@ BASE-PROMPT is the action description (e.g., 'request', 'question')."
 (defun claudemacs--read-multiline-string (prompt)
   "Read a string from the minibuffer with multi-line support.
 PROMPT is the prompt to display.
-Shift+Return inserts a newline, Return submits the input."
+Shift+Return inserts a newline, Return submits the input.
+If the user aborts with C-g, the minibuffer contents are saved
+to history so they can be recalled with M-p next time."
   (let ((map (copy-keymap minibuffer-local-map)))
     (define-key map (kbd "S-<return>") #'newline)
     (define-key map (kbd "S-RET") #'newline)
+    (define-key map (kbd "C-g")
+      (lambda ()
+        (interactive)
+        (let ((text (minibuffer-contents)))
+          (when (not (string-empty-p (string-trim text)))
+            (add-to-history 'minibuffer-history text)))
+        (abort-recursive-edit)))
     (read-from-minibuffer prompt nil map)))
 
 (defun claudemacs--send-message-to-claude (message &optional no-return no-switch)
