@@ -724,6 +724,13 @@ Applies consistent styling to all eat-mode terminal faces."
   (interactive)
   (eat-term-send-string eat-terminal "\e\C-m"))
 
+(defun claudemacs--maybe-left-key ()
+  "Send left arrow in claudemacs buffers, otherwise default eat-self-input."
+  (interactive)
+  (if (claudemacs--is-claudemacs-buffer-p)
+      (eat-term-input-event eat-terminal 1 'left)
+    (call-interactively #'eat-self-input)))
+
 (defun claudemacs--send-escape ()
   "Send ESC to eat terminal."
   (interactive)
@@ -751,15 +758,15 @@ Applies consistent styling to all eat-mode terminal faces."
   "Set up truly buffer-local keymap for claudemacs buffers with custom key bindings."
   (when (claudemacs--is-claudemacs-buffer-p)
     (message "Setting up buffer-local keymap for claudemacs buffer: %s" (buffer-name))
-    
+
     ;; Create a new keymap that inherits from the current local map (eat-mode)
     (let ((map (make-sparse-keymap)))
       ;; Inherit all eat functionality by setting parent keymap
       (set-keymap-parent map (current-local-map))
-      
+
       ;; Override specific keys for claudemacs functionality
       (define-key map (kbd "C-g") #'claudemacs--send-escape)
-      (message "Defined C-g -> claudemacs--send-escape")
+      (message "Defined C-b -> left arrow, C-g -> claudemacs--send-escape")
 
       ;; Handle return key swapping if enabled
       (when claudemacs-m-return-is-submit
@@ -1687,7 +1694,12 @@ Safe to call multiple times - will not add duplicate hooks or advice."
   (unless (advice-member-p #'claudemacs--show-cursor 'eat-emacs-mode)
     (advice-add 'eat-emacs-mode :after #'claudemacs--show-cursor))
   (unless (advice-member-p #'claudemacs--hide-cursor 'eat-semi-char-mode)
-    (advice-add 'eat-semi-char-mode :after #'claudemacs--hide-cursor)))
+    (advice-add 'eat-semi-char-mode :after #'claudemacs--hide-cursor))
+  ;; Override C-b on eat-semi-char-mode-map directly, since minor mode
+  ;; maps take precedence over local maps.  The command is conditional
+  ;; so non-claudemacs eat buffers are unaffected.
+  (when (boundp 'eat-semi-char-mode-map)
+    (define-key eat-semi-char-mode-map (kbd "C-b") #'claudemacs--maybe-left-key)))
 
 (defun claudemacs-unload-function ()
   "Cleanup when unloading claudemacs.
@@ -1695,6 +1707,8 @@ Removes advice and hooks added by `claudemacs-setup'."
   (advice-remove 'eat-emacs-mode #'claudemacs--show-cursor)
   (advice-remove 'eat-semi-char-mode #'claudemacs--hide-cursor)
   (remove-hook 'window-buffer-change-functions #'claudemacs--check-and-disable-window-adjust)
+  (when (boundp 'eat-semi-char-mode-map)
+    (define-key eat-semi-char-mode-map (kbd "C-b") #'eat-self-input))
   nil)
 
 ;; Auto-setup when package is loaded
