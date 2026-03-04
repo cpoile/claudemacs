@@ -1012,17 +1012,31 @@ This function is called by the transient menu and must never error."
 
 ;;; Branch/Continue Session Tests
 
-(ert-deftest claudemacs-test-get-continue-args-per-tool ()
-  "Test that each tool returns correct continue/branch arguments."
+(ert-deftest claudemacs-test-get-branch-args-per-tool ()
+  "Test that each tool returns correct branch arguments."
   :tags '(:unit :branch)
-  ;; Claude uses --continue to branch from previous session
-  (should (equal (claudemacs--get-continue-args 'claude) '("--continue" "--fork-session")))
+  ;; Claude without UUID falls back to --continue --fork-session
+  (should (equal (claudemacs--get-branch-args 'claude) '("--continue" "--fork-session")))
+  ;; Claude with UUID uses --resume UUID --fork-session
+  (should (equal (claudemacs--get-branch-args 'claude "abc-123")
+                 '("--resume" "abc-123" "--fork-session")))
   ;; Codex uses 'resume --last' subcommand
-  (should (equal (claudemacs--get-continue-args 'codex) '("resume" "--last")))
+  (should (equal (claudemacs--get-branch-args 'codex) '("resume" "--last")))
   ;; Gemini uses --resume
-  (should (equal (claudemacs--get-continue-args 'gemini) '("--resume")))
+  (should (equal (claudemacs--get-branch-args 'gemini) '("--resume")))
   ;; Unknown tools default to --continue
-  (should (equal (claudemacs--get-continue-args 'unknown-tool) '("--continue"))))
+  (should (equal (claudemacs--get-branch-args 'unknown-tool) '("--continue"))))
+
+(ert-deftest claudemacs-test-generate-uuid ()
+  "Test that generated UUIDs have valid v4 format and are unique."
+  :tags '(:unit :branch)
+  (let ((uuid1 (claudemacs--generate-uuid))
+        (uuid2 (claudemacs--generate-uuid)))
+    ;; Check UUID v4 format: 8-4-4-4-12 hex digits with version 4 marker
+    (should (string-match-p "^[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-4[0-9a-f]\\{3\\}-[89ab][0-9a-f]\\{3\\}-[0-9a-f]\\{12\\}$" uuid1))
+    (should (string-match-p "^[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-4[0-9a-f]\\{3\\}-[89ab][0-9a-f]\\{3\\}-[0-9a-f]\\{12\\}$" uuid2))
+    ;; Two generated UUIDs should be different
+    (should-not (equal uuid1 uuid2))))
 
 (ert-deftest claudemacs-test-get-resume-flag-per-tool ()
   "Test that each tool returns correct resume flag."

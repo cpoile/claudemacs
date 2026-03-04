@@ -257,9 +257,23 @@ are executed with the claudemacs buffer as the current buffer."
 (defvar-local claudemacs--tool nil
   "Buffer-local variable storing the AI tool name (symbol) for this session.")
 
+(defvar-local claudemacs--claude-session-uuid nil
+  "Buffer-local variable storing the Claude Code session UUID.
+Set when starting a new Claude session with --session-id.
+Used for branching with --resume <uuid> --fork-session.")
+
 ;;;;
 ;;;; Utility Functions
 ;;;;
+
+(defun claudemacs--generate-uuid ()
+  "Generate a UUID v4 string."
+  (format "%08x-%04x-4%03x-%04x-%012x"
+          (random (expt 16 8))
+          (random (expt 16 4))
+          (random (expt 16 3))
+          (logior #x8000 (random #x3fff))
+          (random (expt 16 12))))
 
 (defun claudemacs--find-projectile-root (dir)
   "Find project root by looking for .projectile marker file from DIR.
@@ -309,14 +323,19 @@ Returns '--resume' for claude, 'resume' for codex, '--resume' for others."
     ('codex "resume")
     (_ "--resume")))
 
-(defun claudemacs--get-continue-args (tool)
-  "Get the continue/branch arguments for TOOL.
-Returns a list of arguments to branch from the most recent session.
-- claude: (\"--continue\")
+(defun claudemacs--get-branch-args (tool &optional claude-uuid)
+  "Get the branch/fork arguments for TOOL.
+When CLAUDE-UUID is provided for claude, uses --resume UUID --fork-session
+to branch from a specific session.  Without UUID, falls back to
+--continue --fork-session.
+- claude with UUID: (\"--resume\" UUID \"--fork-session\")
+- claude without UUID: (\"--continue\" \"--fork-session\")
 - codex: (\"resume\" \"--last\")
 - gemini: (\"--resume\")"
   (pcase tool
-    ('claude '("--continue" "--fork-session"))
+    ('claude (if claude-uuid
+                 (list "--resume" claude-uuid "--fork-session")
+               '("--continue" "--fork-session")))
     ('codex '("resume" "--last"))
     ('gemini '("--resume"))
     (_ '("--continue"))))
@@ -470,7 +489,8 @@ Each element is a buffer object."
 
 (defun claudemacs--get-session-info (buffer)
   "Extract session information from BUFFER.
-Returns a plist with :tool, :instance, :session-id, :buffer, :buffer-name.
+Returns a plist with :tool, :instance, :session-id, :buffer, :buffer-name,
+and :claude-uuid (the Claude Code session UUID, if tracked).
 The :tool is the base tool symbol (e.g., claude even for claude-2).
 The :instance is the instance number (1 for claude, 2 for claude-2, etc.).
 Returns nil if the buffer is not a claudemacs buffer."
@@ -481,12 +501,15 @@ Returns nil if the buffer is not a claudemacs buffer."
         (let* ((tool-str (match-string 1 buf-name))
                (instance-str (match-string 2 buf-name))
                (session-id (match-string 3 buf-name))
-               (instance (if instance-str (string-to-number instance-str) 1)))
+               (instance (if instance-str (string-to-number instance-str) 1))
+               (claude-uuid (when (buffer-live-p buffer)
+                              (buffer-local-value 'claudemacs--claude-session-uuid buffer))))
           (list :tool (intern tool-str)
                 :instance instance
                 :session-id session-id
                 :buffer buffer
-                :buffer-name buf-name))))))
+                :buffer-name buf-name
+                :claude-uuid claude-uuid))))))
 
 (defun claudemacs--list-sessions-for-workspace ()
   "Return a list of all active sessions in the current workspace.
@@ -809,7 +832,12 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
          (program-switches (or (plist-get tool-config :switches) claudemacs-program-switches))
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
-          (append claudemacs-process-environment process-environment)))
+          (append claudemacs-process-environment process-environment))
+         ;; Generate UUID for new Claude sessions (not resuming/continuing)
+         (session-uuid (when (and (eq tool-name 'claude)
+                                  (not (member "--resume" args))
+                                  (not (member "--continue" args)))
+                         (claudemacs--generate-uuid))))
     ;; Verify program exists before attempting to start
     (unless (or use-shell-env (executable-find program))
       (kill-buffer buffer)
@@ -821,8 +849,9 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
       (when-let ((term-entry (seq-find (lambda (s) (string-prefix-p "TERM=" s))
                                        claudemacs-process-environment)))
         (setq-local eat-term-name (substring term-entry 5)))
-      (let ((process-adaptive-read-buffering nil)
-            (switches (remove nil (append args program-switches))))
+      (let* ((process-adaptive-read-buffering nil)
+             (uuid-args (when session-uuid (list "--session-id" session-uuid)))
+             (switches (remove nil (append uuid-args args program-switches))))
         (condition-case err
             (if use-shell-env
                 ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
@@ -839,6 +868,7 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
       ;; Set buffer-local variables after eat-make to ensure they persist
       (setq-local claudemacs--cwd work-dir)
       (setq-local claudemacs--tool tool-name)
+      (setq-local claudemacs--claude-session-uuid session-uuid)
 
       (claudemacs--setup-repl-faces)
       ;; Optimize scrolling for terminal input - allows text to go to bottom
@@ -969,23 +999,46 @@ Presents a list of all active sessions in the workspace for selection."
 
 ;;;###autoload
 (defun claudemacs-branch-session ()
-  "Branch from the most recent session of the current tool.
-Creates a new session that continues from where the previous session left off,
-using the same working directory as the original session.
-Uses tool-specific flags: --continue and --fork-session for Claude, resume --last for Codex,
---resume for Gemini."
+  "Branch from a specific session, prompting if multiple exist.
+For Claude sessions with a tracked UUID, uses --resume UUID --fork-session
+to branch from the exact session.  If multiple Claude sessions have UUIDs,
+prompts the user to select one.  Falls back to --continue --fork-session
+for sessions without a tracked UUID.
+Other tools use their own branch semantics (codex: resume --last, etc.)."
   (interactive)
   (let* ((sessions (claudemacs--list-sessions-for-workspace))
          (session (car sessions))
          (tool (if session
                    (plist-get session :tool)
                  claudemacs-default-tool))
-         (session-buffer (plist-get session :buffer))
-         (work-dir (if (and session-buffer (buffer-live-p session-buffer))
-                       (buffer-local-value 'claudemacs--cwd session-buffer)
+         ;; For Claude: find sessions with tracked UUIDs
+         (uuid-sessions (when (eq tool 'claude)
+                          (seq-filter (lambda (s) (plist-get s :claude-uuid))
+                                      sessions)))
+         ;; Select which session to branch from
+         (selected (cond
+                    ;; Multiple UUID sessions: prompt user to select
+                    ((> (length uuid-sessions) 1)
+                     (let* ((choices (mapcar
+                                      (lambda (s)
+                                        (cons (plist-get s :buffer-name) s))
+                                      uuid-sessions))
+                            (selected-name (completing-read
+                                            "Branch from session: "
+                                            (mapcar #'car choices) nil t)))
+                       (cdr (assoc selected-name choices))))
+                    ;; Single UUID session: auto-select
+                    ((= (length uuid-sessions) 1)
+                     (car uuid-sessions))
+                    ;; No UUID sessions: use first session (fallback)
+                    (t session)))
+         (selected-buffer (plist-get selected :buffer))
+         (work-dir (if (and selected-buffer (buffer-live-p selected-buffer))
+                       (buffer-local-value 'claudemacs--cwd selected-buffer)
                      (claudemacs--project-root)))
-         (continue-args (claudemacs--get-continue-args tool)))
-    (apply #'claudemacs--start work-dir tool nil continue-args)))
+         (claude-uuid (plist-get selected :claude-uuid))
+         (branch-args (claudemacs--get-branch-args tool claude-uuid)))
+    (apply #'claudemacs--start work-dir tool nil branch-args)))
 
 (defun claudemacs--validate-process ()
   "Validate that the Claudemacs process is alive and running.
