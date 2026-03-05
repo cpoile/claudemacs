@@ -323,22 +323,85 @@ Returns '--resume' for claude, 'resume' for codex, '--resume' for others."
     ('codex "resume")
     (_ "--resume")))
 
-(defun claudemacs--get-branch-args (tool &optional claude-uuid)
+(defun claudemacs--get-branch-args (tool &optional session-uuid)
   "Get the branch/fork arguments for TOOL.
-When CLAUDE-UUID is provided for claude, uses --resume UUID --fork-session
-to branch from a specific session.  Without UUID, falls back to
---continue --fork-session.
+When SESSION-UUID is provided, uses tool-specific arguments to branch
+from a specific session.  Without UUID, falls back to tool defaults.
 - claude with UUID: (\"--resume\" UUID \"--fork-session\")
 - claude without UUID: (\"--continue\" \"--fork-session\")
-- codex: (\"resume\" \"--last\")
+- codex with UUID: (\"fork\" UUID)
+- codex without UUID: (\"fork\" \"--last\")
 - gemini: (\"--resume\")"
   (pcase tool
-    ('claude (if claude-uuid
-                 (list "--resume" claude-uuid "--fork-session")
+    ('claude (if session-uuid
+                 (list "--resume" session-uuid "--fork-session")
                '("--continue" "--fork-session")))
-    ('codex '("resume" "--last"))
+    ('codex (if session-uuid
+                (list "fork" session-uuid)
+              '("fork" "--last")))
     ('gemini '("--resume"))
     (_ '("--continue"))))
+
+(defun claudemacs--codex-discover-sessions (cwd)
+  "Query Codex SQLite database for sessions matching CWD.
+Returns a list of plists with :id, :created-at, :rollout-path,
+sorted by created_at descending (most recent first).
+Returns nil if sqlite3 is not available or the database doesn't exist."
+  (let ((db-path (expand-file-name "~/.codex/state_5.sqlite")))
+    (when (and (executable-find "sqlite3")
+               (file-exists-p db-path))
+      (condition-case nil
+          (let* ((output (with-output-to-string
+                           (with-current-buffer standard-output
+                             (call-process "sqlite3" nil t nil
+                                           "-separator" "\x1f"
+                                           db-path
+                                           (format "SELECT id, created_at, rollout_path FROM threads WHERE cwd = '%s' AND archived = 0 ORDER BY created_at DESC LIMIT 20;"
+                                                   (replace-regexp-in-string "'" "''" cwd))))))
+                 (lines (split-string (string-trim output) "\n" t)))
+            (mapcar (lambda (line)
+                      (let ((fields (split-string line "\x1f")))
+                        (list :id (nth 0 fields)
+                              :created-at (string-to-number (or (nth 1 fields) "0"))
+                              :rollout-path (nth 2 fields))))
+                    lines))
+        (error nil)))))
+
+(defun claudemacs--codex-last-user-prompt (rollout-path)
+  "Extract the most recent user prompt from a Codex session JSONL file.
+ROLLOUT-PATH is the path to the session's JSONL file.
+Returns the prompt text (up to 80 chars) or nil on failure."
+  (when (and rollout-path (file-exists-p rollout-path))
+    (condition-case nil
+        (let* ((output (with-output-to-string
+                         (with-current-buffer standard-output
+                           (call-process-shell-command
+                            (format "grep '\"role\":\"user\"' %s | tail -1"
+                                    (shell-quote-argument rollout-path))
+                            nil t))))
+               (trimmed (string-trim output)))
+          (when (not (string-empty-p trimmed))
+            (let* ((json (json-parse-string trimmed :object-type 'alist))
+                   (payload (alist-get 'payload json))
+                   (content (alist-get 'content payload))
+                   (text (alist-get 'text (aref content 0))))
+              (when (and text (not (string-empty-p text)))
+                (substring text 0 (min (length text) 80))))))
+      (error nil))))
+
+(defun claudemacs--codex-format-session-choice (session)
+  "Format a Codex SESSION plist as a `completing-read' choice string.
+Queries the session's JSONL file for the most recent user prompt.
+Format: \"2026-03-04 16:55 -- first few words of prompt...\""
+  (let* ((timestamp (plist-get session :created-at))
+         (time-str (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time timestamp)))
+         (rollout-path (plist-get session :rollout-path))
+         (prompt (claudemacs--codex-last-user-prompt rollout-path))
+         (display (or prompt "(no message)"))
+         (display (if (> (length display) 60)
+                      (concat (substring display 0 57) "...")
+                    display)))
+    (format "%s -- %s" time-str display)))
 
 (defun claudemacs--get-current-tool-name ()
   "Get the display name (capitalized) of the current session's tool.
@@ -1000,44 +1063,64 @@ Presents a list of all active sessions in the workspace for selection."
 ;;;###autoload
 (defun claudemacs-branch-session ()
   "Branch from a specific session, prompting if multiple exist.
-For Claude sessions with a tracked UUID, uses --resume UUID --fork-session
-to branch from the exact session.  If multiple Claude sessions have UUIDs,
-prompts the user to select one.  Falls back to --continue --fork-session
-for sessions without a tracked UUID.
-Other tools use their own branch semantics (codex: resume --last, etc.)."
+For Claude sessions with a tracked UUID, uses --resume UUID --fork-session.
+For Codex sessions, queries the Codex SQLite database for sessions matching
+the working directory and uses codex fork UUID.
+Falls back to tool defaults when no UUID is available."
   (interactive)
   (let* ((sessions (claudemacs--list-sessions-for-workspace))
          (session (car sessions))
          (tool (if session
                    (plist-get session :tool)
                  claudemacs-default-tool))
-         ;; For Claude: find sessions with tracked UUIDs
-         (uuid-sessions (when (eq tool 'claude)
-                          (seq-filter (lambda (s) (plist-get s :claude-uuid))
-                                      sessions)))
-         ;; Select which session to branch from
-         (selected (cond
-                    ;; Multiple UUID sessions: prompt user to select
-                    ((> (length uuid-sessions) 1)
-                     (let* ((choices (mapcar
-                                      (lambda (s)
-                                        (cons (plist-get s :buffer-name) s))
-                                      uuid-sessions))
-                            (selected-name (completing-read
-                                            "Branch from session: "
-                                            (mapcar #'car choices) nil t)))
-                       (cdr (assoc selected-name choices))))
-                    ;; Single UUID session: auto-select
-                    ((= (length uuid-sessions) 1)
-                     (car uuid-sessions))
-                    ;; No UUID sessions: use first session (fallback)
-                    (t session)))
-         (selected-buffer (plist-get selected :buffer))
-         (work-dir (if (and selected-buffer (buffer-live-p selected-buffer))
-                       (buffer-local-value 'claudemacs--cwd selected-buffer)
+         ;; Extract work-dir early (codex needs it for SQLite query)
+         (session-buffer (plist-get session :buffer))
+         (work-dir (if (and session-buffer (buffer-live-p session-buffer))
+                       (buffer-local-value 'claudemacs--cwd session-buffer)
                      (claudemacs--project-root)))
-         (claude-uuid (plist-get selected :claude-uuid))
-         (branch-args (claudemacs--get-branch-args tool claude-uuid)))
+         ;; Tool-specific UUID discovery
+         (session-uuid
+          (pcase tool
+            ('claude
+             (let* ((uuid-sessions (seq-filter (lambda (s) (plist-get s :claude-uuid))
+                                               sessions))
+                    (selected
+                     (cond
+                      ((> (length uuid-sessions) 1)
+                       (let* ((choices (mapcar
+                                        (lambda (s)
+                                          (cons (plist-get s :buffer-name) s))
+                                        uuid-sessions))
+                              (selected-name (completing-read
+                                              "Branch from session: "
+                                              (mapcar #'car choices) nil t)))
+                         (cdr (assoc selected-name choices))))
+                      ((= (length uuid-sessions) 1)
+                       (car uuid-sessions))
+                      (t session))))
+               ;; Update work-dir from selected session
+               (when (and selected (plist-get selected :buffer)
+                          (buffer-live-p (plist-get selected :buffer)))
+                 (setq work-dir (buffer-local-value 'claudemacs--cwd
+                                                    (plist-get selected :buffer))))
+               (plist-get selected :claude-uuid)))
+            ('codex
+             (let ((codex-sessions (claudemacs--codex-discover-sessions work-dir)))
+               (cond
+                ((> (length codex-sessions) 1)
+                 (let* ((choices (mapcar
+                                  (lambda (s)
+                                    (cons (claudemacs--codex-format-session-choice s) s))
+                                  codex-sessions))
+                        (selected-name (completing-read
+                                        "Branch from Codex session: "
+                                        (mapcar #'car choices) nil t)))
+                   (plist-get (cdr (assoc selected-name choices)) :id)))
+                ((= (length codex-sessions) 1)
+                 (plist-get (car codex-sessions) :id))
+                (t nil))))
+            (_ nil)))
+         (branch-args (claudemacs--get-branch-args tool session-uuid)))
     (apply #'claudemacs--start work-dir tool nil branch-args)))
 
 (defun claudemacs--validate-process ()

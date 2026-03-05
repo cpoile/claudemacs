@@ -1020,8 +1020,11 @@ This function is called by the transient menu and must never error."
   ;; Claude with UUID uses --resume UUID --fork-session
   (should (equal (claudemacs--get-branch-args 'claude "abc-123")
                  '("--resume" "abc-123" "--fork-session")))
-  ;; Codex uses 'resume --last' subcommand
-  (should (equal (claudemacs--get-branch-args 'codex) '("resume" "--last")))
+  ;; Codex without UUID uses fork --last
+  (should (equal (claudemacs--get-branch-args 'codex) '("fork" "--last")))
+  ;; Codex with UUID uses fork UUID
+  (should (equal (claudemacs--get-branch-args 'codex "019cbad9-9004-7b33-b212-0261d35fc7b7")
+                 '("fork" "019cbad9-9004-7b33-b212-0261d35fc7b7")))
   ;; Gemini uses --resume
   (should (equal (claudemacs--get-branch-args 'gemini) '("--resume")))
   ;; Unknown tools default to --continue
@@ -1047,6 +1050,50 @@ This function is called by the transient menu and must never error."
   (should (equal (claudemacs--get-resume-flag 'codex) "resume"))
   ;; Unknown tools default to --resume
   (should (equal (claudemacs--get-resume-flag 'unknown-tool) "--resume")))
+
+;;; Codex Session Discovery Tests
+
+(ert-deftest claudemacs-test-codex-discover-sessions-no-sqlite3 ()
+  "Test that codex session discovery returns nil when sqlite3 is not available."
+  :tags '(:unit :branch)
+  (cl-letf (((symbol-function 'executable-find) (lambda (_prog) nil)))
+    (should-not (claudemacs--codex-discover-sessions "/some/path"))))
+
+(ert-deftest claudemacs-test-codex-discover-sessions-no-db ()
+  "Test that codex session discovery returns nil when database doesn't exist."
+  :tags '(:unit :branch)
+  (cl-letf (((symbol-function 'executable-find) (lambda (_prog) t))
+            ((symbol-function 'file-exists-p) (lambda (_path) nil)))
+    (should-not (claudemacs--codex-discover-sessions "/some/path"))))
+
+(ert-deftest claudemacs-test-codex-format-session-choice ()
+  "Test Codex session choice formatting."
+  :tags '(:unit :branch)
+  ;; Mock last-user-prompt to avoid hitting real files
+  (cl-letf (((symbol-function 'claudemacs--codex-last-user-prompt)
+             (lambda (_path) "say hi")))
+    (let ((session (list :id "abc-123"
+                         :created-at 1772661346
+                         :rollout-path "/tmp/fake.jsonl")))
+      ;; Should contain the prompt text
+      (should (string-match-p "say hi" (claudemacs--codex-format-session-choice session)))
+      ;; Should contain a timestamp
+      (should (string-match-p "^[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}"
+                              (claudemacs--codex-format-session-choice session)))))
+  ;; Test truncation of long messages
+  (cl-letf (((symbol-function 'claudemacs--codex-last-user-prompt)
+             (lambda (_path) (make-string 100 ?x))))
+    (let ((session (list :id "abc-123"
+                         :created-at 1772661346
+                         :rollout-path "/tmp/fake.jsonl")))
+      (should (string-match-p "\\.\\.\\.$" (claudemacs--codex-format-session-choice session)))))
+  ;; Test nil prompt fallback
+  (cl-letf (((symbol-function 'claudemacs--codex-last-user-prompt)
+             (lambda (_path) nil)))
+    (let ((session (list :id "abc-123"
+                         :created-at 1772661346
+                         :rollout-path "/tmp/fake.jsonl")))
+      (should (string-match-p "(no message)" (claudemacs--codex-format-session-choice session))))))
 
 (provide 'claudemacs-test)
 ;;; claudemacs-test.el ends here
