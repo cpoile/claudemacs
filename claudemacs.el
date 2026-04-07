@@ -892,7 +892,7 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
          (buffer (get-buffer-create buffer-name))
          ;; Capture buffer-local and tool-specific values before switching buffers
          (program (or (plist-get tool-config :program) claudemacs-program))
-         (program-switches (or (plist-get tool-config :switches) claudemacs-program-switches))
+         (program-switches (append claudemacs-program-switches (plist-get tool-config :switches)))
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
           (append claudemacs-process-environment process-environment))
