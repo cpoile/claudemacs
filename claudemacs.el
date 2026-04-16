@@ -70,6 +70,9 @@
 (declare-function flycheck-error-message "flycheck")
 (declare-function flycheck-overlay-errors-in "flycheck")
 (declare-function projectile-project-root "projectile")
+;; consult: optional, enables live buffer preview in session switching
+(declare-function consult--read "consult")
+(declare-function consult--original-window "consult")
 
 ;;;; Customization
 (defgroup claudemacs nil
@@ -625,6 +628,37 @@ Format: 'TOOL(-N):SESSION-ID (current)' or 'TOOL(-N):SESSION-ID'."
         (format "%s:%s (current)" instance-name session-id)
       (format "%s:%s" instance-name session-id))))
 
+(defun claudemacs--find-session-window ()
+  "Find a window currently displaying a claudemacs buffer, or nil."
+  (seq-find (lambda (win)
+              (claudemacs--is-claudemacs-buffer-p (window-buffer win)))
+            (window-list)))
+
+(defun claudemacs--session-preview-state (choices)
+  "Create a consult state function for previewing session buffers.
+CHOICES is an alist of (display-string . session-info-plist).
+Previews in a window showing a claudemacs buffer if one exists,
+otherwise falls back to the window that invoked the minibuffer."
+  (let ((lookup (make-hash-table :test 'equal))
+        (target-win (or (claudemacs--find-session-window)
+                        (consult--original-window)))
+        orig-buf)
+    (setq orig-buf (window-buffer target-win))
+    (dolist (choice choices)
+      (puthash (car choice) (plist-get (cdr choice) :buffer) lookup))
+    (lambda (action cand)
+      (pcase action
+        ('preview
+         (when-let ((buf (and cand (gethash cand lookup))))
+           (when (buffer-live-p buf)
+             (when (window-live-p target-win)
+               (with-selected-window target-win
+                 (switch-to-buffer buf 'norecord))))))
+        ((or 'exit 'return)
+         (when (and (window-live-p target-win) (buffer-live-p orig-buf))
+           (with-selected-window target-win
+             (switch-to-buffer orig-buf 'norecord))))))))
+
 (defun claudemacs--switch-to-session ()
   "Switch to a session in current workspace.
 If one session exists, switch directly to it.
@@ -637,16 +671,24 @@ If no sessions exist, open the Start Session menu."
       (claudemacs-start-menu))
      ;; Exactly one session - switch directly
      ((= (length active-sessions) 1)
-      (let ((tool (plist-get (car active-sessions) :tool)))
-        (claudemacs--switch-to-buffer tool)))
-     ;; Multiple sessions - prompt for selection
+      (let ((buffer (plist-get (car active-sessions) :buffer)))
+        (display-buffer buffer)
+        (select-window (get-buffer-window buffer))))
+     ;; Multiple sessions - prompt for selection with preview
      (t
       (let* ((choices (mapcar (lambda (info)
                                 (cons (claudemacs--format-session-choice info)
                                       info))
                               active-sessions))
-             (selected-name (completing-read "Switch to session: "
-                                            (mapcar #'car choices) nil t))
+             (candidates (mapcar #'car choices))
+             (selected-name
+              (if (fboundp 'consult--read)
+                  (consult--read candidates
+                                 :prompt "Switch to session: "
+                                 :require-match t
+                                 :sort nil
+                                 :state (claudemacs--session-preview-state choices))
+                (completing-read "Switch to session: " candidates nil t)))
              (info (cdr (assoc selected-name choices))))
         (when info
           (let ((buffer (plist-get info :buffer)))
@@ -740,6 +782,17 @@ This works across macOS, Linux, and Windows platforms."
      ;; Fallback: show in Emacs message area
      (t (message "%s: %s" title message)))))
 
+(defun claudemacs--force-resize-terminal (buffer)
+  "Force eat terminal in BUFFER to adopt the actual window dimensions.
+Bypasses `window-adjust-process-window-size-function' which may be set
+to `ignore' by the time this runs."
+  (when-let* ((win (get-buffer-window buffer))
+              (width (max (window-body-width win) 1))
+              (height (max (window-body-height win) 1)))
+    (let ((inhibit-read-only t))
+      (eat-term-resize eat-terminal width height)
+      (eat-term-redisplay eat-terminal))))
+
 (defun claudemacs--setup-eat-integration (buffer &optional retry-count)
   "Set up eat integration (keymap and bell handler) for BUFFER.
 Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
@@ -753,6 +806,10 @@ Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
           (with-current-buffer buffer
             (claudemacs--setup-buffer-keymap)
             (claudemacs-setup-bell-handler)
+            ;; Force terminal to adopt actual window dimensions.
+            ;; eat-make runs before display-buffer, so the terminal starts
+            ;; with a default size; send SIGWINCH so the CLI sees the real width.
+            (claudemacs--force-resize-terminal buffer)
             ;; Run startup hook after setup is complete
             (run-hooks 'claudemacs-startup-hook)))
       ;; Eat not ready yet, retry if we haven't exceeded max attempts
