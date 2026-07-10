@@ -18,6 +18,18 @@
 
 ;;; Changelog:
 
+;; Version 0.4.0 (2026-07-10)
+;; - New `claudemacs-branch-session' command for forking the current Claude or
+;;   Codex session, with session-specific UUID tracking and selection
+;; - No more Eat-mode expensive blinking-cursor redraws for Codex sessions
+;; - Optional Consult integration adds live previews when switching sessions
+;; - Aborted request minibuffers now save their contents for recall with `M-p'
+;; - Global `claudemacs-program-switches' are now combined with per-tool switches
+;; - Fixed `C-b' so it moves backward in Claudemacs terminals without affecting
+;;   other Eat buffers
+;; - Terminals now resize to their displayed window when sessions start
+;; - Documented using `C-q' to send literal control keys to Claude Code
+
 ;; Version 0.3.0 (2025-01-14)
 ;; - Default opens "start a new session" when pressing 's' without a cur session
 ;; - Files outside the session's working directory now use absolute paths
