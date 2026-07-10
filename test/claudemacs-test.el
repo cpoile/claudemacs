@@ -390,6 +390,34 @@ The file is automatically cleaned up after BODY executes."
 
 ;;; Startup Hook Behavior Tests
 
+(ert-deftest claudemacs-test-codex-cursor-blinking-disabled ()
+  "Test that Codex cursor styles use eat's non-blinking equivalents."
+  :tags '(:unit :codex :cursor)
+  (claudemacs-test-with-temp-buffer
+   (let ((claudemacs--tool 'codex)
+         (applied-state nil))
+     (setq-local eat-terminal 'fake-terminal)
+     (setq-local eat-default-cursor-type '(t nil nil))
+     (setq-local eat-very-visible-cursor-type '(t 2 hollow))
+     (setq-local eat-vertical-bar-cursor-type '(bar nil nil))
+     (setq-local eat-very-visible-vertical-bar-cursor-type '(bar 2 nil))
+     (setq-local eat-horizontal-bar-cursor-type '(hbar nil nil))
+     (setq-local eat-very-visible-horizontal-bar-cursor-type '(hbar 2 nil))
+     (cl-letf (((symbol-function 'eat-term-parameter)
+                (lambda (_terminal parameter)
+                  (when (eq parameter 'set-cursor-function)
+                    (lambda (_terminal state)
+                      (setq applied-state state)))))
+               ((symbol-function 'eat-term-cursor-type)
+                (lambda (_terminal) :blinking-block)))
+       (claudemacs--disable-codex-cursor-blink))
+     (should (equal eat-very-visible-cursor-type '(t nil nil)))
+     (should (equal eat-very-visible-vertical-bar-cursor-type
+                    '(bar nil nil)))
+     (should (equal eat-very-visible-horizontal-bar-cursor-type
+                    '(hbar nil nil)))
+     (should (eq applied-state :blinking-block)))))
+
 (ert-deftest claudemacs-test-startup-hook-called-during-setup ()
   "Test that claudemacs-startup-hook is called during eat integration setup."
   :tags '(:integration :startup-hook)

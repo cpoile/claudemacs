@@ -735,6 +735,14 @@ Returns the session info plist, or nil if there aren't enough sessions."
 (declare-function eat-term-input-event "eat")
 (declare-function eat-kill-process "eat")
 (declare-function eat-term-parameter "eat")
+(declare-function eat-term-cursor-type "eat")
+
+(defvar eat-default-cursor-type)
+(defvar eat-very-visible-cursor-type)
+(defvar eat-vertical-bar-cursor-type)
+(defvar eat-very-visible-vertical-bar-cursor-type)
+(defvar eat-horizontal-bar-cursor-type)
+(defvar eat-very-visible-horizontal-bar-cursor-type)
 
 ;;;; Bell Handling
 (defun claudemacs--bell-handler (terminal)
@@ -793,6 +801,26 @@ to `ignore' by the time this runs."
       (eat-term-resize eat-terminal width height)
       (eat-term-redisplay eat-terminal))))
 
+(defun claudemacs--disable-codex-cursor-blink ()
+  "Disable eat's expensive frame-redrawing cursor blink for Codex.
+Codex requests a blinking terminal cursor.  Eat implements that by
+calling `redraw-frame' twice per second, which can make the entire
+Emacs frame flicker.  Preserve the requested cursor shape while using
+the corresponding non-blinking eat cursor configuration."
+  (when (eq claudemacs--tool 'codex)
+    (setq-local eat-very-visible-cursor-type
+                (copy-tree eat-default-cursor-type))
+    (setq-local eat-very-visible-vertical-bar-cursor-type
+                (copy-tree eat-vertical-bar-cursor-type))
+    (setq-local eat-very-visible-horizontal-bar-cursor-type
+                (copy-tree eat-horizontal-bar-cursor-type))
+    ;; Apply the new mapping to the cursor state Codex already requested.
+    ;; The buffer-local mappings also prevent later cursor-style escape
+    ;; sequences from re-enabling eat's blink timer.
+    (funcall (eat-term-parameter eat-terminal 'set-cursor-function)
+             eat-terminal
+             (eat-term-cursor-type eat-terminal))))
+
 (defun claudemacs--setup-eat-integration (buffer &optional retry-count)
   "Set up eat integration (keymap and bell handler) for BUFFER.
 Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
@@ -806,6 +834,7 @@ Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
           (with-current-buffer buffer
             (claudemacs--setup-buffer-keymap)
             (claudemacs-setup-bell-handler)
+            (claudemacs--disable-codex-cursor-blink)
             ;; Force terminal to adopt actual window dimensions.
             ;; eat-make runs before display-buffer, so the terminal starts
             ;; with a default size; send SIGWINCH so the CLI sees the real width.
