@@ -599,6 +599,17 @@ The file is automatically cleaned up after BODY executes."
         (claudemacs--bell-handler nil)
         (should-not notification-called)))))
 
+(ert-deftest claudemacs-test-tool-notification-switches ()
+  "Test that Codex gets switches compatible with Eat's bell handler."
+  :tags '(:unit :codex :config)
+  (should (equal (claudemacs--get-tool-notification-switches 'codex)
+                 '("--config" "tui.notification_method=\"bel\""
+                   "--config" "tui.notification_condition=\"always\"")))
+  (should-not (claudemacs--get-tool-notification-switches 'claude))
+  (should-not (claudemacs--get-tool-notification-switches 'gemini))
+  (let ((claudemacs-codex-notification-switches nil))
+    (should-not (claudemacs--get-tool-notification-switches 'codex))))
+
 (ert-deftest claudemacs-test-notification-sound-behavior ()
   "Test that claudemacs-notification-sound-mac affects notification calls."
   :tags '(:unit :config)

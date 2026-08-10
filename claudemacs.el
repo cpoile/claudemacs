@@ -216,10 +216,25 @@ If nil, add the context but don't switch focus to it."
   :group 'claudemacs)
 
 (defcustom claudemacs-notify-on-await t
-  "Whether to show a system notification when Claude Code is awaiting the user.
-When non-nil, display an OS notification popup when Claude completes a task.
+  "Whether to show a system notification when an AI tool awaits the user.
+When non-nil, display an OS notification popup when an AI tool completes a task.
 When nil, no notification is shown (silent operation)."
   :type 'boolean
+  :group 'claudemacs)
+
+(defcustom claudemacs-codex-notification-switches
+  '("--config" "tui.notification_method=\"bel\""
+    "--config" "tui.notification_condition=\"always\"")
+  "Command-line switches used to route Codex notifications through Eat.
+
+Codex can emit TUI notifications as OSC 9 or BEL, and by default only emits
+them when it believes its terminal is unfocused.  Eat handles BEL through its
+`ring-bell-function', but does not expose OSC 9 as a bell event.  These
+switches make Codex emit BEL regardless of its focus state so Claudemacs can
+use the same system notification handler as Claude Code.
+
+Set this to nil to use Codex's own notification settings."
+  :type '(repeat string)
   :group 'claudemacs)
 
 (defcustom claudemacs-notification-sound-mac "Submarine"
@@ -329,6 +344,13 @@ Then falls back to `vc-git-root', then to the directory itself."
   "Get the configuration plist for TOOL from `claudemacs-tool-registry'.
 Returns nil if the tool is not found in the registry."
   (cdr (assq tool claudemacs-tool-registry)))
+
+(defun claudemacs--get-tool-notification-switches (tool)
+  "Get notification-related command-line switches for TOOL.
+Codex notifications are routed through Eat's BEL handler; other tools use
+their own notification mechanisms."
+  (when (eq tool 'codex)
+    claudemacs-codex-notification-switches))
 
 (defun claudemacs--get-resume-flag (tool)
   "Get the resume flag for TOOL.
@@ -758,8 +780,8 @@ Returns the session info plist, or nil if there aren't enough sessions."
 
 ;;;; Bell Handling
 (defun claudemacs--bell-handler (terminal)
-  "Handle bell events from Claude Code in TERMINAL.
-This function is called when Claude Code sends a bell character."
+  "Handle bell events from an AI tool in TERMINAL.
+This function is called when the tool sends a bell character."
   (ignore terminal)
   (when claudemacs-notify-on-await
     (let ((tool-name (capitalize (symbol-name (or claudemacs--tool claudemacs-default-tool)))))
@@ -990,7 +1012,10 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
          (buffer (get-buffer-create buffer-name))
          ;; Capture buffer-local and tool-specific values before switching buffers
          (program (or (plist-get tool-config :program) claudemacs-program))
-         (program-switches (append claudemacs-program-switches (plist-get tool-config :switches)))
+         (program-switches
+          (append (claudemacs--get-tool-notification-switches tool-name)
+                  claudemacs-program-switches
+                  (plist-get tool-config :switches)))
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
           (append claudemacs-process-environment process-environment))

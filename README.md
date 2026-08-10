@@ -156,6 +156,11 @@ For Mac, you need to do some setup to make notifications work.
 
 Now you should receive System notifications when Claude Code is waiting for input, or when done.
 
+For Codex sessions, Claudemacs automatically configures Codex's TUI notification
+path to emit a terminal BEL and to notify even while the session is focused.
+That lets Eat invoke the same Claudemacs system notification handler.  This is
+separate from Codex's top-level `notify` hook, which runs an external command.
+
 Unfortunately, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
 #### -- Linux --
@@ -493,6 +498,10 @@ Customize environment variables passed to Claude processes:
 ```elisp
 ;; Whether to show system notifications when Claude is awaiting input (default: t)
 (setq claudemacs-notify-on-await t)
+
+;; Codex notification switches are enabled by default so notifications reach Eat.
+;; Set to nil to use Codex's own notification method and focus condition.
+;; (setq claudemacs-codex-notification-switches nil)
 
 ;; Sound to use for macOS notifications (default: "Submarine")
 ;; Available sounds: Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, 
