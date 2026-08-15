@@ -24,9 +24,55 @@
 
 ;; Add parent directory to load path to find claudemacs
 (add-to-list 'load-path (file-name-directory (directory-file-name (file-name-directory load-file-name))))
+(require 'claudemacs-terminal)
 (require 'claudemacs)
 
 ;;; Test Utilities
+
+(defun claudemacs-actions-test--terminal-start (_buffer _program _switches)
+  "Provide the required start operation for the fake terminal backend." 
+  nil)
+
+(defun claudemacs-actions-test--terminal-ready-p ()
+  "Return non-nil when the fake action-test process is initialized." 
+  (and (boundp 'claudemacs--terminal-process)
+       claudemacs--terminal-process))
+
+(defun claudemacs-actions-test--terminal-live-p ()
+  "Return whether the fake action-test process is live." 
+  (and (processp claudemacs--terminal-process)
+       (process-live-p claudemacs--terminal-process)))
+
+(defun claudemacs-actions-test--terminal-kill ()
+  "Kill the fake action-test process." 
+  (when (and (processp claudemacs--terminal-process)
+             (process-live-p claudemacs--terminal-process))
+    (delete-process claudemacs--terminal-process)))
+
+(defun claudemacs-actions-test--cleanup-fake-process ()
+  "Stop the fake process before its test buffer is killed." 
+  (when (and (processp claudemacs--terminal-process)
+             (process-live-p claudemacs--terminal-process))
+    (delete-process claudemacs--terminal-process)))
+
+(defun claudemacs-actions-test--terminal-noop (&rest _args)
+  "Implement a no-op operation for the fake terminal backend." 
+  nil)
+
+(claudemacs--terminal-register-backend
+ 'claudemacs-actions-test-fake
+ :start #'claudemacs-actions-test--terminal-start
+ :ready-p #'claudemacs-actions-test--terminal-ready-p
+ :live-p #'claudemacs-actions-test--terminal-live-p
+ :kill #'claudemacs-actions-test--terminal-kill
+ :send-string #'claudemacs-actions-test--terminal-noop
+ :paste-string #'claudemacs-actions-test--terminal-noop
+ :send-key #'claudemacs-actions-test--terminal-noop
+ :setup-buffer #'claudemacs-actions-test--terminal-noop
+ :setup-faces #'claudemacs-actions-test--terminal-noop
+ :post-display #'claudemacs-actions-test--terminal-noop
+ :force-redraw #'claudemacs-actions-test--terminal-noop
+ :unstick #'claudemacs-actions-test--terminal-noop)
 
 (defun claudemacs-test--create-fake-session (&optional cwd)
   "Create minimal fake session that satisfies claudemacs--validate-process.
@@ -37,26 +83,14 @@ Returns the created buffer. Caller responsible for cleanup."
          (fake-process (start-process "fake-claude" nil "sleep" "60")))
 
     (with-current-buffer session-buffer
-      ;; Create fake eat-terminal - must be non-nil to pass validation
-      (setq-local eat-terminal 'fake-terminal)
+      ;; Use the terminal abstraction so action tests do not require Eat or
+      ;; Ghostel to be installed in batch mode.
+      (setq-local claudemacs--terminal-backend 'claudemacs-actions-test-fake)
+      (setq-local claudemacs--terminal-process fake-process)
+      (add-hook 'kill-buffer-hook
+                #'claudemacs-actions-test--cleanup-fake-process nil t)
       ;; Set the working directory for file context
       (setq-local claudemacs--cwd (or cwd default-directory)))
-    
-    ;; Define eat-term-parameter if it doesn't exist, or override if it does
-    (setq claudemacs-test--fake-process fake-process)
-    (unless (fboundp 'eat-term-parameter)
-      (defun eat-term-parameter (terminal property)
-        "Fake eat-term-parameter for testing."
-        (when (eq property 'eat--process)
-          claudemacs-test--fake-process)))
-    
-    ;; If it already exists, use advice to override
-    (when (fboundp 'eat-term-parameter)
-      (advice-add 'eat-term-parameter :override 
-                  (lambda (terminal property)
-                    (when (eq property 'eat--process)
-                      claudemacs-test--fake-process))))
-    
     session-buffer))
 
 
@@ -244,12 +278,7 @@ This is the critical missing test that verifies our function actually works!"
       (when session-buffer
         (kill-buffer session-buffer))
       (when (file-exists-p temp-dir)
-        (delete-directory temp-dir t))
-      ;; Clean up the advice
-      (advice-remove 'eat-term-parameter 
-                     (lambda (terminal property)
-                       (when (eq property 'eat--process)
-                         claudemacs-test--fake-process))))))
+        (delete-directory temp-dir t)))))
 
 ;;; Unit Tests for claudemacs-execute-request ("x" action)
 

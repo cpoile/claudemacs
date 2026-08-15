@@ -2,10 +2,10 @@
 
 ;; Author: Claude Code
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (ert "1.0") (eat "0.9"))
+;; Package-Requires: ((emacs "28.1") (ert "1.0"))
 
 ;;; Commentary:
-;; Real end-to-end tests that spawn actual eat terminals and test full workflows.
+;; Real end-to-end tests that spawn an actual terminal backend and test full workflows.
 ;; These tests require an interactive Emacs session (not batch mode).
 ;;
 ;; Run with: make test-e2e-interactive
@@ -56,6 +56,44 @@
 
 ;;; Test Utilities
 
+(defun claudemacs-e2e--backend-available-p ()
+  "Return non-nil when the selected optional backend is available.
+
+Only an absent supported backend package is a reason to skip an E2E test.
+Once the package is present, loading, contract validation, and global setup
+errors from `claudemacs--terminal-ensure-backend' must reach ERT."
+  (let* ((backend claudemacs-terminal-backend)
+         (library (cond
+                   ((eq backend 'eat) "eat")
+                   ((eq backend 'ghostel) "ghostel")
+                   (t (user-error "Unsupported Claudemacs terminal backend: %S"
+                                  backend)))))
+    (claudemacs-e2e--log "Checking terminal backend `%s' (library `%s')"
+                         backend library)
+    (if (or (featurep backend)
+            (locate-library library))
+        (progn
+          (claudemacs-e2e--log "Initializing terminal backend `%s'" backend)
+          (claudemacs--terminal-ensure-backend backend)
+          (claudemacs-e2e--log "Terminal backend `%s' initialized" backend)
+          t)
+      (claudemacs-e2e--log
+       "Skipping E2E: optional terminal backend `%s' is not installed"
+       backend)
+      nil)))
+
+(defun claudemacs-e2e--skip-unless-runnable ()
+  "Skip the current test unless its interactive prerequisites are present.
+
+The selected backend is initialized here so package-loading and setup errors
+remain test failures; only an absent optional package causes a skip."
+  (when noninteractive
+    (ert-skip "E2E tests require interactive Emacs"))
+  (unless (executable-find "claude")
+    (ert-skip "Claude CLI is not installed"))
+  (unless (claudemacs-e2e--backend-available-p)
+    (ert-skip "Selected terminal backend is not installed")))
+
 (defun claudemacs-e2e--wait-for (predicate &optional timeout message)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse.
 Returns the value of PREDICATE if successful, signals error if timeout.
@@ -73,52 +111,18 @@ MESSAGE is used in error reporting."
       (error "E2E timeout waiting for: %s" (or message "condition")))
     result))
 
-(defun claudemacs-e2e--buffer-contains-p (buffer pattern)
-  "Check if BUFFER contains text matching PATTERN."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (save-excursion
-        (goto-char (point-min))
-        (re-search-forward pattern nil t)))))
-
-(defun claudemacs-e2e--wait-for-prompt (buffer)
-  "Wait for Claude to show its input prompt in BUFFER.
-Claude shows '>' or similar when ready for input."
-  (claudemacs-e2e--wait-for
-   (lambda ()
-     ;; Look for patterns that indicate Claude is ready for input
-     (claudemacs-e2e--buffer-contains-p buffer "^> \\|claude>\\|❯"))
-   claudemacs-e2e-timeout
-   "Claude prompt"))
-
-(defun claudemacs-e2e--wait-for-response (buffer start-pos)
-  "Wait for Claude to respond after START-POS in BUFFER.
-Returns when new content appears after START-POS."
-  (claudemacs-e2e--wait-for
-   (lambda ()
-     (when (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (> (point-max) start-pos))))
-   claudemacs-e2e-timeout
-   "Claude response"))
-
-(defun claudemacs-e2e--get-buffer-text (buffer)
-  "Get visible text content from BUFFER."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (buffer-substring-no-properties (point-min) (point-max)))))
-
 (defun claudemacs-e2e--send-input (buffer text)
-  "Send TEXT as input to the terminal in BUFFER."
+  "Send TEXT as input to the selected terminal in BUFFER."
   (with-current-buffer buffer
-    (when (and (boundp 'eat-terminal) eat-terminal)
-      (eat-term-send-string eat-terminal text))))
+    (claudemacs--terminal-send-string text)))
 
-(defun claudemacs-e2e--send-return (buffer)
-  "Send return key to terminal in BUFFER."
-  (with-current-buffer buffer
-    (when (and (boundp 'eat-terminal) eat-terminal)
-      (eat-term-input-event eat-terminal 1 'return))))
+(defun claudemacs-e2e--wait-for-session-buffer (&optional message)
+  "Wait for the current test's Claude session buffer.
+MESSAGE overrides the default wait description."
+  (claudemacs-e2e--wait-for
+   (lambda () (claudemacs--get-buffer 'claude))
+   10
+   (or message "claudemacs buffer creation")))
 
 (defun claudemacs-e2e--create-test-project ()
   "Create a temporary git project for testing.
@@ -154,13 +158,11 @@ Does NOT affect user's existing sessions."
   (claudemacs-e2e--log "Tracked test buffers: %S" claudemacs-e2e--test-buffers)
   (dolist (buf-name claudemacs-e2e--test-buffers)
     (when-let ((buffer (get-buffer buf-name)))
-      (when (buffer-live-p buffer)
-        (claudemacs-e2e--log "  Killing: %s" buf-name)
-        (with-current-buffer buffer
-          (when (and (boundp 'eat-terminal) eat-terminal
-                     (process-live-p (get-buffer-process buffer)))
-            (ignore-errors (eat-kill-process))))
-        (kill-buffer buffer))))
+      (claudemacs-e2e--log "  Killing: %s" buf-name)
+      (with-current-buffer buffer
+        (when (ignore-errors (claudemacs--terminal-live-p))
+          (ignore-errors (claudemacs--terminal-kill))))
+      (kill-buffer buffer)))
   (setq claudemacs-e2e--test-buffers nil))
 
 ;;; Test Fixtures
@@ -192,47 +194,40 @@ a unique test ID, ensuring tests don't affect user's existing sessions."
 (ert-deftest claudemacs-e2e-start-session ()
   "Test starting a fresh Claude session."
   :tags '(:e2e :session)
-  (skip-unless (not noninteractive))
-  (skip-unless (executable-find "claude"))
+  (claudemacs-e2e--skip-unless-runnable)
 
   (claudemacs-e2e-with-project
     ;; Start a session (index 0 = claude, the default tool)
     (claudemacs--start-tool-by-index 0)
 
     ;; Wait for buffer to exist
-    (let ((buffer (claudemacs-e2e--wait-for
-                   (lambda () (claudemacs--get-buffer 'claude))
-                   10
-                   "claudemacs buffer creation")))
+    (let ((buffer (claudemacs-e2e--wait-for-session-buffer)))
       (should buffer)
       (claudemacs-e2e--track-buffer buffer)
       (should (buffer-live-p buffer))
 
-      ;; Check buffer has eat terminal
+      ;; Check the selected terminal backend initialized the buffer
       (with-current-buffer buffer
-        (should (boundp 'eat-terminal))
-        (should eat-terminal))
+        (should (eq claudemacs--terminal-backend
+                   claudemacs-terminal-backend))
+        (should (claudemacs--terminal-ready-p))
+        (should (claudemacs--terminal-live-p)))
 
-      ;; Check process is running
-      (let ((proc (get-buffer-process buffer)))
-        (should proc)
-        (should (process-live-p proc))))))
+      ;; The backend owns process representation and lifecycle checks.
+      (with-current-buffer buffer
+        (should (claudemacs--terminal-live-p))))))
 
 (ert-deftest claudemacs-e2e-kill-session ()
   "Test killing a Claude session."
   :tags '(:e2e :session)
-  (skip-unless (not noninteractive))
-  (skip-unless (executable-find "claude"))
+  (claudemacs-e2e--skip-unless-runnable)
 
   (claudemacs-e2e-with-project
     ;; Start a session
     (claudemacs--start-tool-by-index 0)
 
     ;; Wait for buffer
-    (let ((buffer (claudemacs-e2e--wait-for
-                   (lambda () (claudemacs--get-buffer 'claude))
-                   10
-                   "claudemacs buffer creation")))
+    (let ((buffer (claudemacs-e2e--wait-for-session-buffer)))
       (should buffer)
       (claudemacs-e2e--track-buffer buffer)
 
@@ -245,18 +240,14 @@ a unique test ID, ensuring tests don't affect user's existing sessions."
 (ert-deftest claudemacs-e2e-session-ready ()
   "Test that Claude session becomes ready for input."
   :tags '(:e2e :session)
-  (skip-unless (not noninteractive))
-  (skip-unless (executable-find "claude"))
+  (claudemacs-e2e--skip-unless-runnable)
 
   (claudemacs-e2e-with-project
     ;; Start a session
     (claudemacs--start-tool-by-index 0)
 
     ;; Wait for buffer
-    (let ((buffer (claudemacs-e2e--wait-for
-                   (lambda () (claudemacs--get-buffer 'claude))
-                   10
-                   "claudemacs buffer creation")))
+    (let ((buffer (claudemacs-e2e--wait-for-session-buffer)))
       (should buffer)
       (claudemacs-e2e--track-buffer buffer)
 
@@ -272,16 +263,12 @@ a unique test ID, ensuring tests don't affect user's existing sessions."
 (ert-deftest claudemacs-e2e-multiple-sessions ()
   "Test running multiple Claude sessions in same workspace."
   :tags '(:e2e :multi-session)
-  (skip-unless (not noninteractive))
-  (skip-unless (executable-find "claude"))
+  (claudemacs-e2e--skip-unless-runnable)
 
   (claudemacs-e2e-with-project
     ;; Start first session (claude)
     (claudemacs--start-tool-by-index 0)
-    (let ((buffer1 (claudemacs-e2e--wait-for
-                    (lambda () (claudemacs--get-buffer 'claude))
-                    10
-                    "first session")))
+    (let ((buffer1 (claudemacs-e2e--wait-for-session-buffer "first session")))
       (should buffer1)
       (claudemacs-e2e--track-buffer buffer1)
 
@@ -304,18 +291,14 @@ a unique test ID, ensuring tests don't affect user's existing sessions."
 (ert-deftest claudemacs-e2e-send-message ()
   "Test sending a simple message to Claude."
   :tags '(:e2e :actions)
-  (skip-unless (not noninteractive))
-  (skip-unless (executable-find "claude"))
+  (claudemacs-e2e--skip-unless-runnable)
 
   (claudemacs-e2e-with-project
     ;; Start a session
     (claudemacs--start-tool-by-index 0)
 
     ;; Wait for buffer
-    (let ((buffer (claudemacs-e2e--wait-for
-                   (lambda () (claudemacs--get-buffer 'claude))
-                   10
-                   "claudemacs buffer creation")))
+    (let ((buffer (claudemacs-e2e--wait-for-session-buffer)))
       (should buffer)
       (claudemacs-e2e--track-buffer buffer)
 

@@ -11,12 +11,19 @@
 ;;; Commentary:
 
 ;; Claudemacs integrates with Claude Code (https://docs.anthropic.com/en/docs/claude-code/overview)
-;; for AI-assisted programming in Emacs using the eat terminal emulator.
+;; for AI-assisted programming in Emacs using a selectable terminal backend.
 ;;
 ;; Inspired by Aidermacs: https://github.com/MatthewZMD/aidermacs and
 ;; claude-code.el: https://github.com/stevemolitor/claude-code.el
 
 ;;; Changelog:
+
+;; Version 0.5.0 (unreleased)
+;; - Selectable Eat and Ghostel terminal backends, with backend ownership
+;;   captured per session so both can coexist; Ghostel is preferred by default
+;;   when its package is available
+;; - Eat-specific faces, scrolling, cursor, resize, and redraw workarounds are
+;;   isolated in the Eat backend adapter
 
 ;; Version 0.4.0 (2026-07-10)
 ;; - New `claudemacs-branch-session' command for forking the current Claude or
@@ -73,7 +80,7 @@
 (require 'transient)
 (require 'project)
 (require 'vc-git)
-(require 'eat nil 'noerror)
+(require 'claudemacs-terminal)
 (require 'claudemacs-comment)
 
 ;; Declare functions from optional packages
@@ -96,9 +103,32 @@
   :type 'string
   :group 'claudemacs)
 
+(defcustom claudemacs-terminal-backend
+  (if (locate-library "ghostel") 'ghostel 'eat)
+  "Terminal backend used for newly created Claudemacs sessions.
+Ghostel is the default when its package is available on `load-path'; otherwise
+Eat is used.  A value set through Customize or `setq' takes precedence over
+this detected default.  The selected package is loaded lazily when a session
+starts.  Existing sessions retain the backend with which they were created,
+so sessions using different backends may coexist."
+  :type '(choice (const :tag "Eat" eat)
+                 (const :tag "Ghostel" ghostel))
+  :group 'claudemacs)
+
+(defcustom claudemacs-ghostel-query-before-killing t
+  "Whether Claudemacs Ghostel sessions confirm before killing a live process.
+This value is applied buffer-locally to Claudemacs sessions and does not
+change the setting for unrelated Ghostel buffers.  Values match
+`ghostel-query-before-killing': `t' always confirms, `nil' never confirms,
+and `auto' confirms only while a shell command is running."
+  :type '(choice (const :tag "Always" t)
+                 (const :tag "Never" nil)
+                 (const :tag "While a command is running" auto))
+  :group 'claudemacs)
+
 (defcustom claudemacs-program-switches nil
   "List of command line switches to pass to the Claude program.
-These are passed as SWITCHES parameters to `eat-make`.
+These are passed to the selected terminal backend when starting the program.
 E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
   :type '(repeat string)
   :group 'claudemacs)
@@ -157,8 +187,7 @@ If nil, show the buffer but don't switch focus to it."
 If nil (default): RET submits input, M-RET creates new line (standard behavior).
 If non-nil: M-RET submits input, RET creates new line (swapped behavior).
 
-This setting only affects claudemacs buffers and does not impact other
-eat buffers."
+This setting only affects Claudemacs terminal buffers."
   :type 'boolean
   :group 'claudemacs)
 
@@ -225,11 +254,11 @@ When nil, no notification is shown (silent operation)."
 (defcustom claudemacs-codex-notification-switches
   '("--config" "tui.notification_method=\"bel\""
     "--config" "tui.notification_condition=\"always\"")
-  "Command-line switches used to route Codex notifications through Eat.
+  "Command-line switches used to route Codex notifications through the terminal.
 
 Codex can emit TUI notifications as OSC 9 or BEL, and by default only emits
-them when it believes its terminal is unfocused.  Eat handles BEL through its
-`ring-bell-function', but does not expose OSC 9 as a bell event.  These
+them when it believes its terminal is unfocused.  Claudemacs terminal backends
+handle BEL through their notification integration.  These
 switches make Codex emit BEL regardless of its focus state so Claudemacs can
 use the same system notification handler as Claude Code.
 
@@ -264,7 +293,7 @@ When empty string, no sound is played."
 
 (defcustom claudemacs-startup-hook nil
   "Hook run after a claudemacs session has finished starting up.
-This hook is called after the eat terminal is initialized, keymaps
+This hook is called after the terminal is initialized, keymaps
 are set up, and bell handlers are configured. The hook functions
 are executed with the claudemacs buffer as the current buffer."
   :type 'hook
@@ -291,6 +320,12 @@ are executed with the claudemacs buffer as the current buffer."
   "Buffer-local variable storing the Claude Code session UUID.
 Set when starting a new Claude session with --session-id.
 Used for branching with --resume <uuid> --fork-session.")
+
+(defvar-local claudemacs--ghostel-escape-map-active nil
+  "Non-nil when Claudemacs' Ghostel overrides are active in this buffer.")
+
+(defvar-local claudemacs--ghostel-escape-map-alist nil
+  "Buffer-local emulation map alist used for Ghostel key overrides.")
 
 ;;;;
 ;;;; Utility Functions
@@ -567,12 +602,11 @@ Returns t if switched successfully, nil if no buffer exists."
   (if-let* ((buffer (claudemacs--get-buffer tool)))
       (progn
         (with-current-buffer buffer
-          (if (not eat-terminal)
-              (error "Claudemacs session exists but no eat-terminal found. Please kill *claudemacs:...* buffer and re-start")
-            (let ((process (eat-term-parameter eat-terminal 'eat--process)))
-              (if (not (and process (process-live-p process)))
-                (error "Claudemacs session exists but process is not running. Please kill *claudemacs:...* buffer and re-start")))))
-        ;; we have a running eat-terminal
+          (unless (and claudemacs--terminal-backend
+                       (claudemacs--terminal-ready-p))
+            (error "Claudemacs session exists but its terminal is not initialized. Please kill the session buffer and restart"))
+          (unless (claudemacs--terminal-live-p)
+            (error "Claudemacs session exists but its process is not running. Please kill the session buffer and restart")))
         (display-buffer buffer)
         (select-window (get-buffer-window buffer))
         t)
@@ -762,27 +796,11 @@ Returns the session info plist, or nil if there aren't enough sessions."
                       (seq-take errors 2) "; ")))))
 
 ;;;; Terminal Integration
-;; Eat terminal emulator functions
-(declare-function eat-make "eat")
-(declare-function eat-term-send-string "eat")
-(declare-function eat-term-send-string-as-yank "eat")
-(declare-function eat-term-input-event "eat")
-(declare-function eat-kill-process "eat")
-(declare-function eat-term-parameter "eat")
-(declare-function eat-term-cursor-type "eat")
-
-(defvar eat-default-cursor-type)
-(defvar eat-very-visible-cursor-type)
-(defvar eat-vertical-bar-cursor-type)
-(defvar eat-very-visible-vertical-bar-cursor-type)
-(defvar eat-horizontal-bar-cursor-type)
-(defvar eat-very-visible-horizontal-bar-cursor-type)
 
 ;;;; Bell Handling
-(defun claudemacs--bell-handler (terminal)
-  "Handle bell events from an AI tool in TERMINAL.
+(defun claudemacs--bell-handler (&rest _arguments)
+  "Handle a bell event from the current AI tool.
 This function is called when the tool sends a bell character."
-  (ignore terminal)
   (when claudemacs-notify-on-await
     (let ((tool-name (capitalize (symbol-name (or claudemacs--tool claudemacs-default-tool)))))
       (claudemacs--system-notification (format "%s finished and is awaiting your input" tool-name)))))
@@ -824,123 +842,87 @@ This works across macOS, Linux, and Windows platforms."
      ;; Fallback: show in Emacs message area
      (t (message "%s: %s" title message)))))
 
-(defun claudemacs--force-resize-terminal (buffer)
-  "Force eat terminal in BUFFER to adopt the actual window dimensions.
-Bypasses `window-adjust-process-window-size-function' which may be set
-to `ignore' by the time this runs."
-  (when-let* ((win (get-buffer-window buffer))
-              (width (max (window-body-width win) 1))
-              (height (max (window-body-height win) 1)))
-    (let ((inhibit-read-only t))
-      (eat-term-resize eat-terminal width height)
-      (eat-term-redisplay eat-terminal))))
-
-(defun claudemacs--disable-codex-cursor-blink ()
-  "Disable eat's expensive frame-redrawing cursor blink for Codex.
-Codex requests a blinking terminal cursor.  Eat implements that by
-calling `redraw-frame' twice per second, which can make the entire
-Emacs frame flicker.  Preserve the requested cursor shape while using
-the corresponding non-blinking eat cursor configuration."
-  (when (eq claudemacs--tool 'codex)
-    (setq-local eat-very-visible-cursor-type
-                (copy-tree eat-default-cursor-type))
-    (setq-local eat-very-visible-vertical-bar-cursor-type
-                (copy-tree eat-vertical-bar-cursor-type))
-    (setq-local eat-very-visible-horizontal-bar-cursor-type
-                (copy-tree eat-horizontal-bar-cursor-type))
-    ;; Apply the new mapping to the cursor state Codex already requested.
-    ;; The buffer-local mappings also prevent later cursor-style escape
-    ;; sequences from re-enabling eat's blink timer.
-    (funcall (eat-term-parameter eat-terminal 'set-cursor-function)
-             eat-terminal
-             (eat-term-cursor-type eat-terminal))))
-
-(defun claudemacs--setup-eat-integration (buffer &optional retry-count)
-  "Set up eat integration (keymap and bell handler) for BUFFER.
-Retries using RETRY-COUNT up to 10 times if eat is not ready yet."
+(defun claudemacs--setup-terminal-integration (buffer &optional retry-count)
+  "Set up terminal integration for BUFFER.
+Retries using RETRY-COUNT up to 10 times if the backend is not ready yet."
   (let ((retry-count (or retry-count 0)))
-    (if (and (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (and (boundp 'eat-terminal) eat-terminal)))
-        ;; Eat is ready, set up integration
-        (progn
-          (message "Eat is ready, setting up integrations")
-          (with-current-buffer buffer
-            (claudemacs--setup-buffer-keymap)
-            (claudemacs-setup-bell-handler)
-            (claudemacs--disable-codex-cursor-blink)
-            ;; Force terminal to adopt actual window dimensions.
-            ;; eat-make runs before display-buffer, so the terminal starts
-            ;; with a default size; send SIGWINCH so the CLI sees the real width.
-            (claudemacs--force-resize-terminal buffer)
-            ;; Run startup hook after setup is complete
-            (run-hooks 'claudemacs-startup-hook)))
-      ;; Eat not ready yet, retry if we haven't exceeded max attempts
-      (when (< retry-count 10)
-        (message "Eat not ready yet, retrying in 0.5s (attempt %d/10)" (1+ retry-count))
-        (run-with-timer 0.5 nil
-                        (lambda ()
-                          (claudemacs--setup-eat-integration buffer (1+ retry-count))))))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (cond
+         ((and claudemacs--terminal-backend
+               (claudemacs--terminal-ready-p))
+          (message "Claudemacs terminal is ready, setting up integrations")
+          (claudemacs--terminal-setup-faces)
+          (claudemacs--setup-buffer-keymap)
+          (claudemacs-setup-bell-handler)
+          (run-hooks 'claudemacs-startup-hook))
+         ((< retry-count 10)
+          (message "Claudemacs terminal not ready; retrying in 0.5s (attempt %d/10)"
+                   (1+ retry-count))
+          (run-with-timer 0.5 nil
+                          (lambda ()
+                            (claudemacs--setup-terminal-integration
+                             buffer (1+ retry-count))))))))))
 
 ;;;###autoload
 (defun claudemacs-setup-bell-handler ()
   "Set up or re-setup the completion notification handler.
 Use this if system notifications aren't working after starting a session."
   (interactive)
-  (with-current-buffer (claudemacs--get-current-session-buffer)
-    (when (boundp 'eat-terminal)
-      (setf (eat-term-parameter eat-terminal 'ring-bell-function)
-            #'claudemacs--bell-handler)
-      (message "Bell handler configured for claudemacs session"))))
-
-(defun claudemacs--setup-repl-faces ()
-  "Setup faces for the Claude REPL buffer.
-Applies consistent styling to all eat-mode terminal faces."
-  
-  ;; Helper function to remap a face to inherit from claudemacs-repl-face
-  (cl-flet ((remap-face (face &rest props)
-              (apply #'face-remap-add-relative face :inherit 'claudemacs-repl-face props)))
-    
-    ;; Set buffer default face
-    (buffer-face-set :inherit 'claudemacs-repl-face)
-    
-    ;; Remap all eat terminal faces to inherit from claudemacs-repl-face
-    (mapc #'remap-face
-          '(eat-shell-prompt-annotation-running
-            eat-shell-prompt-annotation-success
-            eat-shell-prompt-annotation-failure
-            eat-term-bold eat-term-faint eat-term-italic
-            eat-term-slow-blink eat-term-fast-blink))
-    
-    ;; Remap font faces (eat-term-font-0 through eat-term-font-9)
-    (dotimes (i 10)
-      (remap-face (intern (format "eat-term-font-%d" i))))
-    
-    ;; Specific overrides
-    (face-remap-add-relative 'nobreak-space :underline nil)
-    (remap-face 'eat-term-faint :foreground "#999999" :weight 'light)))
+  (if-let ((buffer (claudemacs--get-current-session-buffer)))
+      (with-current-buffer buffer
+        (claudemacs--terminal-setup-buffer #'claudemacs--bell-handler)
+        (message "Bell handler configured for Claudemacs session"))
+    (user-error "No Claudemacs session is active")))
 
 (defun claudemacs--ret-key ()
-  "Send return key event to eat terminal."
+  "Send a return key event to the current terminal."
   (interactive)
-  (eat-term-input-event eat-terminal 1 'return))
+  (claudemacs--terminal-send-key 'return))
 
 (defun claudemacs--meta-ret-key ()
-  "Send meta + return to eat terminal."
+  "Send meta-return to the current terminal."
   (interactive)
-  (eat-term-send-string eat-terminal "\e\C-m"))
-
-(defun claudemacs--maybe-left-key ()
-  "Send left arrow in claudemacs buffers, otherwise default eat-self-input."
-  (interactive)
-  (if (claudemacs--is-claudemacs-buffer-p)
-      (eat-term-input-event eat-terminal 1 'left)
-    (call-interactively #'eat-self-input)))
+  (claudemacs--terminal-send-key 'meta-return))
 
 (defun claudemacs--send-escape ()
-  "Send ESC to eat terminal."
+  "Send ESC to the current terminal."
   (interactive)
-  (eat-term-send-string eat-terminal "\e"))
+  ;; Ghostel sets `quit-flag' before dispatching C-g because it keeps
+  ;; `inhibit-quit' non-nil while routing terminal input.  Clear it so the
+  ;; escape key reaches the selected backend instead of aborting the command.
+  (setq quit-flag nil)
+  (claudemacs--terminal-send-key 'escape))
+
+(defun claudemacs--setup-ghostel-escape-map ()
+  "Keep Claudemacs' Ghostel key overrides ahead of Ghostel's mode maps.
+
+Ghostel replaces its local map whenever it switches input modes.  An
+emulation map remains active across those replacements while staying local to
+this Claudemacs session buffer.  Rebuild the map on every setup so changing
+the return-key options cannot leave stale bindings behind."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-g") #'claudemacs--send-escape)
+
+    ;; Ghostel accepts both the control-character and named-event forms of
+    ;; return keys.  Bind both forms because the event Emacs reports depends
+    ;; on whether input came from a terminal or a graphical session.
+    (when claudemacs-m-return-is-submit
+      (dolist (key '("RET" "<return>"))
+        (define-key map (kbd key) #'claudemacs--meta-ret-key))
+      (dolist (key '("M-RET" "<M-return>"))
+        (define-key map (kbd key) #'claudemacs--ret-key)))
+    (when claudemacs-shift-return-newline
+      (dolist (key '("S-RET" "<S-return>"))
+        (define-key map (kbd key) #'claudemacs--meta-ret-key)))
+
+    (setq-local claudemacs--ghostel-escape-map-active t)
+    (setq-local claudemacs--ghostel-escape-map-alist
+                `((claudemacs--ghostel-escape-map-active . ,map)))
+    (setq-local emulation-mode-map-alists
+                (cons 'claudemacs--ghostel-escape-map-alist
+                      (delq 'claudemacs--ghostel-escape-map-alist
+                            (copy-sequence emulation-mode-map-alists))))))
 
 ;;;###autoload
 (defun claudemacs-send-yes ()
@@ -949,7 +931,7 @@ Applies consistent styling to all eat-mode terminal faces."
   (claudemacs--validate-process)
   (let ((buffer (claudemacs--get-current-session-buffer)))
     (with-current-buffer buffer
-      (claudemacs--send-return-for-tool eat-terminal buffer))))
+      (claudemacs--send-return-for-tool buffer))))
 
 ;;;###autoload
 (defun claudemacs-send-no ()
@@ -958,21 +940,25 @@ Applies consistent styling to all eat-mode terminal faces."
   (claudemacs--validate-process)
   (let ((buffer (claudemacs--get-current-session-buffer)))
     (with-current-buffer buffer
-      (eat-term-send-string eat-terminal "\e"))))
+      (claudemacs--terminal-send-key 'escape))))
 
 (defun claudemacs--setup-buffer-keymap ()
   "Set up truly buffer-local keymap for claudemacs buffers with custom key bindings."
   (when (claudemacs--is-claudemacs-buffer-p)
     (message "Setting up buffer-local keymap for claudemacs buffer: %s" (buffer-name))
 
-    ;; Create a new keymap that inherits from the current local map (eat-mode)
+    ;; Inherit the selected terminal mode's local map.
     (let ((map (make-sparse-keymap)))
-      ;; Inherit all eat functionality by setting parent keymap
       (set-keymap-parent map (current-local-map))
 
       ;; Override specific keys for claudemacs functionality
       (define-key map (kbd "C-g") #'claudemacs--send-escape)
-      (message "Defined C-b -> left arrow, C-g -> claudemacs--send-escape")
+      (message "Defined C-g -> claudemacs--send-escape")
+
+      ;; Ghostel replaces its local map when switching input modes, so keep
+      ;; this override in a buffer-local emulation map as well.
+      (when (eq claudemacs--terminal-backend 'ghostel)
+        (claudemacs--setup-ghostel-escape-map))
 
       ;; Handle return key swapping if enabled
       (when claudemacs-m-return-is-submit
@@ -983,9 +969,6 @@ Applies consistent styling to all eat-mode terminal faces."
       ;; Handle shift-return newline if enabled
       (when claudemacs-shift-return-newline
         (define-key map (kbd "<S-return>") #'claudemacs--meta-ret-key)
-        ;; alternative key representations that eat might use:
-        ;(define-key map (kbd "S-RET") #'claudemacs--meta-ret-key)
-        ;(define-key map (kbd "<shift-return>") #'claudemacs--meta-ret-key)
         (message "Defined S-RET -> newline"))
 
       ;; Apply the keymap as truly buffer-local
@@ -1003,8 +986,8 @@ TOOL defaults to `claudemacs-default-tool' if not specified.
 INSTANCE-NUM specifies which instance number to use (1, 2, 3, etc.).
 If INSTANCE-NUM is nil, the next available instance number is used.
 The tool configuration is looked up in `claudemacs-tool-registry'."
-  (require 'eat)
   (let* ((tool-name (or tool claudemacs-default-tool))
+         (terminal-backend claudemacs-terminal-backend)
          (tool-config (claudemacs--get-tool-config tool-name))
          (instance (or instance-num (claudemacs--get-next-instance-number tool-name)))
          (default-directory work-dir)
@@ -1029,71 +1012,48 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
       (kill-buffer buffer)
       (error "Program '%s' not found in PATH" program))
 
-    (with-current-buffer buffer
-      (cd work-dir)
-      ;; Sync eat-term-name with TERM from claudemacs-process-environment
-      (when-let ((term-entry (seq-find (lambda (s) (string-prefix-p "TERM=" s))
-                                       claudemacs-process-environment)))
-        (setq-local eat-term-name (substring term-entry 5)))
-      (let* ((process-adaptive-read-buffering nil)
-             (uuid-args (when session-uuid (list "--session-id" session-uuid)))
-             (switches (remove nil (append uuid-args args program-switches))))
-        (condition-case err
-            (if use-shell-env
-                ;; New behavior: Run through shell to source profile (e.g., .zprofile, .bash_profile)
-                (let* ((shell (claudemacs--get-shell-name))
-                       (claude-cmd (format "%s %s" program
-                                           (mapconcat 'shell-quote-argument switches " "))))
-                  (eat-make (substring buffer-name 1 -1) shell nil "-c" claude-cmd))
-              ;; Original behavior: Run Claude directly without shell environment
-              (apply #'eat-make (substring buffer-name 1 -1) program nil switches))
-          (error
-           (kill-buffer buffer)
-           (error "Failed to start %s: %s" program (error-message-string err)))))
+    (condition-case err
+        (progn
+          ;; Load before displaying the new buffer so a missing optional package
+          ;; fails without leaving an empty session window behind.
+          (claudemacs--terminal-ensure-backend terminal-backend)
+          (let* ((window (display-buffer buffer))
+                 (process-adaptive-read-buffering nil)
+                 (uuid-args (when session-uuid
+                              (list "--session-id" session-uuid)))
+                 (switches (remove nil
+                                   (append uuid-args args program-switches)))
+                 (start-program program)
+                 (start-switches switches))
+            (when use-shell-env
+              (setq start-program (claudemacs--get-shell-name)
+                    start-switches
+                    (list "-c"
+                          (mapconcat #'shell-quote-argument
+                                     (cons program switches) " "))))
+            (with-current-buffer buffer
+              (cd work-dir)
+              (claudemacs--terminal-start
+               buffer terminal-backend start-program start-switches)
 
-      ;; Set buffer-local variables after eat-make to ensure they persist
-      (setq-local claudemacs--cwd work-dir)
-      (setq-local claudemacs--tool tool-name)
-      (setq-local claudemacs--claude-session-uuid session-uuid)
+              ;; Set session state after the backend establishes its major mode.
+              (setq-local claudemacs--cwd work-dir)
+              (setq-local claudemacs--tool tool-name)
+              (setq-local claudemacs--claude-session-uuid session-uuid)
 
-      (claudemacs--setup-repl-faces)
-      ;; Optimize scrolling for terminal input - allows text to go to bottom
-      (setq-local scroll-conservatively 10000)  ; Never recenter
-      (setq-local scroll-margin 0)              ; No margin so text goes to edge
-      (setq-local maximum-scroll-margin 0)      ; No maximum margin
-      (setq-local scroll-preserve-screen-position t)  ; Preserve position during scrolling
-      
-      ;; Additional stabilization for blinking character height changes
-      (setq-local auto-window-vscroll nil)      ; Disable automatic scrolling adjustments
-      (setq-local scroll-step 1)                ; Scroll one line at a time
-      (setq-local hscroll-step 1)               ; Horizontal scroll one column at a time
-      (setq-local hscroll-margin 0)             ; No horizontal scroll margin
-      
-      ;; Force consistent line spacing to prevent height fluctuations
-      (setq-local line-spacing 0)               ; No extra line spacing
-      
-      ;; Disable eat's text blinking to reduce display changes
-      (when (bound-and-true-p eat-enable-blinking-text)
-        (setq-local eat-enable-blinking-text nil))
-      
-      ;; Force consistent character metrics for blinking symbols
-      ;;(setq-local char-width-table nil)         ; causes emacs to crash!
-      (setq-local vertical-scroll-bar nil)      ; Disable scroll bar
-      (setq-local fringe-mode 0)                ; Disable fringes that can cause reflow
-      
-      ;; Replace problematic blinking character with consistent asterisk
-      (let ((display-table (make-display-table)))
-        (aset display-table #x23fa [?✽])  ; Replace ⏺ (U+23FA) with ✽
-        (setq-local buffer-display-table display-table))
-      
-      ;; Set up custom key mappings & completion notifications after eat initialization
-      (run-with-timer 0.1 nil
-                      (lambda ()
-                        (claudemacs--setup-eat-integration buffer))))
-    
-    (let ((window (display-buffer buffer)))
-      (when claudemacs-switch-to-buffer-on-create
-        (select-window window)))))
+              (claudemacs--terminal-post-display buffer)
+              (run-with-timer
+               0.1 nil
+               (lambda ()
+                 (claudemacs--setup-terminal-integration buffer))))
+            (when claudemacs-switch-to-buffer-on-create
+              (select-window window))
+            buffer))
+      (error
+       (when (buffer-live-p buffer)
+         (kill-buffer buffer))
+       (error "Failed to start %s with terminal backend `%s': %s"
+              program terminal-backend (error-message-string err))))))
 
 (defun claudemacs--translate-args-for-tool (tool args)
   "Translate generic ARGS to tool-specific arguments for TOOL.
@@ -1156,7 +1116,8 @@ Works with the most relevant session (current buffer, or most recent)."
       (progn
         (let ((tool (buffer-local-value 'claudemacs--tool claudemacs-buffer)))
           (with-current-buffer claudemacs-buffer
-            (eat-kill-process)
+            (claudemacs--terminal-kill))
+          (when (buffer-live-p claudemacs-buffer)
             (kill-buffer claudemacs-buffer))
           (message "Claudemacs session (%s) killed" tool)))
     (error "There is no Claudemacs session in this workspace or project")))
@@ -1179,7 +1140,8 @@ Presents a list of all active sessions in the workspace for selection."
                  (tool (plist-get info :tool)))
             (when (buffer-live-p buffer)
               (with-current-buffer buffer
-                (eat-kill-process)
+                (claudemacs--terminal-kill))
+              (when (buffer-live-p buffer)
                 (kill-buffer buffer))
               (message "Claudemacs session (%s) killed" tool))))))))
 
@@ -1253,11 +1215,11 @@ Works with the most relevant session (current buffer, or most recent)."
     (unless buffer
       (error "No Claudemacs session is active"))
     (with-current-buffer buffer
-      (unless (and (boundp 'eat-terminal) eat-terminal)
+      (unless (and claudemacs--terminal-backend
+                   (claudemacs--terminal-ready-p))
         (error "Claudemacs session exists but terminal is not initialized. Please kill buffer and restart"))
-      (let ((process (eat-term-parameter eat-terminal 'eat--process)))
-        (unless (and process (process-live-p process))
-          (error "Claudemacs session exists but process is not running. Please kill buffer and restart")))))
+      (unless (claudemacs--terminal-live-p)
+        (error "Claudemacs session exists but process is not running. Please kill buffer and restart"))))
   t)
 
 (defun claudemacs--validate-file-and-session ()
@@ -1290,14 +1252,12 @@ Returns a plist with :file-path, :project-cwd, :relative-path,
           :absolute-path file-path
           :outside-cwd outside-cwd)))
 
-(defun claudemacs--send-return-for-tool (terminal _buffer &optional _tool)
-  "Send return key event to TERMINAL.
-Uses eat-term-input-event which sends an actual key event rather than
-a raw string, working reliably across different CLI tools."
-  (eat-term-input-event terminal 1 'return))
+(defun claudemacs--send-return-for-tool (_buffer &optional _tool)
+  "Send a return key event through the current terminal backend."
+  (claudemacs--terminal-send-key 'return))
 
 (defun claudemacs--send-to-buffer (buffer message &optional no-return tool)
-  "Send MESSAGE to BUFFER's eat terminal.
+  "Send MESSAGE to BUFFER's terminal.
 If NO-RETURN is non-nil, don't send a return/newline."
   (with-current-buffer buffer
     (let* ((resolved-tool (or tool
@@ -1306,12 +1266,11 @@ If NO-RETURN is non-nil, don't send a return/newline."
                                 (intern (match-string 1 (buffer-name buffer))))
                               'claude))
            (plain-message (substring-no-properties message)))
-      (if (and (eq resolved-tool 'codex)
-               (fboundp 'eat-term-send-string-as-yank))
-          (eat-term-send-string-as-yank eat-terminal (list plain-message))
-        (eat-term-send-string eat-terminal plain-message))
+      (if (eq resolved-tool 'codex)
+          (claudemacs--terminal-paste-string plain-message)
+        (claudemacs--terminal-send-string plain-message))
       (unless no-return
-        (claudemacs--send-return-for-tool eat-terminal buffer resolved-tool)))))
+        (claudemacs--send-return-for-tool buffer resolved-tool)))))
 
 (defun claudemacs--build-prompt (base-prompt)
   "Build a dynamic prompt based on whether C-u was pressed and which tool(s) are active.
@@ -1375,24 +1334,6 @@ content from that line is actually selected."
       (format "File context: %s:%d\n" relative-path start-line)
     (format "File context: %s:%d-%d\n" relative-path start-line end-line)))
 
-(defun claudemacs--scroll-to-bottom ()
-  "Scroll the claudemacs buffer to bottom without switching to it."
-  (interactive)
-  (when-let* ((claude-buffer (claudemacs--get-current-session-buffer))
-              (claude-window (get-buffer-window claude-buffer)))
-    (with-current-buffer claude-buffer
-      (goto-char (point-max))
-      (set-window-point claude-window (point-max)))))
-
-(defun claudemacs--scroll-to-top ()
-  "Scroll the claudemacs buffer to top without switching to it."
-  (interactive)
-  (when-let* ((claude-buffer (claudemacs--get-current-session-buffer))
-              (claude-window (get-buffer-window claude-buffer)))
-    (with-current-buffer claude-buffer
-      (goto-char (point-min))
-      (set-window-point claude-window (point-min)))))
-
 ;;;;
 ;;;; Action Processing System
 ;;;;
@@ -1424,7 +1365,7 @@ Otherwise, send to current/active session only."
                      ;; Copy to avoid potential destructive mutations by terminal input handlers.
                      (session-message (copy-sequence message-text)))
                 (claudemacs--send-to-buffer session-buffer session-message no-return session-tool)
-                ;; Small delay to ensure eat terminal processes the input
+                ;; Give the terminal process a chance to consume each message.
                 (sit-for 0.05)))
             (message "%s (sent to %d session%s in current workspace)"
                     user-message
@@ -1881,102 +1822,26 @@ Returns a list of parsed transient suffix objects."
   :keymap claudemacs-mode-map
   :group 'claudemacs)
 
-(defun claudemacs--show-cursor (&rest _args)
-  "Show cursor in Claudemacs buffers when in Emacs mode."
-  (when (claudemacs--is-claudemacs-buffer-p)
-    (setq-local cursor-type 'box)))
-
-(defun claudemacs--hide-cursor (&rest _args)
-  "Hide cursor in Claudemacs buffers when in semi-char mode."
-  (when (claudemacs--is-claudemacs-buffer-p)
-    ;; Only force terminal cursor visibility for Claude, not other tools like Codex
-    (when (and (boundp 'eat-terminal) eat-terminal
-               (eq claudemacs--tool 'claude))
-      (setq-local cursor-type nil))))
-
-(defun claudemacs--check-and-disable-window-adjust (&rest _)
-  "Check if buffer is longer than one screen and disable window adjustment if so."
-  (when (and (not (eq window-adjust-process-window-size-function 'ignore))
-             (claudemacs--is-claudemacs-buffer-p))
-    (let* ((claude-buffer (current-buffer))
-           (claude-window (get-buffer-window claude-buffer))
-           (window-ht (when claude-window (window-height claude-window)))
-           (buffer-lines (count-lines (point-min) (point-max))))
-      ;; If buffer has more lines than window height, switch to 'ignore mode
-      (when (and window-ht (> buffer-lines window-ht))
-        (goto-char (point-min))
-        (redisplay)
-        (goto-char (point-max))
-        (redisplay)
-        ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
-        ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
-        (setq-local window-adjust-process-window-size-function 'ignore)))))
-
-(defun claudemacs--eat-force-redraw ()
-  "Forces the eat terminal and the underlying program to redraw.
-
-This is useful if the display becomes corrupted after Emacs window
-resizes or other external changes that might not have been fully
-propagated. It attempts to resynchronize the PTY size, the
-eat emulator's internal dimensions, and trigger a redisplay."
-  (interactive)
-  (with-current-buffer (claudemacs--get-current-session-buffer)
-    (when (and (boundp 'eat-terminal) eat-terminal)
-        (let* ((process (eat-term-parameter eat-terminal 'eat--process))
-               (claude-window (get-buffer-window (claudemacs--get-current-session-buffer))))
-          (if (and process (process-live-p process) claude-window)
-              (eat--adjust-process-window-size process (list claude-window)))))))
-
 (defun claudemacs-unstick-terminal ()
-  "Reset the claudemacs buffer's vertical rest point.
-Sometimes the input box gets stuck mid or top of the buffer because of
-the idiosyncracies of eat-mode. This will reset the input box to the
-bottom of the buffer."
+  "Ask the active session's terminal backend to recover its display."
   (interactive)
   (claudemacs--validate-process)
   (when (claudemacs--is-claudemacs-buffer-p)
     (error "Reset buffer cannot be used while visiting the claudemacs buffer itself"))
-  (claudemacs--eat-force-redraw)
   (with-current-buffer (claudemacs--get-current-session-buffer)
-    (setq-local window-adjust-process-window-size-function
-                'window-adjust-process-window-size-smallest))
-  (claudemacs--scroll-to-top)
-  (redisplay)
-  (claudemacs--scroll-to-bottom)
-  (redisplay)
-  (with-current-buffer (claudemacs--get-current-session-buffer)
-    ;; CRITICAL: Disable window-adjust-process-window-size-function to prevent
-    ;; terminal redraw/scroll reset on buffer switching (same issue as vterm #149)
-    (setq-local window-adjust-process-window-size-function 'ignore)))
+    (claudemacs--terminal-unstick)))
 
 ;;;###autoload
 (defun claudemacs-setup ()
-  "Set up claudemacs hooks and advice.
+  "Set up integrations for loaded Claudemacs terminal backends.
 This is called automatically when the package is loaded.
-Safe to call multiple times - will not add duplicate hooks or advice."
+Safe to call multiple times."
   (interactive)
-  ;; Hook to manage window adjustment for terminal buffers
-  (unless (memq #'claudemacs--check-and-disable-window-adjust window-buffer-change-functions)
-    (add-hook 'window-buffer-change-functions #'claudemacs--check-and-disable-window-adjust))
-  ;; Advice for cursor visibility in eat modes
-  (unless (advice-member-p #'claudemacs--show-cursor 'eat-emacs-mode)
-    (advice-add 'eat-emacs-mode :after #'claudemacs--show-cursor))
-  (unless (advice-member-p #'claudemacs--hide-cursor 'eat-semi-char-mode)
-    (advice-add 'eat-semi-char-mode :after #'claudemacs--hide-cursor))
-  ;; Override C-b on eat-semi-char-mode-map directly, since minor mode
-  ;; maps take precedence over local maps.  The command is conditional
-  ;; so non-claudemacs eat buffers are unaffected.
-  (when (boundp 'eat-semi-char-mode-map)
-    (define-key eat-semi-char-mode-map (kbd "C-b") #'claudemacs--maybe-left-key)))
+  (claudemacs--terminal-setup-loaded-backends))
 
 (defun claudemacs-unload-function ()
-  "Cleanup when unloading claudemacs.
-Removes advice and hooks added by `claudemacs-setup'."
-  (advice-remove 'eat-emacs-mode #'claudemacs--show-cursor)
-  (advice-remove 'eat-semi-char-mode #'claudemacs--hide-cursor)
-  (remove-hook 'window-buffer-change-functions #'claudemacs--check-and-disable-window-adjust)
-  (when (boundp 'eat-semi-char-mode-map)
-    (define-key eat-semi-char-mode-map (kbd "C-b") #'eat-self-input))
+  "Clean up integrations installed by terminal backends."
+  (claudemacs--terminal-teardown-loaded-backends)
   nil)
 
 ;; Auto-setup when package is loaded

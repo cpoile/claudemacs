@@ -390,36 +390,8 @@ The file is automatically cleaned up after BODY executes."
 
 ;;; Startup Hook Behavior Tests
 
-(ert-deftest claudemacs-test-codex-cursor-blinking-disabled ()
-  "Test that Codex cursor styles use eat's non-blinking equivalents."
-  :tags '(:unit :codex :cursor)
-  (claudemacs-test-with-temp-buffer
-   (let ((claudemacs--tool 'codex)
-         (applied-state nil))
-     (setq-local eat-terminal 'fake-terminal)
-     (setq-local eat-default-cursor-type '(t nil nil))
-     (setq-local eat-very-visible-cursor-type '(t 2 hollow))
-     (setq-local eat-vertical-bar-cursor-type '(bar nil nil))
-     (setq-local eat-very-visible-vertical-bar-cursor-type '(bar 2 nil))
-     (setq-local eat-horizontal-bar-cursor-type '(hbar nil nil))
-     (setq-local eat-very-visible-horizontal-bar-cursor-type '(hbar 2 nil))
-     (cl-letf (((symbol-function 'eat-term-parameter)
-                (lambda (_terminal parameter)
-                  (when (eq parameter 'set-cursor-function)
-                    (lambda (_terminal state)
-                      (setq applied-state state)))))
-               ((symbol-function 'eat-term-cursor-type)
-                (lambda (_terminal) :blinking-block)))
-       (claudemacs--disable-codex-cursor-blink))
-     (should (equal eat-very-visible-cursor-type '(t nil nil)))
-     (should (equal eat-very-visible-vertical-bar-cursor-type
-                    '(bar nil nil)))
-     (should (equal eat-very-visible-horizontal-bar-cursor-type
-                    '(hbar nil nil)))
-     (should (eq applied-state :blinking-block)))))
-
 (ert-deftest claudemacs-test-startup-hook-called-during-setup ()
-  "Test that claudemacs-startup-hook is called during eat integration setup."
+  "Test that `claudemacs-startup-hook' runs during terminal setup."
   :tags '(:integration :startup-hook)
   (let ((hook-called nil)
         (hook-called-in-claudemacs-buffer nil)
@@ -433,19 +405,20 @@ The file is automatically cleaned up after BODY executes."
                   (setq hook-called-in-claudemacs-buffer t))))
     
     ;; Mock the bell handler setup to avoid session ID dependency
-    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler)
-               (lambda () nil)))
+    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler) #'ignore)
+              ((symbol-function 'claudemacs--terminal-ready-p)
+               (lambda () t))
+              ((symbol-function 'claudemacs--terminal-setup-faces) #'ignore))
       
       (unwind-protect
           (progn
             ;; Create a buffer that looks like a claudemacs buffer
             (setq test-buffer (get-buffer-create "*claudemacs:test-hook*"))
             (with-current-buffer test-buffer
-              ;; Set up minimal fake eat-terminal
-              (setq-local eat-terminal 'fake-terminal))
+              (setq-local claudemacs--terminal-backend 'fake))
             
             ;; Call the setup function directly
-            (claudemacs--setup-eat-integration test-buffer)
+            (claudemacs--setup-terminal-integration test-buffer)
             
             ;; Verify hook was called
             (should hook-called)
@@ -472,19 +445,20 @@ The file is automatically cleaned up after BODY executes."
     (add-hook 'claudemacs-startup-hook (lambda () (setq hook2-called t)))
     
     ;; Mock the bell handler setup to avoid session ID dependency
-    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler)
-               (lambda () nil)))
+    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler) #'ignore)
+              ((symbol-function 'claudemacs--terminal-ready-p)
+               (lambda () t))
+              ((symbol-function 'claudemacs--terminal-setup-faces) #'ignore))
       
       (unwind-protect
           (progn
             ;; Create a buffer that looks like a claudemacs buffer
             (setq test-buffer (get-buffer-create "*claudemacs:test-multiple*"))
             (with-current-buffer test-buffer
-              ;; Set up minimal fake eat-terminal
-              (setq-local eat-terminal 'fake-terminal))
+              (setq-local claudemacs--terminal-backend 'fake))
             
             ;; Call the setup function directly
-            (claudemacs--setup-eat-integration test-buffer)
+            (claudemacs--setup-terminal-integration test-buffer)
             
             ;; Verify both hooks were called
             (should hook1-called)
@@ -510,8 +484,10 @@ The file is automatically cleaned up after BODY executes."
                 (setq captured-cwd claudemacs--cwd)))
     
     ;; Mock the bell handler setup to avoid session ID dependency
-    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler)
-               (lambda () nil)))
+    (cl-letf (((symbol-function 'claudemacs-setup-bell-handler) #'ignore)
+              ((symbol-function 'claudemacs--terminal-ready-p)
+               (lambda () t))
+              ((symbol-function 'claudemacs--terminal-setup-faces) #'ignore))
       
       (unwind-protect
           (progn
@@ -519,11 +495,11 @@ The file is automatically cleaned up after BODY executes."
             (setq test-buffer (get-buffer-create "*claudemacs:test-context*"))
             (with-current-buffer test-buffer
               ;; Set up minimal fake environment
-              (setq-local eat-terminal 'fake-terminal)
+              (setq-local claudemacs--terminal-backend 'fake)
               (setq-local claudemacs--cwd "/test/directory"))
             
             ;; Call the setup function directly
-            (claudemacs--setup-eat-integration test-buffer)
+            (claudemacs--setup-terminal-integration test-buffer)
             
             ;; Verify hook ran in correct buffer context
             (should captured-buffer-name)
@@ -553,20 +529,21 @@ The file is automatically cleaned up after BODY executes."
     ;; Mock the other setup functions to track completion
     (cl-letf (((symbol-function 'claudemacs--setup-buffer-keymap)
                (lambda () (setq setup-completed t)))
-              ((symbol-function 'claudemacs-setup-bell-handler)
-               (lambda () nil)))
+              ((symbol-function 'claudemacs-setup-bell-handler) #'ignore)
+              ((symbol-function 'claudemacs--terminal-ready-p)
+               (lambda () t))
+              ((symbol-function 'claudemacs--terminal-setup-faces) #'ignore))
       
       (unwind-protect
           (progn
             ;; Create a buffer that looks like a claudemacs buffer
             (setq test-buffer (get-buffer-create "*claudemacs:test-error*"))
             (with-current-buffer test-buffer
-              ;; Set up minimal fake eat-terminal
-              (setq-local eat-terminal 'fake-terminal))
+              (setq-local claudemacs--terminal-backend 'fake))
             
             ;; Call the setup function and expect it to handle errors gracefully
             (condition-case err
-                (claudemacs--setup-eat-integration test-buffer)
+                (claudemacs--setup-terminal-integration test-buffer)
               (error (setq hook-error-occurred t)))
             
             ;; Setup should have completed despite hook error
@@ -952,7 +929,7 @@ This function is called by the transient menu and must never error."
 
         ;; Test killing when in a claudemacs buffer
         (cl-letf (((symbol-function 'claudemacs--session-id) (lambda () "test-kill-current"))
-                  ((symbol-function 'eat-kill-process) (lambda () nil)))
+                  ((symbol-function 'claudemacs--terminal-kill) #'ignore))
           (let ((buf (get-buffer-create "*claudemacs:claude:test-kill-current*")))
             (with-current-buffer buf
               (setq-local claudemacs--tool 'claude)
@@ -963,7 +940,7 @@ This function is called by the transient menu and must never error."
 
         ;; Test killing most recent session when not in claudemacs buffer
         (cl-letf (((symbol-function 'claudemacs--session-id) (lambda () "test-kill-recent"))
-                  ((symbol-function 'eat-kill-process) (lambda () nil)))
+                  ((symbol-function 'claudemacs--terminal-kill) #'ignore))
           (let ((buf (get-buffer-create "*claudemacs:claude:test-kill-recent*")))
             (with-current-buffer buf
               (setq-local claudemacs--tool 'claude)
@@ -991,7 +968,7 @@ This function is called by the transient menu and must never error."
   :tags '(:unit :kill)
   (unwind-protect
       (cl-letf (((symbol-function 'claudemacs--session-id) (lambda () "test-kill-specific"))
-                ((symbol-function 'eat-kill-process) (lambda () nil)))
+                ((symbol-function 'claudemacs--terminal-kill) #'ignore))
         (let ((buf1 (get-buffer-create "*claudemacs:claude:test-kill-specific*"))
               (buf2 (get-buffer-create "*claudemacs:codex:test-kill-specific*")))
           ;; Setup buffers with tool info
@@ -1038,7 +1015,7 @@ This function is called by the transient menu and must never error."
 
           ;; Mock session-id to return workspace-a
           (cl-letf (((symbol-function 'claudemacs--session-id) (lambda () workspace-a-session-id))
-                    ((symbol-function 'eat-kill-process) (lambda () nil)))
+                    ((symbol-function 'claudemacs--terminal-kill) #'ignore))
             ;; Kill should only affect workspace-a
             (claudemacs-kill)
             (should-not (buffer-live-p buf-a))

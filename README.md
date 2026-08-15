@@ -11,6 +11,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 ## Features
 
 - **Multi-tool support**: Use Claude, Codex, Gemini, or other AI coding tools via configurable tool registry
+- **Selectable terminal backends**: Use Ghostel when available, with Eat as the fallback
 - **Multiple instances**: Run multiple sessions of the same tool per workspace (claude, claude-2, etc.)
 - **Broadcast to all sessions**: Use `C-u` prefix to send actions to all active sessions
 - **Workspace-aware sessions**: Project-based sessions with Doom/Perspective workspace support (see [Sessions](#workspace-and-project-aware-sessions))
@@ -34,6 +35,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
   - [Prerequisites](#prerequisites)
   - [Package Installation](#package-installation)
   - [Setup](#setup)
+  - [Terminal Backends](#terminal-backends)
   - [System Notifications](#system-notifications)
   - [Fonts](#fonts)
 - [Usage](#usage)
@@ -59,7 +61,13 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 ### Prerequisites
 
 1. Install [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview)
-2. Install the [eat](https://codeberg.org/akib/emacs-eat) package in Emacs
+2. Install at least one supported terminal backend in Emacs:
+   - [Eat](https://codeberg.org/akib/emacs-eat) (the fallback backend)
+   - [Ghostel](https://github.com/dakra/ghostel), including its required native module
+
+Claudemacs only loads the selected backend.  You do not need both packages,
+but the selected backend must be installed and loadable before starting a
+session.
 
 ### Package Installation
 
@@ -113,7 +121,10 @@ Clone this repository and add to your Emacs configuration:
 
 ## Setup
 
-Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding it to the relevant mode-maps, instead of using a `global-set-key`, since that will override the very useful `C-c C-e` keybind in the `eat-semi-char-mode-map` (see [Using Eat Mode](#using-eat-mode-effectively) section below).
+Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding it to
+the relevant mode maps instead of using a `global-set-key`, since a global
+binding can override useful keybindings in the selected terminal's mode map
+(see [Using the terminal backend](#using-the-terminal-backend) below).
 
 ```elisp
 (require 'claudemacs)
@@ -123,9 +134,34 @@ Use your preferred keybinding (I use `C-c C-e`). I'd recommend adding it to the 
 (define-key python-base-mode-map (kbd "C-c C-e") #'claudemacs-transient-menu)
 
 ;; Set a big buffer so we can search our history.
+;; This option applies when using the Eat backend.
 (with-eval-after-load 'eat
   (setq eat-term-scrollback-size 400000))
 ```
+
+### Terminal Backends
+
+Claudemacs presents the same session and action commands regardless of the
+terminal implementation.  Ghostel is selected automatically when its package
+is available on `load-path`; otherwise Claudemacs falls back to Eat.  To choose
+explicitly, set the backend before creating a session:
+
+```elisp
+;; Force Eat:
+(setq claudemacs-terminal-backend 'eat)
+
+;; Force Ghostel (requires the Ghostel package and native module):
+(setq claudemacs-terminal-backend 'ghostel)
+
+;; Ghostel Claudemacs sessions confirm before killing a live process (default: t)
+;; Other values are `auto' (only while a command is running) and nil (never).
+(setq claudemacs-ghostel-query-before-killing t)
+```
+
+The selector is checked when a session starts and affects new sessions only.
+Kill and restart existing sessions after changing it.  Claudemacs does not
+automatically fall back to another backend: an invalid, unavailable, or
+unloadable selection reports an error so the configuration can be corrected.
 
 Other useful tweaks:
 
@@ -158,8 +194,9 @@ Now you should receive System notifications when Claude Code is waiting for inpu
 
 For Codex sessions, Claudemacs automatically configures Codex's TUI notification
 path to emit a terminal BEL and to notify even while the session is focused.
-That lets Eat invoke the same Claudemacs system notification handler.  This is
-separate from Codex's top-level `notify` hook, which runs an external command.
+That lets the selected terminal backend invoke the same Claudemacs system
+notification handler.  This is separate from Codex's top-level `notify` hook,
+which runs an external command.
 
 Unfortunately, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
@@ -499,7 +536,8 @@ Customize environment variables passed to Claude processes:
 ;; Whether to show system notifications when Claude is awaiting input (default: t)
 (setq claudemacs-notify-on-await t)
 
-;; Codex notification switches are enabled by default so notifications reach Eat.
+;; Codex notification switches are enabled by default so notifications reach
+;; the selected terminal backend.
 ;; Set to nil to use Codex's own notification method and focus condition.
 ;; (setq claudemacs-codex-notification-switches nil)
 
@@ -547,14 +585,21 @@ Currently supports Doom Emacs workspaces and Perspective mode. Open an issue if 
 
 ## Tips and Tricks
 
-### Using eat-mode effectively
+### Using the terminal backend
 
-When interacting with the eat-mode buffer, you are limited in what you can do in the default semi-char mode.
+The terminal backend provides a semi-character mode for typing directly to
+the AI tool and an Emacs mode for editing terminal contents.  The keybindings
+below apply to both Eat and Ghostel.
+
+#### Using semi-char mode effectively
+
+When interacting with the terminal buffer, you are limited in what you can do
+in the default semi-char mode.
 
 Press `C-c C-e` to enter emacs mode. A box cursor will appear, which you can use to move around and select and kill text.
 Press `C-c C-j` to re-enter semi-char mode and continue typing to Claude.
 
-Press `C-v` to paste an image from the clipboard.
+Press `C-v` in semi-char mode to send it to Claude Code, which uses it to paste an image from the clipboard.
 
 ### Copy file path with line number
 
@@ -582,9 +627,9 @@ Bind it to a key and use it to quickly copy file references to paste into Claude
 
 ### Sending keycodes to Claude Code
 
-Claude Code uses some keybindings that conflict with Emacs defaults. For example, `Ctrl-g` is used by Claude Code to edit your plan in your editor, but in Emacs `C-g` is the universal quit key (which claudemacs maps to send ESC to the terminal).
+Claude Code uses some keybindings that conflict with Emacs defaults. For example, `Ctrl-g` is used by Claude Code to edit your plan in your editor, but in Emacs `C-g` is the universal quit key (which claudemacs maps to send ESC to the terminal). In semi-char mode, both Eat and Ghostel provide `C-q` as a quoted-input escape hatch:
 
-To send the actual `Ctrl-g` character (or any other control character) to the terminal, use Emacs' built-in `quoted-insert` command:
+Use it to send the actual `Ctrl-g` character (or any other control character) to the terminal:
 
 - `C-q C-g` - Send Ctrl-g to Claude Code (e.g., to edit your plan)
 - `C-q C-c` - Send Ctrl-c to Claude Code
@@ -592,11 +637,19 @@ To send the actual `Ctrl-g` character (or any other control character) to the te
 
 ### Scroll-popping, input box sticking, input box border draw issues
 
-There is a tricky interaction between Eat-mode and Claude Code, probably because Claude Code uses some input libraries that eat has trouble with. It was causing the eat-mode buffer to "scroll-pop" to the top whenever you change the other window's buffer. This is mostly fixed now, but a side effect is sometimes the Claude Clode input box gets stuck halfway up the buffer and won't move.
+There can be a tricky interaction between a terminal emulator and Claude Code,
+because Claude Code uses input libraries that depend on terminal behavior.  In
+Eat-mode this can cause the buffer to "scroll-pop" to the top whenever you
+change the other window's buffer.  This is mostly fixed now, but a side effect
+is sometimes the Claude Code input box gets stuck halfway up the buffer and
+won't move.
 
-There are also issues with drawing the input box border after the window resizes, which is expected of terminal programs. 
+There are also issues with drawing the input box border after the window
+resizes, which is expected of terminal programs.
 
-If you see these issues, press `u` in the Claudemacs transient menu to "unstick" the buffer, and everything should get reset.
+If you see these issues, press `u` in the Claudemacs transient menu to
+"unstick" the buffer, and everything should get reset.  The same command is
+available for both supported backends.
 
 ### Buffer Toggle Edge Case
 
@@ -607,7 +660,7 @@ But there's an edge case to be aware of: if a window was originally created for 
 ## Requirements
 
 - Emacs 28.1+
-- [eat](https://codeberg.org/akib/emacs-eat) package
+- [Eat](https://codeberg.org/akib/emacs-eat) package, or [Ghostel](https://github.com/dakra/ghostel) with its native module
 - [transient](https://github.com/magit/transient) (built-in since Emacs 28)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview) (or other supported tool)
 
