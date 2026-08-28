@@ -587,6 +587,69 @@ The file is automatically cleaned up after BODY executes."
   (let ((claudemacs-codex-notification-switches nil))
     (should-not (claudemacs--get-tool-notification-switches 'codex))))
 
+(ert-deftest claudemacs-test-ghostel-submit-separates-text-and-return ()
+  "Test that programmatic Ghostel submission creates an input boundary."
+  :tags '(:unit :ghostel :terminal-backend)
+  (let (events)
+    (cl-letf (((symbol-function 'claudemacs--terminal-send-string)
+               (lambda (string)
+                 (setq events (append events (list (list :text string))))))
+              ((symbol-function 'sleep-for)
+               (lambda (seconds &optional _milliseconds)
+                 (setq events (append events (list (list :delay seconds))))))
+              ((symbol-function 'claudemacs--terminal-send-key)
+               (lambda (key)
+                 (setq events (append events (list (list :key key)))))))
+      (with-temp-buffer
+        (setq-local claudemacs--terminal-backend 'ghostel)
+        (setq-local claudemacs--tool 'claude)
+        (claudemacs--send-to-buffer (current-buffer) "Fix this"))
+      (should (equal events
+                     '((:text "Fix this") (:delay 0.15) (:key return)))))))
+
+(ert-deftest claudemacs-test-ghostel-submit-delay-is-configurable ()
+  "Test that Ghostel's programmatic submit boundary can be adjusted."
+  :tags '(:unit :ghostel :terminal-backend)
+  (let ((claudemacs-ghostel-submit-delay 0.3)
+        observed-delay)
+    (cl-letf (((symbol-function 'sleep-for)
+               (lambda (seconds &optional _milliseconds)
+                 (setq observed-delay seconds)))
+              ((symbol-function 'claudemacs--terminal-send-string) #'ignore)
+              ((symbol-function 'claudemacs--terminal-send-key) #'ignore))
+      (with-temp-buffer
+        (setq-local claudemacs--terminal-backend 'ghostel)
+        (claudemacs--send-to-buffer (current-buffer) "Fix this"))
+      (should (= observed-delay 0.3)))))
+
+(ert-deftest claudemacs-test-ghostel-standalone-return-is-immediate ()
+  "Test that standalone Ghostel Return does not pay the paste delay."
+  :tags '(:unit :ghostel :terminal-backend)
+  (let (events)
+    (cl-letf (((symbol-function 'sleep-for)
+               (lambda (&rest _arguments)
+                 (push 'unexpected-delay events)))
+              ((symbol-function 'claudemacs--terminal-send-key)
+               (lambda (key)
+                 (push (list :key key) events))))
+      (let ((claudemacs--terminal-backend 'ghostel))
+        (claudemacs--send-return-for-tool (current-buffer)))
+      (should (equal events '((:key return)))))))
+
+(ert-deftest claudemacs-test-eat-submit-has-no-ghostel-delay ()
+  "Test that Eat submission remains immediate."
+  :tags '(:unit :eat :terminal-backend)
+  (let (events)
+    (cl-letf (((symbol-function 'sleep-for)
+               (lambda (&rest _arguments)
+                 (push 'unexpected-delay events)))
+              ((symbol-function 'claudemacs--terminal-send-key)
+               (lambda (key)
+                 (push (list :key key) events))))
+      (let ((claudemacs--terminal-backend 'eat))
+        (claudemacs--send-return-for-tool (current-buffer)))
+      (should (equal events '((:key return)))))))
+
 (ert-deftest claudemacs-test-notification-sound-behavior ()
   "Test that claudemacs-notification-sound-mac affects notification calls."
   :tags '(:unit :config)
@@ -611,6 +674,79 @@ The file is automatically cleaned up after BODY executes."
         (claudemacs--system-notification "Test message" "Test title") 
         (should notification-command)
         (should (string-match-p "Glass" notification-command))))))
+
+(ert-deftest claudemacs-test-windows-notification-is-non-modal ()
+  "Test that Windows uses a native tray notification, not a dialog."
+  :tags '(:unit :config :windows)
+  (let (notification-arguments
+        called-program)
+    (cl-letf (((symbol-function 'claudemacs--windows-notification)
+               (lambda (&rest args)
+                 (setq notification-arguments args)))
+              ((symbol-function 'call-process)
+               (lambda (program &rest _args)
+                 (setq called-program program)))
+              (system-type 'windows-nt))
+      (claudemacs--system-notification "Finished" "Claudemacs")
+      (should (equal notification-arguments
+                     '("Finished" "Claudemacs")))
+      (should-not called-program))))
+
+(ert-deftest claudemacs-test-windows-toast-launches-helper-directly ()
+  "Test that toast arguments are passed directly to PowerShell."
+  :tags '(:unit :config :windows)
+  (let (process-arguments)
+    (cl-letf (((symbol-function 'claudemacs--windows-notification-script)
+               (lambda () "C:/claudemacs/claudemacs-toast.ps1"))
+              ((symbol-function 'executable-find)
+               (lambda (_program) "C:/Windows/powershell.exe"))
+              ((symbol-function 'make-process)
+               (lambda (&rest args) (setq process-arguments args))))
+      (claudemacs--launch-windows-notification
+       "Finished & waiting" "Claude's session")
+      (should
+       (equal (plist-get process-arguments :command)
+              '("C:/Windows/powershell.exe"
+                "-NoProfile" "-WindowStyle" "Hidden"
+                "-ExecutionPolicy" "Bypass"
+                "-File" "C:/claudemacs/claudemacs-toast.ps1"
+                "-Title" "Claude's session"
+                "-Message" "Finished & waiting"
+                "-TimeoutSeconds" "5"))))))
+
+(ert-deftest claudemacs-test-windows-toast-auto-installs-identity ()
+  "Test that the Windows identity is refreshed once per Emacs process."
+  :tags '(:unit :config :windows)
+  (let ((claudemacs--windows-notification-identity-ready nil)
+        (install-count 0)
+        launched)
+    (cl-letf (((symbol-function 'claudemacs--install-windows-notification-shortcut)
+               (lambda ()
+                 (cl-incf install-count)
+                 "C:/Start Menu/Claudemacs.lnk"))
+              ((symbol-function 'claudemacs--launch-windows-notification)
+               (lambda (&rest _arguments) (setq launched t))))
+      (claudemacs--windows-notification "Finished" "Claudemacs")
+      (claudemacs--windows-notification "Finished again" "Claudemacs")
+      (should launched)
+      (should (= install-count 1)))))
+
+(ert-deftest claudemacs-test-windows-toast-helper-explicitly-dismisses ()
+  "Test that the Windows helper hides displayed toasts after its timeout."
+  :tags '(:unit :config :windows)
+  (let* ((library-directory
+          (file-name-directory
+           (or (symbol-file 'claudemacs--system-notification 'defun)
+               (locate-library "claudemacs"))))
+         (script (expand-file-name "claudemacs-toast.ps1"
+                                   library-directory))
+         (contents (with-temp-buffer
+                     (insert-file-contents script)
+                     (buffer-string))))
+    (should (string-match-p
+             "Start-Sleep -Seconds \\$TimeoutSeconds" contents))
+    (should (string-match-p
+             "\\$notifier\\.Hide(\\$toast)" contents))))
 
 (ert-deftest claudemacs-test-program-switches-behavior ()
   "Test that claudemacs-program-switches affects command construction."

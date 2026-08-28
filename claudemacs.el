@@ -22,9 +22,10 @@
 ;; - Selectable Eat and Ghostel terminal backends, with backend ownership
 ;;   captured per session so both can coexist; Ghostel is preferred by default
 ;;   when its package is available
+;; - Windows is fully supported (thanks ot Ghostel)
+;; - Windows completion alerts use registered, non-modal Notification Center
+;;   toasts with a one-time setup command
 ;; - Live session list with authoritative Claude/Codex identities
-;; - Eat-specific faces, scrolling, cursor, resize, and redraw workarounds are
-;;   isolated in the Eat backend adapter
 
 ;; Version 0.4.0 (2026-07-10)
 ;; - New `claudemacs-branch-session' command for forking the current Claude or
@@ -114,6 +115,7 @@
 ;; consult: optional, enables live buffer preview in session switching
 (declare-function consult--read "consult")
 (declare-function consult--original-window "consult")
+(declare-function w32-notification-notify "w32fns.c" (&rest params))
 
 ;;;; Customization
 (defgroup claudemacs nil
@@ -146,6 +148,15 @@ and `auto' confirms only while a shell command is running."
   :type '(choice (const :tag "Always" t)
                  (const :tag "Never" nil)
                  (const :tag "While a command is running" auto))
+  :group 'claudemacs)
+
+(defcustom claudemacs-ghostel-submit-delay 0.15
+  "Seconds to wait before submitting programmatically inserted Ghostel input.
+Interactive terminal applications can classify a prompt and an immediately
+following Return as one paste burst, causing Return to insert a newline instead
+of submitting.  This delay makes Return arrive as a separate key event.  Set
+this higher if submission is unreliable on a heavily loaded system."
+  :type 'number
   :group 'claudemacs)
 
 (defcustom claudemacs-program-switches nil
@@ -311,6 +322,11 @@ Uses canberra-gtk-play if available.  Common sound IDs include:
 `message-new-instant', `bell', `dialog-error', `dialog-warning'.
 When empty string, no sound is played."
   :type 'string
+  :group 'claudemacs)
+
+(defcustom claudemacs-notification-timeout-windows 5
+  "Seconds before a Windows completion notification expires."
+  :type 'integer
   :group 'claudemacs)
 
 (defcustom claudemacs-startup-hook nil
@@ -1054,6 +1070,109 @@ This function is called when the tool sends a bell character."
       (claudemacs--system-notification (format "%s finished and is awaiting your input" tool-name)))))
 
 
+(defun claudemacs--windows-notification-shortcut ()
+  "Return the installed Windows notification shortcut, or nil."
+  (when-let* ((appdata (getenv "APPDATA"))
+              (shortcut
+               (expand-file-name
+                "Microsoft/Windows/Start Menu/Programs/Claudemacs.lnk"
+                appdata))
+              ((file-exists-p shortcut)))
+    shortcut))
+
+(defvar claudemacs--windows-notification-identity-ready nil
+  "Whether this Emacs process refreshed the Windows notification identity.")
+
+(defun claudemacs--windows-notification-script ()
+  "Return the installed Windows notification helper script, or nil."
+  (when-let* ((library (or (symbol-file 'claudemacs--system-notification
+                                        'defun)
+                           (locate-library "claudemacs")))
+              (script (expand-file-name "claudemacs-toast.ps1"
+                                        (file-name-directory library)))
+              ((file-readable-p script)))
+    script))
+
+(defun claudemacs--install-windows-notification-shortcut ()
+  "Install and return the per-user Windows notification shortcut.
+Signal an error if installation fails."
+  (let* ((script (claudemacs--windows-notification-script))
+         (powershell (executable-find "powershell"))
+         (emacs-executable
+          (expand-file-name invocation-name invocation-directory)))
+    (unless (and script (file-readable-p script))
+      (error "Cannot find claudemacs-toast.ps1"))
+    (unless powershell
+      (error "Cannot find Windows PowerShell"))
+    (with-temp-buffer
+      (let ((status (call-process
+                     powershell nil t nil
+                     "-NoProfile" "-ExecutionPolicy" "Bypass"
+                     "-File" script "-Install" "-TargetPath"
+                     emacs-executable)))
+        (unless (zerop status)
+          (error "Windows notification setup failed (status %s): %s"
+                 status (string-trim (buffer-string))))))
+    (or (claudemacs--windows-notification-shortcut)
+        (error "Windows notification shortcut was not created"))))
+
+(defun claudemacs--launch-windows-notification (message title)
+  "Launch the Windows toast helper directly with MESSAGE and TITLE."
+  (let ((script (claudemacs--windows-notification-script))
+        (powershell (executable-find "powershell")))
+    (unless script
+      (error "Cannot find claudemacs-toast.ps1"))
+    (unless powershell
+      (error "Cannot find Windows PowerShell"))
+    (make-process
+     :name "claudemacs-toast"
+     :buffer nil
+     :command (list powershell
+                    "-NoProfile" "-WindowStyle" "Hidden"
+                    "-ExecutionPolicy" "Bypass"
+                    "-File" script
+                    "-Title" title
+                    "-Message" message
+                    "-TimeoutSeconds"
+                    (number-to-string
+                     claudemacs-notification-timeout-windows))
+     :connection-type 'pipe
+     :noquery t)))
+
+(defun claudemacs--fallback-windows-notification (message title)
+  "Show a best-effort Windows notification with MESSAGE and TITLE."
+  (if (fboundp 'w32-notification-notify)
+      (w32-notification-notify :level 'info :title title :body message)
+    (message "%s: %s" title message)))
+
+(defun claudemacs--windows-notification (message title)
+  "Show a non-modal Windows notification with MESSAGE and TITLE."
+  (condition-case error-data
+      (progn
+        ;; Refresh once per Emacs process.  This repairs shortcuts left behind
+        ;; by package upgrades or moves without adding work to every toast.
+        (unless claudemacs--windows-notification-identity-ready
+          (claudemacs--install-windows-notification-shortcut)
+          (setq claudemacs--windows-notification-identity-ready t))
+        (claudemacs--launch-windows-notification message title))
+    (error
+     (display-warning 'claudemacs (error-message-string error-data))
+     (claudemacs--fallback-windows-notification message title))))
+
+;;;###autoload
+(defun claudemacs-setup-windows-notifications ()
+  "Reinstall the per-user identity for Windows toast notifications.
+Claudemacs normally installs this automatically when first needed."
+  (interactive)
+  (unless (eq system-type 'windows-nt)
+    (user-error "This setup command is only needed on Windows"))
+  (condition-case error-data
+      (progn
+        (claudemacs--install-windows-notification-shortcut)
+        (setq claudemacs--windows-notification-identity-ready t)
+        (message "Claudemacs Windows notifications installed"))
+    (error (user-error "%s" (error-message-string error-data)))))
+
 (defun claudemacs--system-notification (message &optional title)
   "Show a system notification with MESSAGE and optional TITLE.
 This works across macOS, Linux, and Windows platforms."
@@ -1081,12 +1200,10 @@ This works across macOS, Linux, and Windows platforms."
            (executable-find "kdialog"))
       (call-process "kdialog" nil nil nil "--passivepopup"
                     (format "%s: %s" title message) "3"))
-     ;; Windows with PowerShell
+     ;; Windows taskbar/Notification Center notification.  Unlike a Forms
+     ;; message box, this is non-modal and dismisses itself.
      ((eq system-type 'windows-nt)
-      (call-process "powershell" nil nil nil
-                    "-Command" 
-                    (format "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('%s', '%s')"
-                            message title)))
+      (claudemacs--windows-notification message title))
      ;; Fallback: show in Emacs message area
      (t (message "%s: %s" title message)))))
 
@@ -1577,6 +1694,12 @@ If NO-RETURN is non-nil, don't send a return/newline."
           (claudemacs--terminal-paste-string plain-message)
         (claudemacs--terminal-send-string plain-message))
       (unless no-return
+        ;; Ghostel can otherwise classify adjacent text and Return writes as
+        ;; one paste burst.  Delay only this text-plus-submit path; standalone
+        ;; Return commands should remain immediate.
+        (when (and (eq claudemacs--terminal-backend 'ghostel)
+                   (> claudemacs-ghostel-submit-delay 0))
+          (sleep-for claudemacs-ghostel-submit-delay))
         (claudemacs--send-return-for-tool buffer resolved-tool)))))
 
 (defun claudemacs--build-prompt (base-prompt)

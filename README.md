@@ -157,6 +157,9 @@ explicitly, set the backend before creating a session:
 ;; Ghostel Claudemacs sessions confirm before killing a live process (default: t)
 ;; Other values are `auto' (only while a command is running) and nil (never).
 (setq claudemacs-ghostel-query-before-killing t)
+
+;; Increase this if programmatically sent prompts occasionally fail to submit.
+(setq claudemacs-ghostel-submit-delay 0.15)
 ```
 
 The selector is checked when a session starts and affects new sessions only.
@@ -222,7 +225,19 @@ For Linux systems using `notify-send`, notifications will automatically dismiss 
 
 #### -- Windows --
 
-I have not tested on windows, so would appreciate any help there (PRs welcome).
+Windows requires a registered application identity before an unpackaged app can send Notification Center toasts.  Claudemacs installs this per-user identity automatically the first time it needs to send a notification; no manual setup is required.
+
+If the identity ever needs to be repaired or reinstalled, run:
+
+```text
+M-x claudemacs-setup-windows-notifications
+```
+
+Windows notifications expire after five seconds by default.  To change that:
+
+```elisp
+(setq claudemacs-notification-timeout-windows 8)
+```
 
 ### Fonts
 
