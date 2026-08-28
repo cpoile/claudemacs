@@ -8,6 +8,7 @@ ACTIONS_TEST_FILE = test/claudemacs-actions-test.el
 PROJECTILE_INTEGRATION_TEST_FILE = test/claudemacs-projectile-integration-test.el
 COMMENT_TEST_FILE = test/claudemacs-comment-test.el
 TERMINAL_TEST_FILE = test/claudemacs-terminal-test.el
+SESSION_LIST_TEST_FILE = test/claudemacs-session-list-test.el
 E2E_TEST_FILE = test/claudemacs-e2e-test.el
 
 # Select the terminal backend used by interactive E2E tests.  Unit tests use
@@ -27,6 +28,7 @@ test-unit:
 	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :integration))" || exit 1
 	$(EMACS) -batch -l $(COMMENT_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :unit))" || exit 1
 	$(EMACS) -batch -l $(TERMINAL_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :unit))" || exit 1
+	$(EMACS) -batch -l $(SESSION_LIST_TEST_FILE) --eval "(ert-run-tests-batch-and-exit '(tag :unit))" || exit 1
 
 # TDD tests - simple batch-mode tests for development
 test-tdd:
@@ -81,6 +83,7 @@ test-all: test-unit test-integration test-e2e
 test-specific:
 	@echo "Running tests matching pattern: $(TEST_PATTERN)"
 	$(EMACS) -batch -l $(TEST_FILE) -l $(ACTIONS_TEST_FILE) -l $(PROJECTILE_INTEGRATION_TEST_FILE) -l $(COMMENT_TEST_FILE) -l $(TERMINAL_TEST_FILE) -f ert-run-tests-batch-and-exit "$(TEST_PATTERN)"
+	$(EMACS) -batch -l $(SESSION_LIST_TEST_FILE) -f ert-run-tests-batch-and-exit "$(TEST_PATTERN)"
 
 # Validate test file loads correctly
 test-load:
@@ -90,6 +93,7 @@ test-load:
 	$(EMACS) -batch -l $(PROJECTILE_INTEGRATION_TEST_FILE) --eval "(message \"✓ Projectile integration test file loaded successfully\")"
 	$(EMACS) -batch -l $(COMMENT_TEST_FILE) --eval "(message \"✓ Comment test file loaded successfully\")"
 	$(EMACS) -batch -l $(TERMINAL_TEST_FILE) --eval "(message \"✓ Terminal backend test file loaded successfully\")"
+	$(EMACS) -batch -l $(SESSION_LIST_TEST_FILE) --eval "(message \"✓ Session list test file loaded successfully\")"
 	$(EMACS) -batch -l $(E2E_TEST_FILE) --eval "(message \"✓ E2E test file loaded successfully\")"
 
 # Clean up test artifacts

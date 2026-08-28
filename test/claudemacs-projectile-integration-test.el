@@ -9,8 +9,8 @@
 ;; 
 ;; REQUIREMENTS:
 ;; - These tests require the 'projectile' package to be installed
-;; - Tests will fail if projectile is not available
-;; - This is intentional - we test real projectile integration, not fallbacks
+;; - Real integration cases are skipped when projectile is not available
+;; - Error/fallback cases still run without projectile
 ;;
 ;; These tests verify that claudemacs correctly integrates with projectile
 ;; by creating real project structures and comparing our results with
@@ -150,6 +150,7 @@ parent/
     ├── .git/
     └── file.txt"
   :tags '(:integration :projectile)
+  (skip-unless (featurep 'projectile))
   (let ((parent-dir (make-temp-file "claudemacs-preference-test" t)))
     (unwind-protect
         (let ((child-dir (expand-file-name "child" parent-dir)))
@@ -189,6 +190,7 @@ project/
 └── src/
     └── app.js"
   :tags '(:integration :projectile)
+  (skip-unless (featurep 'projectile))
   (let ((project-dir (make-temp-file "claudemacs-package-json" t)))
     (unwind-protect
         (progn
@@ -225,6 +227,7 @@ monorepo/
     └── src/
         └── app.tsx"
   :tags '(:integration :projectile)
+  (skip-unless (featurep 'projectile))
   (let ((monorepo-dir (make-temp-file "claudemacs-monorepo" t)))
     (unwind-protect
         (let ((backend-dir (expand-file-name "backend" monorepo-dir))
@@ -275,6 +278,7 @@ outer/
     └── code/
         └── file.py"
   :tags '(:integration :projectile)
+  (skip-unless (featurep 'projectile))
   (let ((outer-dir (make-temp-file "claudemacs-nested" t)))
     (unwind-protect
         (let ((inner-dir (expand-file-name "inner" outer-dir)))
@@ -306,6 +310,7 @@ project/
 └── subdir/
     └── file.txt"
   :tags '(:integration :projectile)
+  (skip-unless (featurep 'projectile))
   (let ((project-dir (make-temp-file "claudemacs-explicit" t)))
     (unwind-protect
         (let ((subdir (expand-file-name "subdir" project-dir)))

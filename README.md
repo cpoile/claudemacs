@@ -16,6 +16,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 - **Broadcast to all sessions**: Use `C-u` prefix to send actions to all active sessions
 - **Workspace-aware sessions**: Project-based sessions with Doom/Perspective workspace support (see [Sessions](#workspace-and-project-aware-sessions))
 - **Session management**: Switch between sessions, switch to "other" session, kill specific sessions
+- **Session list**: Inspect live workspaces, tool instances, projects, and authoritative session IDs in one table
 - **System notifications**: OS notifications with sound when awaiting input (see [System Notifications](#system-notifications))
 - **Terminal fixes**: Use `u` to unstick input box and reset buffer issues (see [Tips](#tips-and-tricks))
 - **Session resume**: Resume previous sessions with tool-specific resume flags
@@ -406,6 +407,7 @@ Claudemacs provides a transient menu accessible via `C-c C-e` (or your own keybi
 - `S` - Start Session submenu (select tool, with switches)
 - `o` - Switch to other session (second most recent)
 - `r` - Resume Session submenu (select tool to resume)
+- `l` - List live sessions
 - `k` - Kill session (select from active sessions)
 - `t` - Toggle buffer visibility
 
@@ -441,6 +443,13 @@ Switches available in submenus:
 **Additional M-x commands:**
 - `M-x claudemacs-setup` - Re-run setup (hooks/advice)
 - `M-x claudemacs-setup-bell-handler` - Re-setup notification handler
+
+### Session list
+
+Run `M-x claudemacs-session-list` (or press `l` in the Claudemacs transient) to view currently live Claudemacs buffers in one table. Each row represents a running terminal-backed session and shows four honest columns: workspace, tool instance, session ID, and project directory.
+
+Press `RET` to visit the selected live session and `g` to refresh the list. Sessions whose terminal process has exited disappear on refresh; this command does not display CLI history or historical rows. If Claudemacs cannot determine a session ID safely, it displays `unknown` rather than guessing from recency or the project directory. New or forked Codex sessions remain `unknown`; explicit Codex resumes display the selected authoritative ID.
+
 
 ### Customization
 

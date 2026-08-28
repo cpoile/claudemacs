@@ -22,6 +22,7 @@
 ;; - Selectable Eat and Ghostel terminal backends, with backend ownership
 ;;   captured per session so both can coexist; Ghostel is preferred by default
 ;;   when its package is available
+;; - Live session list with authoritative Claude/Codex identities
 ;; - Eat-specific faces, scrolling, cursor, resize, and redraw workarounds are
 ;;   isolated in the Eat backend adapter
 
@@ -82,6 +83,27 @@
 (require 'vc-git)
 (require 'claudemacs-terminal)
 (require 'claudemacs-comment)
+(require 'claudemacs-session-list)
+
+;; A live Emacs can reload this file over a pre-remediation version.  Remove
+;; the old shutdown callback/state in that case so reloading cannot leave
+;; prompt-bearing persistence behind.  This performs no file I/O and is a
+;; one-time compatibility cleanup, not a new lifecycle hook.
+(dolist (function '(claudemacs--save-session-snapshot-on-exit
+                    claudemacs--write-session-snapshot
+                    claudemacs--read-session-snapshot
+                    claudemacs--snapshot-session-data))
+  (when (fboundp function)
+    (remove-hook 'kill-emacs-hook function)
+    (fmakunbound function)))
+(when (boundp 'claudemacs-session-snapshot-file)
+  (makunbound 'claudemacs-session-snapshot-file))
+
+;; Keep the pre-0.5 command name working for users who have it in a keymap or
+;; transient configuration.  The implementation and autoloaded command live
+;; in the dedicated session-list module.
+(unless (fboundp 'claudemacs-session-overview)
+  (defalias 'claudemacs-session-overview #'claudemacs-session-list))
 
 ;; Declare functions from optional packages
 (declare-function safe-persp-name "perspective")
@@ -319,8 +341,39 @@ are executed with the claudemacs buffer as the current buffer."
 (defvar-local claudemacs--claude-session-uuid nil
   "Buffer-local variable storing the Claude Code session UUID.
 Set when starting a new Claude session with --session-id.
-Used for branching with --resume <uuid> --fork-session.")
+Used for branching with --resume <uuid> --fork-session.
 
+This variable is retained for compatibility.  New code should use
+`claudemacs--session-id' and `claudemacs--session-id-provenance'.")
+
+;; Declare compatibility aliases before their buffer-local referents so Emacs
+;; propagates local bindings through the aliases correctly.
+(defvaralias 'claudemacs--authoritative-session-id 'claudemacs--session-id)
+(defvaralias 'claudemacs--session-identity 'claudemacs--session-id-provenance)
+
+(defvar-local claudemacs--session-id nil
+  "Authoritative tool-neutral session ID for the current Claudemacs buffer.
+
+The value is nil until Claudemacs passes an authoritative ID to the tool.
+It must never be populated from buffer recency, a matching working directory,
+or an ordering heuristic.")
+
+(defvar-local claudemacs--session-id-provenance 'unknown
+  "Provenance of `claudemacs--session-id'.
+
+The value is one of `exact', `discovered', or `unknown'.  `exact' means that
+Claudemacs generated, explicitly selected, or explicitly passed the ID.
+`discovered' is retained only for compatibility with buffers created by an
+older version; new sessions never use it.  An unknown ID is intentionally not
+associated with any history row.")
+
+(defconst claudemacs--session-id-provenances '(exact discovered unknown)
+  "Accepted values for `claudemacs--session-id-provenance'.")
+
+;; Names used by early session-list revisions remain aliases rather than a
+;; second mutable source of identity.  This also lets the read-only module
+;; consume the live state without knowing which lifecycle spelling introduced
+;; it.
 (defvar-local claudemacs--ghostel-escape-map-active nil
   "Non-nil when Claudemacs' Ghostel overrides are active in this buffer.")
 
@@ -364,9 +417,13 @@ Then falls back to `vc-git-root', then to the directory itself."
         ;; First try projectile-project-root if available
         (when (fboundp 'projectile-project-root)
           (condition-case nil
-              (let ((proj-root (projectile-project-root)))
-                (when (and proj-root (file-directory-p proj-root))
-                  proj-root))
+              ;; Projectile consults `default-directory' rather than taking a
+              ;; location argument.  Bind it so an explicit DIRECTORY does
+              ;; not accidentally resolve the caller's current project.
+              (let ((default-directory loc))
+                (let ((proj-root (projectile-project-root)))
+                  (when (and proj-root (file-directory-p proj-root))
+                    proj-root)))
             (error nil)))
         ;; Fall back to .projectile marker file
         (claudemacs--find-projectile-root loc)))
@@ -388,92 +445,199 @@ their own notification mechanisms."
     claudemacs-codex-notification-switches))
 
 (defun claudemacs--get-resume-flag (tool)
-  "Get the resume flag for TOOL.
-Returns '--resume' for claude, 'resume' for codex, '--resume' for others."
+  "Return TOOL's resume token for compatibility with older callers.
+
+This token is not a complete launch command; new lifecycle code must use
+`claudemacs--get-resume-args' so an authoritative ID is always supplied."
   (pcase tool
     ('claude "--resume")
     ('codex "resume")
     (_ "--resume")))
 
-(defun claudemacs--get-branch-args (tool &optional session-uuid)
-  "Get the branch/fork arguments for TOOL.
-When SESSION-UUID is provided, uses tool-specific arguments to branch
-from a specific session.  Without UUID, falls back to tool defaults.
-- claude with UUID: (\"--resume\" UUID \"--fork-session\")
-- claude without UUID: (\"--continue\" \"--fork-session\")
-- codex with UUID: (\"fork\" UUID)
-- codex without UUID: (\"fork\" \"--last\")
-- gemini: (\"--resume\")"
+(defconst claudemacs--safe-session-id-regexp
+  "\\`[A-Za-z0-9_.][A-Za-z0-9_.:-]*\\'"
+  "Regexp for session IDs safe to display and pass as one CLI argument.")
+
+(defun claudemacs--safe-session-id-p (value)
+  "Return non-nil when VALUE is a safe, non-empty session ID token.
+
+The allowlist intentionally accepts canonical UUIDs, Codex thread IDs, and
+the other ASCII identifiers emitted by the history providers while rejecting
+leading hyphens, whitespace, control characters, and display punctuation.
+Keeping this check centralized prevents an untrusted history row or manual
+selection from becoming an option-like or misleading CLI argument."
+  (and (stringp value)
+       (string-match-p claudemacs--safe-session-id-regexp value)))
+
+(defun claudemacs--validate-session-id (value &optional tool)
+  "Return VALUE when it is safe for an explicit session operation.
+
+Signal `user-error' for an empty or unsafe ID.  TOOL is included only in the
+diagnostic; it does not change validation rules."
+  (unless (claudemacs--safe-session-id-p value)
+    (user-error "Invalid%s session ID; expected a non-empty safe token"
+                (if tool (format " %s" (capitalize (symbol-name tool))) "")))
+  value)
+
+(defun claudemacs--get-resume-args (tool session-id)
+  "Return explicit resume arguments for TOOL and SESSION-ID.
+
+The caller must supply an authoritative ID.  In particular, this helper never
+returns Codex's bare `resume' selector or Claude's interactive resume picker."
+  (unless session-id
+    (user-error "No authoritative %s session ID is available"
+                (capitalize (symbol-name tool))))
+  (setq session-id (claudemacs--validate-session-id session-id tool))
   (pcase tool
-    ('claude (if session-uuid
-                 (list "--resume" session-uuid "--fork-session")
-               '("--continue" "--fork-session")))
-    ('codex (if session-uuid
-                (list "fork" session-uuid)
-              '("fork" "--last")))
-    ('gemini '("--resume"))
-    (_ '("--continue"))))
+    ('claude (list "--resume" session-id))
+    ('codex (list "resume" session-id))
+    (_ (list "--resume" session-id))))
 
-(defun claudemacs--codex-discover-sessions (cwd)
-  "Query Codex SQLite database for sessions matching CWD.
-Returns a list of plists with :id, :created-at, :rollout-path,
-sorted by created_at descending (most recent first).
-Returns nil if sqlite3 is not available or the database doesn't exist."
-  (let ((db-path (expand-file-name "~/.codex/state_5.sqlite")))
-    (when (and (executable-find "sqlite3")
-               (file-exists-p db-path))
+(defun claudemacs--get-branch-args (tool &optional source-id destination-id)
+  "Return explicit branch/fork arguments for TOOL.
+
+SOURCE-ID must identify the authoritative source conversation.  Claude also
+accepts an optional DESTINATION-ID, which Claudemacs generates before launch
+when the installed CLI supports `--session-id' with `--fork-session'.  Codex
+does not expose a destination-ID option, so the new destination remains
+unknown.  Nil is returned when no authoritative source is available; callers
+must not replace it with a bare picker or `--last' selector."
+  (when source-id
+    (setq source-id (claudemacs--validate-session-id source-id tool))
+    (when destination-id
+      (setq destination-id
+            (claudemacs--validate-session-id destination-id tool)))
+    (pcase tool
+      ('claude (append (list "--resume" source-id "--fork-session")
+                       (when destination-id
+                         (list "--session-id" destination-id))))
+      ('codex (list "fork" source-id))
+      ('gemini (list "--resume" source-id))
+      (_ (list "--resume" source-id)))))
+
+(declare-function claudemacs--session-list-history-rows
+                  "claudemacs-session-list" (&optional tool cwd))
+
+(declare-function claudemacs--session-list-claude-history
+                  "claudemacs-session-list" (&optional cwd))
+(declare-function claudemacs--session-list-codex-history
+                  "claudemacs-session-list" (&optional cwd))
+
+(defun claudemacs--call-history-provider (tool cwd)
+  "Call TOOL's session-list history provider for CWD, or return nil.
+
+The unified provider name is retained as a small forward-compatible contract;
+the current module also exposes the two focused provider functions directly.
+Provider exceptions are returned as `(:error MESSAGE)' so callers that need a
+trustworthy snapshot can distinguish them from an empty history."
+  (let ((function
+         (cond
+          ((fboundp 'claudemacs--session-list-history-rows)
+           (lambda () (claudemacs--session-list-history-rows tool cwd)))
+          ((and (eq tool 'claude)
+                (fboundp 'claudemacs--session-list-claude-history))
+           (lambda () (claudemacs--session-list-claude-history cwd)))
+          ((and (eq tool 'codex)
+                (fboundp 'claudemacs--session-list-codex-history))
+           (lambda () (claudemacs--session-list-codex-history cwd))))))
+    (when function
+      (condition-case error-data
+          (funcall function)
+        ;; Preserve provider failures as an explicit wrapper.  A nil result is
+        ;; a valid empty history for the focused providers, so collapsing an
+        ;; exception to nil would make an unavailable provider indistinguishable
+        ;; from an empty explicit-selection source.
+        (error (list :error (error-message-string error-data)))))))
+
+(defun claudemacs--history-rows-for-tool (tool cwd)
+  "Return authoritative history rows for TOOL and CWD.
+
+The session-list module owns storage resolution and schema validation.  This
+small lifecycle adapter intentionally returns nil when the provider is not
+available or reports an error; callers then fail closed rather than inventing
+an ID.  A row may use either `:session-id' (the normalized contract) or `:id'
+for compatibility with provider implementations."
+  (let ((rows (claudemacs--call-history-provider tool cwd)))
+    (cond
+     ;; A provider result is a wrapper only when it explicitly carries the
+     ;; `:rows' or `:error' contract.  Do not mistake a single normalized row
+     ;; plist for that wrapper.
+     ((and (listp rows)
+           (or (memq :rows rows) (memq :error rows)))
+      (unless (plist-get rows :error)
+        (or (plist-get rows :rows) '())))
+     ((listp rows) rows))))
+
+(defun claudemacs--history-row-session-id (row)
+  "Return a safe authoritative ID from normalized history ROW, or nil.
+
+Malformed provider IDs are excluded before they can enter a completion choice
+or become a command-line argument."
+  (let ((id (or (plist-get row :session-id)
+                (plist-get row :id))))
+    (when (claudemacs--safe-session-id-p id)
+      id)))
+
+(defun claudemacs--history-row-cwd (row)
+  "Return normalized CWD from history ROW, or nil."
+  (let ((cwd (plist-get row :cwd)))
+    (when (stringp cwd)
       (condition-case nil
-          (let* ((output (with-output-to-string
-                           (with-current-buffer standard-output
-                             (call-process "sqlite3" nil t nil
-                                           "-separator" "\x1f"
-                                           db-path
-                                           (format "SELECT id, created_at, rollout_path FROM threads WHERE cwd = '%s' AND archived = 0 ORDER BY created_at DESC LIMIT 20;"
-                                                   (replace-regexp-in-string "'" "''" cwd))))))
-                 (lines (split-string (string-trim output) "\n" t)))
-            (mapcar (lambda (line)
-                      (let ((fields (split-string line "\x1f")))
-                        (list :id (nth 0 fields)
-                              :created-at (string-to-number (or (nth 1 fields) "0"))
-                              :rollout-path (nth 2 fields))))
-                    lines))
-        (error nil)))))
+          (file-truename cwd)
+        (error cwd)))))
 
-(defun claudemacs--codex-last-user-prompt (rollout-path)
-  "Extract the most recent user prompt from a Codex session JSONL file.
-ROLLOUT-PATH is the path to the session's JSONL file.
-Returns the prompt text (up to 80 chars) or nil on failure."
-  (when (and rollout-path (file-exists-p rollout-path))
-    (condition-case nil
-        (let* ((output (with-output-to-string
-                         (with-current-buffer standard-output
-                           (call-process-shell-command
-                            (format "grep '\"role\":\"user\"' %s | tail -1"
-                                    (shell-quote-argument rollout-path))
-                            nil t))))
-               (trimmed (string-trim output)))
-          (when (not (string-empty-p trimmed))
-            (let* ((json (json-parse-string trimmed :object-type 'alist))
-                   (payload (alist-get 'payload json))
-                   (content (alist-get 'content payload))
-                   (text (alist-get 'text (aref content 0))))
-              (when (and text (not (string-empty-p text)))
-                (substring text 0 (min (length text) 80))))))
-      (error nil))))
+(defun claudemacs--same-cwd-p (left right)
+  "Return non-nil when LEFT and RIGHT identify the same directory."
+  (and (stringp left) (stringp right)
+       (or (condition-case nil
+               (file-equal-p (file-truename left) (file-truename right))
+             (error nil))
+           ;; `file-equal-p' returns nil rather than signaling when both
+           ;; paths do not exist, which is common in isolated lifecycle
+           ;; tests and during a concurrently removed worktree.
+           (string= (directory-file-name (expand-file-name left))
+                    (directory-file-name (expand-file-name right))))))
 
-(defun claudemacs--codex-format-session-choice (session)
-  "Format a Codex SESSION plist as a `completing-read' choice string.
-Queries the session's JSONL file for the most recent user prompt.
-Format: \"2026-03-04 16:55 -- first few words of prompt...\""
-  (let* ((timestamp (plist-get session :created-at))
-         (time-str (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time timestamp)))
-         (rollout-path (plist-get session :rollout-path))
-         (prompt (claudemacs--codex-last-user-prompt rollout-path))
-         (display (or prompt "(no message)"))
-         (display (if (> (length display) 60)
-                      (concat (substring display 0 57) "...")
-                    display)))
-    (format "%s -- %s" time-str display)))
+(defun claudemacs--history-rows-for-cwd (tool cwd)
+  "Return TOOL history rows whose authoritative CWD is exactly CWD."
+  (seq-filter
+   (lambda (row)
+     (claudemacs--same-cwd-p cwd (claudemacs--history-row-cwd row)))
+   (or (claudemacs--history-rows-for-tool tool cwd) nil)))
+
+(defun claudemacs--select-history-session-id (tool cwd)
+  "Prompt for an authoritative history ID for TOOL in CWD.
+
+Rows are supplied by the session-list module, not by a recency guess.  If a
+provider is unavailable, an explicit ID may still be entered manually; an
+invalid or empty answer is rejected before launch."
+  (let* ((rows (claudemacs--history-rows-for-cwd tool cwd))
+         (choices
+          (mapcar
+           (lambda (row)
+             (let* ((id (claudemacs--history-row-session-id row))
+                    (description (or (plist-get row :description)
+                                      (plist-get row :title)
+                                      ""))
+                    (display-description
+                     (if (and (stringp description)
+                              (> (length description) 80))
+                         (concat (substring description 0 77) "...")
+                       description)))
+               (cons (if (string-empty-p display-description)
+                         id
+                       (format "%s — %s" id display-description))
+                     id)))
+           (seq-filter #'claudemacs--history-row-session-id rows))))
+    (if choices
+        (cdr (assoc (completing-read
+                     (format "Select %s session: " (capitalize (symbol-name tool)))
+                     choices nil t)
+                    choices))
+      (let ((id (read-string
+                 (format "%s session ID (history unavailable): "
+                         (capitalize (symbol-name tool))))))
+        (claudemacs--validate-session-id id tool)))))
 
 (defun claudemacs--get-current-tool-name ()
   "Get the display name (capitalized) of the current session's tool.
@@ -506,17 +670,24 @@ Checks workspace systems in priority order:
       (let ((ws (persp-current-name)))
         (when (valid-ws-p ws) ws))))))
 
-(defun claudemacs--session-id ()
+(defun claudemacs--session-id (&optional directory)
   "Return an identifier for the current Claudemacs session.
-If a workspace is active (checking various workspace packages),
-use its name, otherwise fall back to the project root."
+If a workspace is active (checking various workspace packages), use its name;
+otherwise fall back to the project root containing DIRECTORY.  DIRECTORY is
+used only for the project-root fallback so workspace-name precedence remains
+  unchanged."
   (or (claudemacs--get-workspace-name)
-      (file-truename (claudemacs--project-root))))
+      (file-truename (if directory
+                         (claudemacs--project-root directory)
+                       (claudemacs--project-root)))))
 
-(defun claudemacs--get-instance-numbers-for-tool (tool)
-  "Get a list of instance numbers currently in use for TOOL in current workspace.
-Returns a sorted list of integers (e.g., (1 2 3) if claude, claude-2, claude-3 exist)."
-  (let ((session-id (claudemacs--session-id))
+(defun claudemacs--get-instance-numbers-for-tool (tool &optional directory)
+  "Get instance numbers currently in use for TOOL in the session for DIRECTORY.
+Return a sorted list of integers, such as (1 2 3) when claude, claude-2, and
+claude-3 exist."
+  (let ((session-id (if directory
+                       (claudemacs--session-id directory)
+                     (claudemacs--session-id)))
         (tool-str (symbol-name tool))
         (numbers '()))
     (dolist (buf (buffer-list))
@@ -531,10 +702,12 @@ Returns a sorted list of integers (e.g., (1 2 3) if claude, claude-2, claude-3 e
               (push (if num-str (string-to-number num-str) 1) numbers))))))
     (sort numbers #'<)))
 
-(defun claudemacs--get-next-instance-number (tool)
-  "Get the next available instance number for TOOL.
+(defun claudemacs--get-next-instance-number (tool &optional directory)
+  "Get the next available instance number for TOOL in the session for DIRECTORY.
 Returns 1 if no instances exist, or the next sequential number."
-  (let ((used (claudemacs--get-instance-numbers-for-tool tool)))
+  (let ((used (if directory
+                  (claudemacs--get-instance-numbers-for-tool tool directory)
+                (claudemacs--get-instance-numbers-for-tool tool))))
     (if (null used)
         1
       ;; Find first gap or use max+1
@@ -550,25 +723,38 @@ Returns 'tool' for instance 1, 'tool-N' for N > 1."
       (symbol-name tool)
     (format "%s-%d" tool instance-num)))
 
-(defun claudemacs--get-buffer-name-for-instance (tool instance-num)
+(defun claudemacs--get-buffer-name-for-instance (tool instance-num &optional directory)
   "Generate buffer name for TOOL at INSTANCE-NUM.
-Format: *claudemacs:TOOL:SESSION-ID* or *claudemacs:TOOL-N:SESSION-ID*"
+Format: *claudemacs:TOOL:SESSION-ID* or *claudemacs:TOOL-N:SESSION-ID*.
+When DIRECTORY is supplied, use it for the project-root fallback in the
+session ID."
   (let ((instance-name (claudemacs--format-tool-instance-name tool instance-num)))
-    (format "*claudemacs:%s:%s*" instance-name (claudemacs--session-id))))
+    (format "*claudemacs:%s:%s*" instance-name
+            (if directory
+                (claudemacs--session-id directory)
+              (claudemacs--session-id)))))
 
-(defun claudemacs--get-buffer-name (&optional tool)
+(defun claudemacs--get-buffer-name (&optional tool directory)
   "Generate the claudemacs buffer name based on TOOL and workspace session ID.
 TOOL defaults to `claudemacs-default-tool' if not specified.
 Format: *claudemacs:TOOL:SESSION-ID*
 Note: This returns the name for the first instance. Use
-`claudemacs--get-buffer-name-for-instance' for specific instances."
+`claudemacs--get-buffer-name-for-instance' for specific instances.
+When DIRECTORY is supplied, use it for the project-root fallback in the
+session ID."
   (let ((tool-name (or tool claudemacs-default-tool)))
-    (format "*claudemacs:%s:%s*" tool-name (claudemacs--session-id))))
+    (format "*claudemacs:%s:%s*" tool-name
+            (if directory
+                (claudemacs--session-id directory)
+              (claudemacs--session-id)))))
 
-(defun claudemacs--get-buffer (&optional tool)
+(defun claudemacs--get-buffer (&optional tool directory)
   "Return existing claudemacs buffer for current session and TOOL.
-TOOL defaults to `claudemacs-default-tool' if not specified."
-  (get-buffer (claudemacs--get-buffer-name tool)))
+TOOL defaults to `claudemacs-default-tool' if not specified.  DIRECTORY is
+used for the project-root fallback in the session ID."
+  (get-buffer (if directory
+                  (claudemacs--get-buffer-name tool directory)
+                (claudemacs--get-buffer-name tool))))
 
 (defun claudemacs--get-current-session-buffer ()
   "Return the most relevant claudemacs buffer for the current context.
@@ -621,10 +807,67 @@ Returns t if switched successfully, nil if no buffer exists."
 Each element is a buffer object."
   (seq-filter #'claudemacs--is-claudemacs-buffer-p (buffer-list)))
 
+(defun claudemacs--buffer-session-identity (&optional buffer)
+  "Return the authoritative identity plist for BUFFER.
+
+The result contains `:id' and `:provenance'.  The deprecated Claude UUID
+variable is accepted as an exact identity so that buffers created by an older
+loaded version remain usable after `cp/claudemacs-reload'.  No history lookup
+or CWD/recency inference is performed here."
+  (let ((buffer (or buffer (current-buffer))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((id (or claudemacs--session-id
+                      claudemacs--claude-session-uuid))
+              (provenance (if (memq claudemacs--session-id-provenance
+                                    claudemacs--session-id-provenances)
+                              claudemacs--session-id-provenance
+                            'unknown)))
+          (list :id id
+                :provenance (if (and id
+                                     (null claudemacs--session-id)
+                                     claudemacs--claude-session-uuid)
+                                'exact
+                              provenance)))))))
+
+(defun claudemacs--set-session-identity (id provenance &optional force)
+  "Set the current buffer's live identity to ID with PROVENANCE.
+
+PROVENANCE must be `exact', `discovered', or `unknown'.  Once a non-unknown
+identity has been established it is immutable unless FORCE is non-nil.  This
+  prevents a later refresh or a second database observation from remapping a
+  live buffer to another conversation.  FORCE is used only when a buffer is
+  being deliberately reused for a new tool process."
+  ;; Keep every non-nil identity on the same allowlist used by explicit
+  ;; resume/branch selection.  Invalid exact/discovered IDs are downgraded to
+  ;; unknown rather than being exposed to the live-session view.  A nil ID is
+  ;; valid when deliberately resetting a buffer to unknown.
+  (setq id (and (claudemacs--safe-session-id-p id) id))
+  (unless (memq provenance claudemacs--session-id-provenances)
+    (setq provenance 'unknown))
+  (unless id
+    (setq provenance 'unknown))
+  (let ((current (claudemacs--buffer-session-identity)))
+    (when (or force
+              (eq (plist-get current :provenance) 'unknown)
+              (and (equal id (plist-get current :id))
+                   (eq provenance (plist-get current :provenance))))
+      (setq-local claudemacs--session-id (and (stringp id) id)
+                  claudemacs--session-id-provenance provenance)
+      ;; Keep the old Claude-only slot synchronized for callers that still
+      ;; inspect it.  A discovered Codex ID must never appear there.
+      (setq-local claudemacs--claude-session-uuid
+                  (when (and (eq claudemacs--tool 'claude)
+                             (stringp id)
+                             (eq provenance 'exact))
+                    id))))
+  (claudemacs--buffer-session-identity))
+
 (defun claudemacs--get-session-info (buffer)
   "Extract session information from BUFFER.
 Returns a plist with :tool, :instance, :session-id, :buffer, :buffer-name,
-and :claude-uuid (the Claude Code session UUID, if tracked).
+and :claude-uuid (the Claude Code session UUID, if tracked), plus
+:authoritative-session-id and :identity-provenance.
 The :tool is the base tool symbol (e.g., claude even for claude-2).
 The :instance is the instance number (1 for claude, 2 for claude-2, etc.).
 Returns nil if the buffer is not a claudemacs buffer."
@@ -636,14 +879,19 @@ Returns nil if the buffer is not a claudemacs buffer."
                (instance-str (match-string 2 buf-name))
                (session-id (match-string 3 buf-name))
                (instance (if instance-str (string-to-number instance-str) 1))
-               (claude-uuid (when (buffer-live-p buffer)
-                              (buffer-local-value 'claudemacs--claude-session-uuid buffer))))
+               (identity (claudemacs--buffer-session-identity buffer))
+               (claude-uuid (and (eq (plist-get identity :provenance) 'exact)
+                                 (eq (intern tool-str) 'claude)
+                                 (plist-get identity :id))))
           (list :tool (intern tool-str)
                 :instance instance
                 :session-id session-id
+                :workspace session-id
                 :buffer buffer
                 :buffer-name buf-name
-                :claude-uuid claude-uuid))))))
+                :claude-uuid claude-uuid
+                :authoritative-session-id (plist-get identity :id)
+                :identity-provenance (plist-get identity :provenance)))))))
 
 (defun claudemacs--list-sessions-for-workspace ()
   "Return a list of all active sessions in the current workspace.
@@ -980,6 +1228,63 @@ the return-key options cannot leave stale bindings behind."
 Falls back to '/bin/sh' if SHELL environment variable is not set."
   (or (getenv "SHELL") "/bin/sh"))
 
+(defun claudemacs--argument-value (args flag)
+  "Return the string value following FLAG in ARGS, or nil.
+
+The value is intentionally returned before validation so callers can reject
+empty, option-like, or otherwise unsafe IDs rather than silently treating
+them as absent."
+  (when-let ((tail (member flag args)))
+    (let ((value (cadr tail)))
+      (when (stringp value)
+        value))))
+
+(defun claudemacs--identity-plan-for-start (tool args session-uuid)
+  "Return the identity plan implied by TOOL, ARGS, and SESSION-UUID.
+
+The result is a plist with `:provenance' and optional `:id'.  Codex fork/new
+sessions intentionally return `:unknown': the CLI does not expose a
+destination-ID option and no post-start history association is attempted.
+An explicit Codex resume remains exact."
+  (let ((explicit-session-id (claudemacs--argument-value args "--session-id"))
+        (resume-id (claudemacs--argument-value args "--resume"))
+        (codex-resume-id (claudemacs--argument-value args "resume"))
+        (codex-fork-source-id (claudemacs--argument-value args "fork")))
+    ;; Validate values even when they are empty or option-like.  This keeps a
+    ;; malformed explicit flag from reaching the process argv as an implicit
+    ;; picker or another option.
+    (when (member "--session-id" args)
+      (setq explicit-session-id
+            (claudemacs--validate-session-id explicit-session-id tool)))
+    (when (member "--resume" args)
+      (setq resume-id
+            (claudemacs--validate-session-id resume-id tool)))
+    (when (and (eq tool 'codex) (member "fork" args))
+      (setq codex-fork-source-id
+            (claudemacs--validate-session-id codex-fork-source-id tool)))
+    (pcase tool
+      ('claude
+       (cond
+        ((member "--session-id" args)
+         (list :provenance 'exact :id explicit-session-id))
+        ;; A fork without an explicit destination creates a new conversation;
+        ;; the source ID must not be mistaken for that destination.
+        ((and (member "--fork-session" args) (null session-uuid))
+         (list :provenance 'unknown))
+        (session-uuid (list :provenance 'exact :id session-uuid))
+        (resume-id
+         (list :provenance 'exact
+               :id (claudemacs--validate-session-id resume-id tool)))
+        (t (list :provenance 'unknown))))
+      ('codex
+       (cond
+        ((member "resume" args)
+         (list :provenance 'exact
+               :id (claudemacs--validate-session-id
+                    codex-resume-id tool)))
+        (t (list :provenance 'unknown))))
+      (_ (list :provenance 'unknown)))))
+
 (defun claudemacs--start (work-dir &optional tool instance-num &rest args)
   "Start AI coding tool TOOL in WORK-DIR with ARGS.
 TOOL defaults to `claudemacs-default-tool' if not specified.
@@ -989,9 +1294,22 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
   (let* ((tool-name (or tool claudemacs-default-tool))
          (terminal-backend claudemacs-terminal-backend)
          (tool-config (claudemacs--get-tool-config tool-name))
-         (instance (or instance-num (claudemacs--get-next-instance-number tool-name)))
+         (instance (or instance-num
+                       (claudemacs--get-next-instance-number tool-name work-dir)))
          (default-directory work-dir)
-         (buffer-name (claudemacs--get-buffer-name-for-instance tool-name instance))
+         ;; Generate UUID and validate explicit identity arguments before
+         ;; allocating the session buffer.  Invalid launch IDs must fail
+         ;; without leaving an empty live-session buffer behind.
+         (session-uuid (when (and (eq tool-name 'claude)
+                                  (not (member "--session-id" args))
+                                  (not (member "--resume" args))
+                                  (not (member "--continue" args)))
+                         (claudemacs--generate-uuid)))
+         (identity-plan
+          (claudemacs--identity-plan-for-start
+           tool-name args session-uuid))
+         (buffer-name (claudemacs--get-buffer-name-for-instance
+                       tool-name instance work-dir))
          (buffer (get-buffer-create buffer-name))
          ;; Capture buffer-local and tool-specific values before switching buffers
          (program (or (plist-get tool-config :program) claudemacs-program))
@@ -1001,18 +1319,13 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
                   (plist-get tool-config :switches)))
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
-          (append claudemacs-process-environment process-environment))
-         ;; Generate UUID for new Claude sessions (not resuming/continuing)
-         (session-uuid (when (and (eq tool-name 'claude)
-                                  (not (member "--resume" args))
-                                  (not (member "--continue" args)))
-                         (claudemacs--generate-uuid))))
+          (append claudemacs-process-environment process-environment)))
     ;; Verify program exists before attempting to start
     (unless (or use-shell-env (executable-find program))
       (kill-buffer buffer)
       (error "Program '%s' not found in PATH" program))
 
-    (condition-case err
+    (condition-case error-data
         (progn
           ;; Load before displaying the new buffer so a missing optional package
           ;; fails without leaving an empty session window behind.
@@ -1039,8 +1352,15 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
               ;; Set session state after the backend establishes its major mode.
               (setq-local claudemacs--cwd work-dir)
               (setq-local claudemacs--tool tool-name)
-              (setq-local claudemacs--claude-session-uuid session-uuid)
-
+              ;; A reused buffer can still hold the identity of an older
+              ;; process.  Reset it before establishing this process's
+              ;; identity; ordinary library reloads never call this path and
+              ;; therefore preserve their buffer-local identity.
+              (claudemacs--set-session-identity nil 'unknown t)
+              (let ((provenance (plist-get identity-plan :provenance))
+                    (identity-id (plist-get identity-plan :id)))
+                (when (eq provenance 'exact)
+                  (claudemacs--set-session-identity identity-id 'exact t)))
               (claudemacs--terminal-post-display buffer)
               (run-with-timer
                0.1 nil
@@ -1053,7 +1373,7 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
        (when (buffer-live-p buffer)
          (kill-buffer buffer))
        (error "Failed to start %s with terminal backend `%s': %s"
-              program terminal-backend (error-message-string err))))))
+              program terminal-backend (error-message-string error-data))))))
 
 (defun claudemacs--translate-args-for-tool (tool args)
   "Translate generic ARGS to tool-specific arguments for TOOL.
@@ -1074,10 +1394,14 @@ tool-specific equivalents."
 (defun claudemacs--run-with-args (tool &optional arg &rest args)
   "Start a new instance of AI coding tool TOOL with ARGS.
 TOOL should be a symbol from `claudemacs-tool-registry'.
-With prefix ARG, prompt for the project directory.
+With prefix ARG, prompt for the project directory.  A directory string in ARG
+is used directly; this lets an explicit history selection preserve its
+authoritative working directory without prompting a second time.
 ARGS are translated to tool-specific arguments.
 Always creates a new instance (claude, claude-2, etc.)."
-  (let* ((explicit-dir (when arg (read-directory-name "Project directory: ")))
+  (let* ((explicit-dir (cond
+                        ((stringp arg) arg)
+                        (arg (read-directory-name "Project directory: "))))
          (work-dir (or explicit-dir (claudemacs--project-root)))
          (translated-args (claudemacs--translate-args-for-tool tool args)))
     (apply #'claudemacs--start work-dir tool nil translated-args)))
@@ -1147,66 +1471,49 @@ Presents a list of all active sessions in the workspace for selection."
 
 ;;;###autoload
 (defun claudemacs-branch-session ()
-  "Branch from a specific session, prompting if multiple exist.
-For Claude sessions with a tracked UUID, uses --resume UUID --fork-session.
-For Codex sessions, queries the Codex SQLite database for sessions matching
-the working directory and uses codex fork UUID.
-Falls back to tool defaults when no UUID is available."
+  "Branch from an explicitly selected authoritative session.
+
+Claude receives an explicit source and generated destination UUID.  Codex
+receives an explicit source ID, but its new destination remains unknown
+because the installed CLI has no destination-ID option.  A bare `--continue',
+`resume', `--last', or picker fallback is never used."
   (interactive)
   (let* ((sessions (claudemacs--list-sessions-for-workspace))
-         (session (car sessions))
-         (tool (if session
-                   (plist-get session :tool)
-                 claudemacs-default-tool))
-         ;; Extract work-dir early (codex needs it for SQLite query)
-         (session-buffer (plist-get session :buffer))
-         (work-dir (if (and session-buffer (buffer-live-p session-buffer))
-                       (buffer-local-value 'claudemacs--cwd session-buffer)
-                     (claudemacs--project-root)))
-         ;; Tool-specific UUID discovery
-         (session-uuid
-          (pcase tool
-            ('claude
-             (let* ((uuid-sessions (seq-filter (lambda (s) (plist-get s :claude-uuid))
-                                               sessions))
-                    (selected
-                     (cond
-                      ((> (length uuid-sessions) 1)
-                       (let* ((choices (mapcar
-                                        (lambda (s)
-                                          (cons (plist-get s :buffer-name) s))
-                                        uuid-sessions))
-                              (selected-name (completing-read
-                                              "Branch from session: "
-                                              (mapcar #'car choices) nil t)))
-                         (cdr (assoc selected-name choices))))
-                      ((= (length uuid-sessions) 1)
-                       (car uuid-sessions))
-                      (t session))))
-               ;; Update work-dir from selected session
-               (when (and selected (plist-get selected :buffer)
-                          (buffer-live-p (plist-get selected :buffer)))
-                 (setq work-dir (buffer-local-value 'claudemacs--cwd
-                                                    (plist-get selected :buffer))))
-               (plist-get selected :claude-uuid)))
-            ('codex
-             (let ((codex-sessions (claudemacs--codex-discover-sessions work-dir)))
-               (cond
-                ((> (length codex-sessions) 1)
-                 (let* ((choices (mapcar
-                                  (lambda (s)
-                                    (cons (claudemacs--codex-format-session-choice s) s))
-                                  codex-sessions))
-                        (selected-name (completing-read
-                                        "Branch from Codex session: "
-                                        (mapcar #'car choices) nil t)))
-                   (plist-get (cdr (assoc selected-name choices)) :id)))
-                ((= (length codex-sessions) 1)
-                 (plist-get (car codex-sessions) :id))
-                (t nil))))
-            (_ nil)))
-         (branch-args (claudemacs--get-branch-args tool session-uuid)))
-    (apply #'claudemacs--start work-dir tool nil branch-args)))
+         (session (car sessions)))
+    (unless session
+      (user-error "No live Claudemacs session is available to branch"))
+    (let* ((tool (plist-get session :tool))
+           (session-buffer (plist-get session :buffer))
+           (work-dir (and (buffer-live-p session-buffer)
+                          (buffer-local-value 'claudemacs--cwd session-buffer)))
+           (work-dir (or work-dir (claudemacs--project-root)))
+           (live-identities
+            (seq-filter
+             (lambda (info)
+               (memq (plist-get info :identity-provenance)
+                     '(exact discovered)))
+             (seq-filter (lambda (info) (eq (plist-get info :tool) tool))
+                         sessions)))
+           (source-id
+            (cond
+             ;; A single tracked identity is already authoritative.  When
+             ;; there are multiple sessions, let the history provider choose
+             ;; explicitly rather than using display order.
+             ((and (= (length live-identities) 1)
+                   (= (length (seq-filter
+                               (lambda (info) (eq (plist-get info :tool) tool))
+                               sessions))
+                      1))
+              (plist-get (car live-identities) :authoritative-session-id))
+             (t (claudemacs--select-history-session-id tool work-dir))))
+           (destination-id (when (eq tool 'claude)
+                             (claudemacs--generate-uuid)))
+           (branch-args (or (claudemacs--get-branch-args
+                            tool source-id destination-id)
+                            (user-error
+                             "No authoritative %s session ID is available"
+                             (capitalize (symbol-name tool))))))
+      (apply #'claudemacs--start work-dir tool nil branch-args))))
 
 (defun claudemacs--validate-process ()
   "Validate that the Claudemacs process is alive and running.
@@ -1715,17 +2022,27 @@ INDEX is 0-based."
         (apply #'claudemacs--run-with-args tool prompt-for-dir filtered-args)))))
 
 (defun claudemacs--resume-tool-by-index (index)
-  "Resume the tool at INDEX in the tool registry.
-INDEX is 0-based."
+  "Resume the tool at INDEX using an explicitly selected history ID.
+INDEX is 0-based.  The CLI's interactive picker is never launched from this
+command because Claudemacs could not attach its authoritative ID to the new
+buffer in that case."
   (let* ((tools (mapcar #'car claudemacs-tool-registry))
          (tool (nth index tools)))
     (when tool
-      (let* ((resume-flag (claudemacs--get-resume-flag tool))
-             (args (transient-args 'claudemacs-resume-menu))
+      (let* ((args (transient-args 'claudemacs-resume-menu))
              (prompt-for-dir (member "--prompt-project-root" args))
              (filtered-args (remove "--prompt-project-root" args))
+             (work-dir (if prompt-for-dir
+                           (read-directory-name "Project directory: ")
+                         (claudemacs--project-root)))
+             (session-id (claudemacs--select-history-session-id tool work-dir))
+             (resume-args (claudemacs--get-resume-args tool session-id))
              (claudemacs-switch-to-buffer-on-create t))  ; Always switch when resuming
-        (apply #'claudemacs--run-with-args tool prompt-for-dir resume-flag filtered-args)))))
+        ;; Pass the directory selected for history lookup through the common
+        ;; launcher.  Recomputing `claudemacs--project-root' here could launch
+        ;; the CLI in a different project than the one whose ID was selected.
+        (apply #'claudemacs--run-with-args tool work-dir
+               (append resume-args filtered-args))))))
 
 (defun claudemacs--setup-start-tool-suffixes (_)
   "Generate tool suffixes dynamically for the start menu.
@@ -1791,6 +2108,7 @@ Returns a list of parsed transient suffix objects."
     ("r" "Resume Session..." claudemacs-resume-menu)
     ("k" "Kill Session..." claudemacs-kill-specific-session)
     ("b" "Branch Current Session" claudemacs-branch-session)
+    ("l" "List Live Sessions" claudemacs-session-list)
     ("t" "Toggle Buffer" claudemacs-toggle-buffer)]
    ["Actions (Use C-u to send to all sessions)"
     ("e" "Fix Error at Point" claudemacs-fix-error-at-point)
@@ -1840,7 +2158,7 @@ Safe to call multiple times."
   (claudemacs--terminal-setup-loaded-backends))
 
 (defun claudemacs-unload-function ()
-  "Clean up integrations installed by terminal backends."
+  "Clean up terminal backend integrations."
   (claudemacs--terminal-teardown-loaded-backends)
   nil)
 
