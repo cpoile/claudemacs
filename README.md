@@ -437,7 +437,8 @@ These open a submenu where you can select which tool to start/resume:
 Switches available in submenus:
 - `-d` - Skip permissions on start (`--dangerously-skip-permissions` or equivalent)
 - `-p` - Prompt for project root directory
-- `-f` - Add custom flag (prompts for input)
+- `-f` - Add custom command-line arguments (prompts for input)
+- `-u` - In the resume submenu, resume a Codex session with a UUID (prompts for the UUID)
 
 **Action Commands** (use `C-u` prefix to send to all sessions)
 - `e` - Fix error at point (using flycheck if available)

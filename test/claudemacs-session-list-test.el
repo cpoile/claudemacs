@@ -822,6 +822,41 @@ identity merely because the value is non-nil."
           (should (equal (file-truename selected)
                          (file-truename observed-directory))))))))
 
+(ert-deftest claudemacs-session-list-test-custom-command-args-are-expanded ()
+  "A custom command entered through `-f' is passed as separate argv values."
+  :tags '(:unit :session-list :identity :lifecycle :arguments)
+  (let (observed-args)
+    (let ((claudemacs-tool-registry '((codex))))
+      (cl-letf (((symbol-function 'transient-args)
+                 (lambda (_prefix)
+                   '("resume 01a05cf3-1b28-7dc0-aaf4-cbd1b2a2bfb3")))
+                ((symbol-function 'claudemacs--run-with-args)
+                 (lambda (_tool _directory &rest args)
+                   (setq observed-args args))))
+        (claudemacs--start-tool-by-index 0)))
+    (should (equal observed-args
+                   '("resume" "01a05cf3-1b28-7dc0-aaf4-cbd1b2a2bfb3")))
+    (should-not (claudemacs--explicit-resume-command-p
+                 'codex '("--model resume")))))
+
+(ert-deftest claudemacs-session-list-test-explicit-custom-resume-replaces-picker ()
+  "An explicit resume command from `-u' or `-f' is not sent as a Codex prompt."
+  :tags '(:unit :session-list :identity :lifecycle :arguments)
+  (let (observed-args)
+    (let ((claudemacs-tool-registry '((codex))))
+      (cl-letf (((symbol-function 'transient-args)
+                 (lambda (_prefix)
+                   '("resume 01a05cf3-1b28-7dc0-aaf4-cbd1b2a2bfb3")))
+                ((symbol-function 'claudemacs--select-history-session-id)
+                 (lambda (&rest _args)
+                   (ert-fail "An explicit custom resume should skip history selection")))
+                ((symbol-function 'claudemacs--run-with-args)
+                 (lambda (_tool _directory &rest args)
+                   (setq observed-args args))))
+        (claudemacs--resume-tool-by-index 0)))
+    (should (equal observed-args
+                   '("resume" "01a05cf3-1b28-7dc0-aaf4-cbd1b2a2bfb3")))))
+
 (ert-deftest claudemacs-session-list-test-history-session-id-rejects-unsafe-values ()
   "History IDs reject option-like, whitespace, and control-character values."
   :tags '(:unit :session-list :identity :provider :errors)

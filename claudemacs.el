@@ -79,6 +79,8 @@
 
 ;;;; Dependencies
 (require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
 (require 'transient)
 (require 'project)
 (require 'vc-git)
@@ -1508,6 +1510,33 @@ tool-specific equivalents."
              (t arg)))
           args))
 
+(defun claudemacs--expand-transient-args (args)
+  "Expand transient command strings in ARGS into individual arguments.
+
+Transient's custom `-f' and UUID `-u' options read one string, while process
+commands need one list element per command-line argument.  Use Emacs-style
+quoting so a value containing spaces can still be kept as one argument."
+  (apply #'append
+         (mapcar (lambda (arg)
+                   (if (stringp arg)
+                       (split-string-and-unquote arg)
+                     (list arg)))
+                 args)))
+
+(defun claudemacs--explicit-resume-command-p (tool args)
+  "Return non-nil when a raw transient argument starts TOOL's resume command.
+
+This is used by the resume menu to distinguish an explicit `-u' or `-f'
+command such as `resume SESSION-ID' from ordinary extra options such as
+`--model MODEL'.
+Inspect the raw values so a model or other option whose value happens to be
+`resume' is not mistaken for an explicit resume command."
+  (let ((resume-flag (claudemacs--get-resume-flag tool)))
+    (seq-some (lambda (arg)
+                (and (stringp arg)
+                     (equal (car (split-string-and-unquote arg)) resume-flag)))
+              args)))
+
 (defun claudemacs--run-with-args (tool &optional arg &rest args)
   "Start a new instance of AI coding tool TOOL with ARGS.
 TOOL should be a symbol from `claudemacs-tool-registry'.
@@ -2141,31 +2170,38 @@ INDEX is 0-based."
     (when tool
       (let* ((args (transient-args 'claudemacs-start-menu))
              (prompt-for-dir (member "--prompt-project-root" args))
-             (filtered-args (remove "--prompt-project-root" args)))
-        (apply #'claudemacs--run-with-args tool prompt-for-dir filtered-args)))))
+             (filtered-args (remove "--prompt-project-root" args))
+             (expanded-args (claudemacs--expand-transient-args filtered-args)))
+        (apply #'claudemacs--run-with-args tool prompt-for-dir expanded-args)))))
 
 (defun claudemacs--resume-tool-by-index (index)
-  "Resume the tool at INDEX using an explicitly selected history ID.
-INDEX is 0-based.  The CLI's interactive picker is never launched from this
-command because Claudemacs could not attach its authoritative ID to the new
-buffer in that case."
+  "Resume the tool at INDEX using an explicit or selected history ID.
+INDEX is 0-based.  An explicit resume command entered through `-f' is passed
+directly; otherwise the CLI's interactive picker is never launched because
+Claudemacs could not attach its authoritative ID to the new buffer in that
+case."
   (let* ((tools (mapcar #'car claudemacs-tool-registry))
          (tool (nth index tools)))
     (when tool
       (let* ((args (transient-args 'claudemacs-resume-menu))
              (prompt-for-dir (member "--prompt-project-root" args))
              (filtered-args (remove "--prompt-project-root" args))
+             (expanded-args (claudemacs--expand-transient-args filtered-args))
              (work-dir (if prompt-for-dir
                            (read-directory-name "Project directory: ")
                          (claudemacs--project-root)))
-             (session-id (claudemacs--select-history-session-id tool work-dir))
-             (resume-args (claudemacs--get-resume-args tool session-id))
+             (explicit-resume-p
+              (claudemacs--explicit-resume-command-p tool filtered-args))
+             (session-id (unless explicit-resume-p
+                           (claudemacs--select-history-session-id tool work-dir)))
+             (resume-args (unless explicit-resume-p
+                           (claudemacs--get-resume-args tool session-id)))
              (claudemacs-switch-to-buffer-on-create t))  ; Always switch when resuming
-        ;; Pass the directory selected for history lookup through the common
-        ;; launcher.  Recomputing `claudemacs--project-root' here could launch
-        ;; the CLI in a different project than the one whose ID was selected.
+        ;; Pass the requested directory through the common launcher.  When the
+        ;; ID came from history, recomputing `claudemacs--project-root' here
+        ;; could launch the CLI in a different project than the selected ID.
         (apply #'claudemacs--run-with-args tool work-dir
-               (append resume-args filtered-args))))))
+               (append resume-args expanded-args))))))
 
 (defun claudemacs--setup-start-tool-suffixes (_)
   "Generate tool suffixes dynamically for the start menu.
@@ -2201,7 +2237,7 @@ Returns a list of parsed transient suffix objects."
   ["Start New Session\n"
    ("-d" "Skip permissions on start" "--dangerous-skip-permissions")
    ("-p" "Prompt for project root" "--prompt-project-root")
-   ("-f" "Add custom flag to start command" "" :class transient-option :prompt "Custom flag: ")]
+   ("-f" "Add custom command-line arguments" "" :class transient-option :prompt "Custom arguments: ")]
   ["Tools"
    :class transient-column
    :setup-children claudemacs--setup-start-tool-suffixes]
@@ -2213,7 +2249,8 @@ Returns a list of parsed transient suffix objects."
   ["Resume Session\n"
    ("-d" "Skip permissions on start" "--dangerous-skip-permissions")
    ("-p" "Prompt for project root" "--prompt-project-root")
-   ("-f" "Add custom flag to start command" "" :class transient-option :prompt "Custom flag: ")]
+   ("-u" "Resume with UUID" "resume " :class transient-option :prompt "Session UUID: ")
+   ("-f" "Add custom command-line arguments" "" :class transient-option :prompt "Custom arguments: ")]
   ["Tools"
    :class transient-column
    :setup-children claudemacs--setup-resume-tool-suffixes]
