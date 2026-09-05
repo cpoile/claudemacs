@@ -768,8 +768,8 @@ identity merely because the value is non-nil."
                           'unknown)))))
       (claudemacs-session-list-test--kill-buffers buffer))))
 
-(ert-deftest claudemacs-session-list-test-mutated-live-exact-id-renders-unknown ()
-  "An externally mutated exact ID is sanitized to a literal `unknown'."
+(ert-deftest claudemacs-session-list-test-mutated-live-exact-id-keeps-three-columns ()
+  "An externally mutated exact ID is not added as a displayed column."
   :tags '(:unit :session-list :identity :liveness :presentation :errors)
   (let ((buffer (claudemacs-session-list-test--session-buffer
                  "*claudemacs:codex:mutated-id*"
@@ -789,8 +789,10 @@ identity merely because the value is non-nil."
               (setq-local claudemacs--session-list-rows (list row))
               (let* ((entry (car (claudemacs--session-list--entries)))
                      (cells (cadr entry)))
-                (should (equal (substring-no-properties (aref cells 2))
-                               "unknown"))))))
+                (should (= (length cells) 3))
+                (should (string-match-p
+                         "mutated-id"
+                         (substring-no-properties (aref cells 2))))))))
       (claudemacs-session-list-test--kill-buffers buffer))))
 
 (ert-deftest claudemacs-session-list-test-resume-uses-prompted-project-directory ()
@@ -1476,8 +1478,8 @@ identity merely because the value is non-nil."
         (should (string-match-p "one/app" (format "%S" one)))
         (should (string-match-p "two/app" (format "%S" two)))))))
 
-(ert-deftest claudemacs-session-list-test-rendered-unknown-id-is-literal ()
-  "The unknown identity cell renders the literal text `unknown'."
+(ert-deftest claudemacs-session-list-test-unknown-id-is-not-rendered ()
+  "An unknown identity remains available to row selection but is not shown."
   :tags '(:unit :session-list :presentation :identity)
   (let ((row (claudemacs-session-list-test--make-live-row
               :tool 'codex :session-id nil :identity 'unknown
@@ -1486,9 +1488,12 @@ identity merely because the value is non-nil."
       (claudemacs-session-list-mode)
       (setq-local claudemacs--session-list-rows (list row))
       (let* ((entry (car (claudemacs--session-list--entries)))
-             (cells (cadr entry))
-             (id-cell (aref cells 2)))
-        (should (equal (substring-no-properties id-cell) "unknown"))))))
+             (cells (cadr entry)))
+        (should (= (length cells) 3))
+        (should-not
+         (seq-some (lambda (cell)
+                     (equal (substring-no-properties cell) "unknown"))
+                   (append cells nil)))))))
 
 (ert-deftest claudemacs-session-list-test-path-help-echo-retains-full-cwd ()
   "A shortened project cell carries the complete path as help-echo."
@@ -1648,7 +1653,7 @@ identity merely because the value is non-nil."
         (with-current-buffer (get-buffer "*Claudemacs Sessions*")
           (should (derived-mode-p 'tabulated-list-mode))
           (should (equal (mapcar #'car (append tabulated-list-format nil))
-                         '("Workspace" "Tool instance" "Session ID" "Project")))
+                         '("Workspace" "Tool instance" "Project")))
           (should (eq (local-key-binding (kbd "g"))
                       #'claudemacs-session-list-refresh))
           (should (eq (local-key-binding (kbd "RET"))

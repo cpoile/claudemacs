@@ -462,9 +462,9 @@ Switches available in submenus:
 
 ### Session list
 
-Run `M-x claudemacs-session-list` (or press `l` in the Claudemacs transient) to view currently live Claudemacs buffers in one table. Each row represents a running terminal-backed session and shows four honest columns: workspace, tool instance, session ID, and project directory.
+Run `M-x claudemacs-session-list` (or press `l` in the Claudemacs transient) to view currently live Claudemacs buffers in one table. Each row represents a running terminal-backed session and shows three columns: workspace, tool instance, and project directory. Session IDs remain internal row keys for visiting the live session.
 
-Press `RET` to visit the selected live session and `g` to refresh the list. Sessions whose terminal process has exited disappear on refresh; this command does not display CLI history or historical rows. If Claudemacs cannot determine a session ID safely, it displays `unknown` rather than guessing from recency or the project directory. New or forked Codex sessions remain `unknown`; explicit Codex resumes display the selected authoritative ID.
+Press `RET` to visit the selected live session and `g` to refresh the list. Sessions whose terminal process has exited disappear on refresh; this command does not display CLI history or historical rows. If Claudemacs cannot determine a session ID safely, it keeps that row's identity as `unknown` rather than guessing from recency or the project directory. New or forked Codex sessions remain `unknown` internally; explicit Codex resumes retain the selected authoritative ID.
 
 
 ### Customization
@@ -478,18 +478,60 @@ Configure which AI coding tools are available:
 ```elisp
 ;; Default registry includes Claude, Codex, and Gemini
 (setq claudemacs-tool-registry
-  '((claude :program "claude" :switches nil)
-    (codex :program "codex" :switches nil)
+  '((claude :program "claude" :switches nil
+            :model-types (("opus-max" :model "opus" :effort "max")
+                          ("sonnet-high" :model "sonnet" :effort "high")))
+    (codex :program "codex" :switches nil
+           :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
+                         ("sol-high" :model "gpt-5.6-sol" :effort "high")))
     (gemini :program "gemini-cli" :switches nil)))
 
 ;; Add a custom tool or modify switches
 (setq claudemacs-tool-registry
-  '((claude :program "claude" :switches ("--verbose"))
-    (codex :program "codex" :switches nil)
+  '((claude :program "claude" :switches ("--verbose")
+            :model-types (("opus-max" :model "opus" :effort "max")
+                          ("sonnet-high" :model "sonnet" :effort "high")))
+    (codex :program "codex" :switches nil
+           :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
+                         ("sol-high" :model "gpt-5.6-sol" :effort "high")))
     (aider :program "aider" :switches ("--no-auto-commits"))))
 
 ;; Set the default tool (default: 'claude)
 (setq claudemacs-default-tool 'claude)
+```
+
+The configured model is shown beside each tool in the start-session menu by
+default, along with the `m` (`Toggle model type`) menu item.  Disable it with:
+
+```elisp
+(setq claudemacs-show-model-in-menu nil)
+```
+
+When enabled, Claudemacs reads Codex's default `model` and
+`model_reasoning_effort` from `~/.codex/config.toml`.  It reads Claude Code's
+optional `model` and `effortLevel` from `~/.claude/settings.json`, falling back
+to the current `sonnet` alias when no model is configured.  The model text is
+shown in comment-face.  Press `m` in the start menu to cycle the configured
+model types from each tool's configuration; the selection lasts only for the
+current menu invocation and applies only to newly started sessions.
+
+Model types are `(NAME PLIST)` entries in each tool's registry plist.  The
+standard `:model` and `:effort` keys are translated for Claude Code and Codex;
+use `:switches` for a tool-specific command-line form.  For example, this is
+a complete custom setting suitable for an `init.el`:
+
+```elisp
+(setq claudemacs-tool-registry
+  '((claude :program "claude" :switches nil
+            :model-types (("careful" :model "opus" :effort "max")
+                          ("quick" :model "sonnet" :effort "medium")))
+    (codex :program "codex" :switches nil
+           :model-types (("local-fast"
+                          :switches ("--model" "gpt-5.6-sol"
+                                     "--config" "model_reasoning_effort=\"high\""))
+                         ("local-deep"
+                          :switches ("--model" "gpt-5.6-luna"
+                                     "--config" "model_reasoning_effort=\"max\"")))))
 ```
 
 #### Basic Configuration

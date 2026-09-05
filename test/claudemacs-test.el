@@ -587,6 +587,22 @@ The file is automatically cleaned up after BODY executes."
   (let ((claudemacs-codex-notification-switches nil))
     (should-not (claudemacs--get-tool-notification-switches 'codex))))
 
+(ert-deftest claudemacs-test-ghostel-claude-enables-native-cursor ()
+  "Ghostel Claude sessions use Claude Code's terminal cursor path."
+  :tags '(:unit :ghostel :terminal-backend)
+  (let ((process-environment
+         (list "CLAUDE_CODE_ACCESSIBILITY=0" "PATH=/bin")))
+    (claudemacs--configure-terminal-process-environment 'claude 'ghostel)
+    (should (equal (getenv "CLAUDE_CODE_ACCESSIBILITY") "1"))))
+
+(ert-deftest claudemacs-test-non-ghostel-does-not-change-cursor-environment ()
+  "The Ghostel cursor workaround does not affect other sessions."
+  :tags '(:unit :terminal-backend)
+  (let ((process-environment
+         (list "CLAUDE_CODE_ACCESSIBILITY=0" "PATH=/bin")))
+    (claudemacs--configure-terminal-process-environment 'claude 'eat)
+    (should (equal (getenv "CLAUDE_CODE_ACCESSIBILITY") "0"))))
+
 (ert-deftest claudemacs-test-ghostel-submit-separates-text-and-return ()
   "Test that programmatic Ghostel submission creates an input boundary."
   :tags '(:unit :ghostel :terminal-backend)
@@ -964,6 +980,220 @@ The file is automatically cleaned up after BODY executes."
     (dolist (buf '("*claudemacs:claude:main*" "*claudemacs:codex:main*"))
       (when (get-buffer buf)
         (kill-buffer buf)))))
+
+;;; Model Menu Tests
+
+(ert-deftest claudemacs-test-model-menu-is-off-by-default ()
+  "The start menu does not read or display model information by default."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-show-model-in-menu nil))
+    (should-not (claudemacs--model-type-toggle-visible-p))
+    (should (string-match-p
+             ":if claudemacs--model-type-toggle-visible-p"
+             (format "%S" (get 'claudemacs-start-menu 'transient--layout))))
+    (should-not (string-match-p "gpt-5.6"
+                                (claudemacs--get-tool-start-description
+                                 'codex t)))))
+
+(ert-deftest claudemacs-test-model-menu-displays-configured-model ()
+  "The enabled start menu displays the configured model in comment face."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-show-model-in-menu t)
+        (claudemacs-tool-registry
+         '((codex :program "codex" :switches nil))))
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (_tool) '(:model "gpt-test" :effort "high"))))
+      (let ((description (claudemacs--get-tool-start-description 'codex t)))
+        (should (string-match-p "gpt-test/high" description))
+        (should (eq (get-text-property
+                     (string-match "gpt-test/high" description)
+                     'face description)
+                    'font-lock-comment-face))))))
+
+(ert-deftest claudemacs-test-model-type-switches-are-tool-specific ()
+  "Model types translate to the correct switches for each supported tool."
+  :tags '(:unit :model-menu)
+  (should (equal
+           (claudemacs--model-type-switches
+            'codex '("deep" :model "gpt-test" :effort "max"))
+           '("--model" "gpt-test" "--config"
+             "model_reasoning_effort=\"max\"")))
+  (should (equal
+           (claudemacs--model-type-switches
+            'claude '("deep" :model "opus" :effort "max"))
+           '("--model" "opus" "--effort" "max"))))
+
+(ert-deftest claudemacs-test-model-type-display-uses-preset-name ()
+  "Model type displays use the preset name."
+  :tags '(:unit :model-menu)
+  (should (equal
+           (claudemacs--format-model-type-display
+            '("sol-high" :model "gpt-5.6-sol" :effort "high"))
+           "sol-high")))
+
+(ert-deftest claudemacs-test-configured-model-display-uses-matching-preset ()
+  "A configured model uses its preset display when it exactly matches."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-tool-registry
+         '((codex :model-types
+                  (("luna-max" :model "gpt-5.6-luna" :effort "max"))))))
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (_tool) '(:model "gpt-5.6-luna" :effort "max"))))
+      (should (equal (claudemacs--get-tool-model-display 'codex)
+                     "luna-max")))))
+
+(ert-deftest claudemacs-test-toggle-model-type-cycles-and-refreshes ()
+  "Toggling selects successive model types and refreshes an active menu."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-show-model-in-menu t)
+        (claudemacs--model-type-offset nil)
+        (claudemacs-default-tool 'codex)
+        (claudemacs-tool-registry
+         '((codex :program "codex" :switches nil
+                  :model-types (("first" :model "one")
+                                ("second" :model "two")))))
+        refresh-count)
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (_tool) '(:model "one")))
+              ((symbol-function 'transient--refresh-transient)
+               (lambda () (setq refresh-count (1+ (or refresh-count 0))))))
+      (claudemacs-toggle-model-type)
+      (should (= claudemacs--model-type-offset 1))
+      (should (equal (claudemacs--model-type-name
+                      (claudemacs--model-type-for-tool 'codex))
+                     "second"))
+      (claudemacs-toggle-model-type)
+      (should (= claudemacs--model-type-offset 2))
+      (should-not (claudemacs--model-type-for-tool 'codex))
+      ;; No active transient prefix means the refresh hook is not required.
+      (should-not refresh-count))))
+
+(ert-deftest claudemacs-test-model-type-cycle-includes-unmatched-default ()
+  "An unmatched configured model is followed by all types before wrapping."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-tool-registry
+         '((codex :model-types (("first" :model "one")
+                                ("second" :model "two"))))))
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (_tool) '(:model "configured-default"))))
+      (should-not (claudemacs--model-type-for-tool-at-offset 'codex nil))
+      (should-not (claudemacs--model-type-for-tool-at-offset 'codex 0))
+      (should (equal
+               (claudemacs--model-type-name
+                (claudemacs--model-type-for-tool-at-offset 'codex 1))
+               "first"))
+      (should (equal
+               (claudemacs--model-type-name
+                (claudemacs--model-type-for-tool-at-offset 'codex 2))
+               "second"))
+      (should-not (claudemacs--model-type-for-tool-at-offset 'codex 3))
+      (should (equal
+               (claudemacs--model-type-name
+                (claudemacs--model-type-for-tool-at-offset 'codex 4))
+               "first")))))
+
+(ert-deftest claudemacs-test-model-type-cycles-are-independent-per-tool ()
+  "Each tool wraps according to its own default-and-types cycle."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs--model-type-offset nil)
+        (claudemacs-default-tool 'tool-one)
+        (claudemacs-tool-registry
+         '((tool-one :model-types (("one-first" :model "one-first")
+                                   ("one-second" :model "one-second")))
+           ;; The configured default is already the first listed type, so
+           ;; this tool has two unique positions: default and one-other.
+           (tool-two :model-types (("two-default" :model "two-default")
+                                   ("two-other" :model "two-other"))))))
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (tool)
+                 (if (eq tool 'tool-one)
+                     '(:model "one-default")
+                   '(:model "two-default")))))
+      (should (= (claudemacs--model-type-cycle-length 'tool-one) 3))
+      (should (= (claudemacs--model-type-cycle-length 'tool-two) 2))
+      (should (= (claudemacs--model-type-count) 3))
+      (let ((model-name
+             (lambda (tool)
+               (let ((model-type (claudemacs--model-type-for-tool tool)))
+                 (and model-type
+                      (claudemacs--model-type-name model-type))))))
+        (should-not (funcall model-name 'tool-one))
+        (should-not (funcall model-name 'tool-two))
+        ;; Offset 1: both tools advance from their defaults.
+        (claudemacs-toggle-model-type)
+        (should (equal (funcall model-name 'tool-one) "one-first"))
+        (should (equal (funcall model-name 'tool-two) "two-other"))
+        ;; Offset 2: tool-one selects its second type while tool-two wraps.
+        (claudemacs-toggle-model-type)
+        (should (equal (funcall model-name 'tool-one) "one-second"))
+        (should-not (funcall model-name 'tool-two))
+        ;; Offset 3: tool-one wraps while tool-two advances again.
+        (claudemacs-toggle-model-type)
+        (should-not (funcall model-name 'tool-one))
+        (should (equal (funcall model-name 'tool-two) "two-other"))
+        ;; Offset 4: both continue their own cycles.
+        (claudemacs-toggle-model-type)
+        (should (equal (funcall model-name 'tool-one) "one-first"))
+        (should-not (funcall model-name 'tool-two))))))
+
+(ert-deftest claudemacs-test-start-menu-adds-selected-model-switches ()
+  "Starting a tool from the menu passes its selected model switches."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-show-model-in-menu t)
+        (claudemacs--model-type-offset 1)
+        (claudemacs-tool-registry
+         '((codex :program "codex" :switches nil
+                  :model-types (("first" :model "one")
+                                ("second" :model "two")))))
+        observed)
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (_tool) '(:model "one")))
+              ((symbol-function 'transient-args) (lambda (_prefix) nil))
+              ((symbol-function 'claudemacs--run-with-args)
+               (lambda (_tool _directory &rest args)
+                 (setq observed args))))
+      (claudemacs--start-tool-by-index 0)
+      (should (equal observed '("--model" "two"))))))
+
+(ert-deftest claudemacs-test-model-toggle-starts-from-each-tool-config ()
+  "The first toggle advances each tool from its own configured model."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs-show-model-in-menu t)
+        (claudemacs--model-type-offset nil)
+        (claudemacs-default-tool 'claude)
+        (claudemacs-tool-registry
+         '((claude :model-types (("opus-max" :model "opus" :effort "max")
+                                ("sonnet-high" :model "sonnet" :effort "high")))
+           (codex :model-types (("luna-max" :model "luna" :effort "max")
+                                ("sol-high" :model "sol" :effort "high"))))))
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (tool)
+                 (if (eq tool 'claude)
+                     '(:model "sonnet" :effort "medium")
+                   '(:model "luna" :effort "max")))))
+      (should (equal (claudemacs--get-tool-model-display 'claude)
+                     "sonnet-medium"))
+      (should (equal (claudemacs--get-tool-model-display 'codex)
+                     "luna-max"))
+      (claudemacs-toggle-model-type)
+      (should (equal (claudemacs--model-type-name
+                      (claudemacs--model-type-for-tool 'claude))
+                     "opus-max"))
+      (should (equal (claudemacs--model-type-name
+                      (claudemacs--model-type-for-tool 'codex))
+                     "sol-high"))
+      (should (string-match-p
+               "sonnet-high"
+               (claudemacs--get-toggle-model-type-description)))
+      (claudemacs-toggle-model-type)
+      (should (= claudemacs--model-type-offset 2))
+      (should (equal (claudemacs--model-type-name
+                      (claudemacs--model-type-for-tool 'claude))
+                     "sonnet-high"))
+      (should-not (claudemacs--model-type-for-tool 'codex))
+      (should (string-match-p
+               "sonnet-medium"
+               (claudemacs--get-toggle-model-type-description))))))
 
 ;;; Description Function Safety Tests
 

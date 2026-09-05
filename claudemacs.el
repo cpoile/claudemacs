@@ -169,22 +169,54 @@ E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
   :group 'claudemacs)
 
 (defcustom claudemacs-tool-registry
-  '((claude :program "claude" :switches nil)
-    (codex :program "codex" :switches nil)
+  '((claude :program "claude" :switches nil
+            :model-types (("opus-high" :model "opus" :effort "high")
+                          ("sonnet-high" :model "sonnet" :effort "high")))
+    (codex :program "codex" :switches nil
+           :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
+                         ("sol-high" :model "gpt-5.6-sol" :effort "high")))
     (gemini :program "gemini-cli" :switches nil))
   "Registry of AI coding tools available for use with claudemacs.
 Each entry is a list of the form (TOOL-NAME PLIST) where PLIST contains:
   :program  - The name or path of the tool's executable
   :switches - List of command line switches to pass to the program
+  :model-types - Optional list of (NAME PLIST) model choices.  The model
+                plist may contain :model, :effort, and/or :switches.
+
+When `claudemacs-show-model-in-menu' is non-nil, model types are available
+from the start-session menu.  `:model' and `:effort' are translated to the
+appropriate command-line switches for Claude Code and Codex.  Use `:switches'
+when a tool needs custom model-selection arguments.
 
 Example:
-  ((claude :program \"claude\" :switches nil)
-   (codex :program \"codex\" :switches '(\"--model\" \"gpt-4\"))
+  ((claude :program \"claude\" :switches nil
+           :model-types ((\"opus-max\" :model \"opus\" :effort \"max\")))
+   (codex :program \"codex\" :switches '(\"--model\" \"gpt-4\")
+          :model-types ((\"fast\" :switches (\"--model\" \"gpt-4\"))))
    (gemini :program \"gemini\" :switches nil)
    (aider :program \"aider\" :switches '(\"--no-auto-commits\")))"
   :type '(alist :key-type symbol
                 :value-type (plist :key-type symbol :value-type sexp))
   :group 'claudemacs)
+
+(defcustom claudemacs-show-model-in-menu 't
+  "Whether to show model information in the start-session menu.
+When non-nil, each tool in `claudemacs-start-menu' shows the model it will
+use in `font-lock-comment-face'.  Codex reads its default model and reasoning
+effort from `~/.codex/config.toml'; Claude Code reads its model and effort
+from `~/.claude/settings.json' when those values are present.
+
+The setting also adds a \"Toggle model type\" menu item.  That item cycles
+through the `:model-types' choices in `claudemacs-tool-registry'.  The
+selected choice is applied only to newly started sessions."
+  :type 'boolean
+  :group 'claudemacs)
+
+(defvar claudemacs--model-type-offset nil
+  "Menu-local number of model-type steps from each tool's configured default.
+Nil means that each tool's configured default should be used.  A numeric
+value is reset whenever the start menu is opened and advances each tool's
+configured model through its own `:model-types' list.")
 
 (defcustom claudemacs-default-tool 'claude
   "The default AI coding tool to use when starting a new session.
@@ -454,6 +486,296 @@ Then falls back to `vc-git-root', then to the directory itself."
   "Get the configuration plist for TOOL from `claudemacs-tool-registry'.
 Returns nil if the tool is not found in the registry."
   (cdr (assq tool claudemacs-tool-registry)))
+
+(defun claudemacs--read-setting-from-file (file regexp)
+  "Read the first captured value matching REGEXP from FILE.
+Return nil when FILE cannot be read or REGEXP does not match.  This small
+reader is intentionally limited to the scalar settings needed for the menu;
+it avoids adding a TOML dependency just to inspect Codex's default model."
+  (condition-case nil
+      (when (file-readable-p file)
+        (with-temp-buffer
+          (insert-file-contents-literally file)
+          (goto-char (point-min))
+          (when (re-search-forward regexp nil t)
+            (match-string-no-properties 1))))
+    (error nil)))
+
+(defun claudemacs--get-tool-configured-model (tool)
+  "Return TOOL's configured model and effort as a plist.
+Codex stores these values in `~/.codex/config.toml'.  Claude Code stores an
+optional model and effort level in `~/.claude/settings.json'; its documented
+CLI default is the latest Sonnet alias when no model is configured."
+  (let* ((tool-config (claudemacs--get-tool-config tool))
+         (configured-model (plist-get tool-config :model))
+         (configured-effort (or (plist-get tool-config :effort)
+                                (plist-get tool-config :reasoning-effort))))
+    (cond
+     ((or configured-model configured-effort)
+      (list :model configured-model :effort configured-effort))
+     ((eq tool 'codex)
+      (list :model
+            (claudemacs--read-setting-from-file
+             (expand-file-name "~/.codex/config.toml")
+             "^[[:space:]]*model[[:space:]]*=[[:space:]]*[\"']\\([^\"']+\\)[\"']")
+            :effort
+            (claudemacs--read-setting-from-file
+             (expand-file-name "~/.codex/config.toml")
+             "^[[:space:]]*model_reasoning_effort[[:space:]]*=[[:space:]]*[\"']\\([^\"']+\\)[\"']")))
+     ((eq tool 'claude)
+      (list :model
+            (or (getenv "ANTHROPIC_MODEL")
+                (claudemacs--read-setting-from-file
+                 (expand-file-name "~/.claude/settings.json")
+                 "\"model\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")
+                "sonnet")
+            :effort
+            (or (claudemacs--read-setting-from-file
+                 (expand-file-name "~/.claude/settings.json")
+                 "\"effortLevel\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")
+                (claudemacs--read-setting-from-file
+                 (expand-file-name "~/.claude/settings.json")
+                 "\"effort\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\""))))
+     (t nil))))
+
+(defun claudemacs--get-tool-model-types (tool)
+  "Return the model types configured for TOOL, or nil."
+  (let ((model-types (plist-get (claudemacs--get-tool-config tool)
+                                :model-types)))
+    (and (listp model-types) model-types)))
+
+(defun claudemacs--model-type-plist (model-type)
+  "Return the options plist from MODEL-TYPE.
+The preferred form is (NAME :model MODEL :effort EFFORT).  A plist beginning
+with a keyword and a bare string model name are also accepted for convenient
+custom tool configurations."
+  (cond
+   ((and (listp model-type) (keywordp (car model-type))) model-type)
+   ((consp model-type) (cdr model-type))
+   (t nil)))
+
+(defun claudemacs--model-type-name (model-type)
+  "Return the display name for MODEL-TYPE."
+  (let* ((plist (claudemacs--model-type-plist model-type))
+         (name (or (plist-get plist :name)
+                   (and (consp model-type) (car model-type))
+                   (plist-get plist :model))))
+    (cond
+     ((stringp model-type) model-type)
+     ((symbolp name) (symbol-name name))
+     ((stringp name) name)
+     (name (format "%s" name))
+     (t "default"))))
+
+(defun claudemacs--model-type-model (model-type)
+  "Return the model identifier represented by MODEL-TYPE."
+  (let* ((plist (claudemacs--model-type-plist model-type))
+         (model (or (plist-get plist :model)
+                    (and (stringp model-type) model-type)
+                    (and (consp model-type)
+                         (or (stringp (car model-type))
+                             (symbolp (car model-type)))
+                         (car model-type)))))
+    (cond
+     ((stringp model) model)
+     ((symbolp model) (symbol-name model))
+     (model (format "%s" model))
+     (t nil))))
+
+(defun claudemacs--model-type-effort (model-type)
+  "Return the reasoning effort represented by MODEL-TYPE, if any."
+  (let ((plist (claudemacs--model-type-plist model-type)))
+    (or (plist-get plist :effort)
+        (plist-get plist :reasoning-effort))))
+
+(defun claudemacs--model-type-switches (tool model-type)
+  "Return command-line switches for MODEL-TYPE of TOOL.
+An explicit `:switches' value is used verbatim.  Otherwise the standard
+Claude Code and Codex model/effort switches are generated."
+  (let* ((plist (claudemacs--model-type-plist model-type))
+         (explicit-switches (plist-get plist :switches))
+         (model (claudemacs--model-type-model model-type))
+         (effort (claudemacs--model-type-effort model-type)))
+    (cond
+     (explicit-switches
+      (if (listp explicit-switches)
+          (copy-sequence explicit-switches)
+        (list explicit-switches)))
+     ((null model) nil)
+     ((eq tool 'codex)
+      (append (list "--model" model)
+              (when effort
+                (list "--config"
+                      (format "model_reasoning_effort=%S" effort)))))
+     ((eq tool 'claude)
+      (append (list "--model" model)
+              (when effort (list "--effort" (format "%s" effort)))))
+     (t (list "--model" model)))))
+
+(defun claudemacs--model-type-for-tool-at-offset (tool offset)
+  "Return TOOL's model type OFFSET steps after its configured model.
+Return nil when OFFSET is nil, meaning that TOOL's configuration should be
+used without a command-line override.  If the configured model is not one of
+TOOL's model types, the cycle is the configured default followed by each
+configured type."
+  (let* ((model-types (claudemacs--get-tool-model-types tool))
+         (configured-index (and model-types
+                                (claudemacs--model-type-index-for-config tool))))
+    (when model-types
+      (let* ((cycle (cons nil
+                          (if (numberp configured-index)
+                              (append
+                               (nthcdr (1+ configured-index) model-types)
+                               (cl-subseq model-types 0 configured-index))
+                            model-types)))
+             (position (and (numberp offset)
+                            (mod offset (length cycle)))))
+        (and position (nth position cycle))))))
+
+(defun claudemacs--model-type-for-tool (tool)
+  "Return TOOL's currently selected model type, or nil.
+The current selection is local to the active start-menu invocation; nil means
+that TOOL's own configuration should be used."
+  (claudemacs--model-type-for-tool-at-offset
+   tool claudemacs--model-type-offset))
+
+(defun claudemacs--model-type-index-for-config (tool)
+  "Return the model-type index matching TOOL's configured model and effort.
+Return nil when either value differs from every configured model type."
+  (let ((configured (claudemacs--get-tool-configured-model tool)))
+    (when configured
+      (cl-loop with configured-model = (plist-get configured :model)
+               with configured-effort = (plist-get configured :effort)
+               for model-type in (claudemacs--get-tool-model-types tool)
+               for index from 0
+               for model = (claudemacs--model-type-model model-type)
+               for effort = (claudemacs--model-type-effort model-type)
+               when (and configured-model
+                         (equal configured-model model)
+                         (equal configured-effort effort))
+               return index))))
+
+(defun claudemacs--model-type-for-config (tool)
+  "Return TOOL's configured model type, if it matches one exactly."
+  (let* ((model-types (claudemacs--get-tool-model-types tool))
+         (index (and model-types
+                     (claudemacs--model-type-index-for-config tool))))
+    (and (numberp index)
+         (nth index model-types))))
+
+(defun claudemacs--model-type-cycle-length (tool)
+  "Return the number of toggle positions for TOOL."
+  (let ((model-types (claudemacs--get-tool-model-types tool)))
+    (when model-types
+      (+ (length model-types)
+         (if (numberp (claudemacs--model-type-index-for-config tool)) 0 1)))))
+
+(defun claudemacs--model-type-count ()
+  "Return the largest model-type cycle across the tool registry."
+  (let ((counts (delq nil
+                      (mapcar (lambda (entry)
+                                (claudemacs--model-type-cycle-length (car entry)))
+                              claudemacs-tool-registry))))
+    (if counts (apply #'max counts) 0)))
+
+(defun claudemacs--model-type-reference-tool ()
+  "Return a tool to use for model-type toggle labels and cycling."
+  (or (and (claudemacs--get-tool-model-types claudemacs-default-tool)
+           claudemacs-default-tool)
+      (cl-loop for entry in claudemacs-tool-registry
+               when (claudemacs--get-tool-model-types (car entry))
+               return (car entry))))
+
+(defun claudemacs--model-type-toggle-available-p ()
+  "Return non-nil when at least two model types are configured."
+  (> (claudemacs--model-type-count) 1))
+
+(defun claudemacs--model-type-toggle-visible-p ()
+  "Return non-nil when the model-type toggle belongs in the start menu."
+  (and claudemacs-show-model-in-menu
+       (claudemacs--model-type-toggle-available-p)))
+
+(defun claudemacs--format-model-type-display (model-type)
+  "Return MODEL-TYPE's preset name for display."
+  (claudemacs--model-type-name model-type))
+
+(defun claudemacs--get-tool-configured-model-short-name (tool)
+  "Return a preset-style short name for TOOL's configured model, if possible.
+Use an exact configured preset name when one exists.  Otherwise derive the
+same MODEL-EFFORT form used by the model-type names when TOOL has model types."
+  (let* ((configured (claudemacs--get-tool-configured-model tool))
+         (model-type (claudemacs--model-type-for-config tool))
+         (model (plist-get configured :model))
+         (effort (plist-get configured :effort)))
+    (or (and model-type
+             (claudemacs--model-type-name model-type))
+        (and (claudemacs--get-tool-model-types tool)
+             model
+             (cond
+              (effort (format "%s-%s" model effort))
+              ((and (stringp model)
+                    (string-match-p "\\`[^/]+/[^/]+\\'" model))
+               (replace-regexp-in-string "/" "-" model)))))))
+
+(defun claudemacs--get-tool-configured-model-display (tool)
+  "Return TOOL's actual configured model and effort for display."
+  (or (claudemacs--get-tool-configured-model-short-name tool)
+      (let ((configured (claudemacs--get-tool-configured-model tool)))
+        (if (plist-get configured :model)
+            (if (plist-get configured :effort)
+                (format "%s/%s"
+                        (plist-get configured :model)
+                        (plist-get configured :effort))
+              (plist-get configured :model))
+          "default"))))
+
+(defun claudemacs--get-tool-model-display (tool)
+  "Return the model text to show for TOOL in the start menu."
+  (let ((model-type (claudemacs--model-type-for-tool tool)))
+    (if model-type
+        (claudemacs--format-model-type-display model-type)
+      (claudemacs--get-tool-configured-model-display tool))))
+
+(defun claudemacs--get-toggle-model-type-description ()
+  "Return the dynamic description for the model-type toggle suffix."
+  (let* ((tool (claudemacs--model-type-reference-tool))
+         (model-types (and tool (claudemacs--get-tool-model-types tool)))
+         (count (claudemacs--model-type-count))
+         (current-offset (or claudemacs--model-type-offset 0))
+         (next-offset (and (> count 1) (1+ current-offset)))
+         (next (and tool next-offset
+                    (claudemacs--model-type-for-tool-at-offset
+                     tool next-offset))))
+    (if next
+        (format "Toggle model type (→ %s)"
+                (propertize (claudemacs--model-type-name next)
+                            'face 'font-lock-comment-face))
+      (if model-types
+          (format "Toggle model type (→ %s)"
+                  (propertize (claudemacs--get-tool-configured-model-display tool)
+                              'face 'font-lock-comment-face))
+        "Toggle model type"))))
+
+(defun claudemacs--reset-model-type-state ()
+  "Reset the model-type selection for the next start-menu invocation."
+  (setq claudemacs--model-type-offset nil))
+
+(defun claudemacs-toggle-model-type ()
+  "Advance every tool to its next model type for this menu invocation.
+Each tool advances from the model read from its own configuration.  The
+selection is reset when the start menu is opened again."
+  (interactive)
+  (let* ((tool (claudemacs--model-type-reference-tool))
+         (model-types (and tool (claudemacs--get-tool-model-types tool)))
+         (count (claudemacs--model-type-count)))
+    (if (or (null model-types) (<= count 1))
+        (user-error "No alternative model types are configured")
+      (let ((next-offset (1+ (or claudemacs--model-type-offset 0))))
+        (setq claudemacs--model-type-offset next-offset)
+        (when (and (boundp 'transient--prefix)
+                   transient--prefix
+                   (fboundp 'transient--refresh-transient))
+          (transient--refresh-transient))))))
 
 (defun claudemacs--get-tool-notification-switches (tool)
   "Get notification-related command-line switches for TOOL.
@@ -1347,6 +1669,17 @@ the return-key options cannot leave stale bindings behind."
 Falls back to '/bin/sh' if SHELL environment variable is not set."
   (or (getenv "SHELL") "/bin/sh"))
 
+(defun claudemacs--configure-terminal-process-environment (tool backend)
+  "Apply terminal-specific environment settings for TOOL and BACKEND.
+
+Claude Code's normal prompt renderer draws its own cursor indicator.  Ghostel
+provides the terminal cursor to Emacs, so use Claude Code's accessibility
+cursor path for Ghostel sessions to avoid leaving the renderer's indicator at
+the prompt's original position while retaining the real Emacs cursor."
+  (when (and (eq tool 'claude)
+             (eq backend 'ghostel))
+    (setenv "CLAUDE_CODE_ACCESSIBILITY" "1")))
+
 (defun claudemacs--argument-value (args flag)
   "Return the string value following FLAG in ARGS, or nil.
 
@@ -1439,6 +1772,8 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
           (append claudemacs-process-environment process-environment)))
+    (claudemacs--configure-terminal-process-environment
+     tool-name terminal-backend)
     ;; Verify program exists before attempting to start
     (unless (or use-shell-env (executable-find program))
       (kill-buffer buffer)
@@ -2140,15 +2475,22 @@ Shows which tool will be resumed."
      "Smart Resume")))
 
 (defun claudemacs--get-tool-start-description (tool &optional is-default)
-  "Get the description for starting TOOL, showing next instance name.
-If IS-DEFAULT is non-nil, append a default indicator."
+  "Get the description for starting TOOL.
+Show the next instance name, the configured model when enabled, and a default
+indicator when IS-DEFAULT is non-nil."
   (let* ((next-instance (claudemacs--get-next-instance-number tool))
-         (instance-name (claudemacs--format-tool-instance-name tool next-instance)))
-    (if is-default
-        (format "%s %s"
-                (propertize instance-name 'face 'claudemacs-tool-name-face)
-                (propertize "(default)" 'face 'font-lock-comment-face))
-      (propertize instance-name 'face 'claudemacs-tool-name-face))))
+         (instance-name (claudemacs--format-tool-instance-name tool next-instance))
+         (model-description
+          (when claudemacs-show-model-in-menu
+            (propertize
+             (format "(%s)" (claudemacs--get-tool-model-display tool))
+             'face 'font-lock-comment-face)))
+         (default-description
+          (when is-default
+            (propertize "(default)" 'face 'font-lock-comment-face))))
+    (concat (propertize instance-name 'face 'claudemacs-tool-name-face)
+            (when model-description (concat " " model-description))
+            (when default-description (concat " " default-description)))))
 
 (defun claudemacs--get-tool-resume-description (tool &optional is-default)
   "Get the description for resuming TOOL, showing next instance name with (resume).
@@ -2171,8 +2513,14 @@ INDEX is 0-based."
       (let* ((args (transient-args 'claudemacs-start-menu))
              (prompt-for-dir (member "--prompt-project-root" args))
              (filtered-args (remove "--prompt-project-root" args))
-             (expanded-args (claudemacs--expand-transient-args filtered-args)))
-        (apply #'claudemacs--run-with-args tool prompt-for-dir expanded-args)))))
+             (expanded-args (claudemacs--expand-transient-args filtered-args))
+             (model-type (and claudemacs-show-model-in-menu
+                              (claudemacs--model-type-for-tool tool)))
+             (model-switches (and model-type
+                                  (claudemacs--model-type-switches
+                                   tool model-type))))
+        (apply #'claudemacs--run-with-args tool prompt-for-dir
+               (append expanded-args model-switches))))))
 
 (defun claudemacs--resume-tool-by-index (index)
   "Resume the tool at INDEX using an explicit or selected history ID.
@@ -2238,10 +2586,20 @@ Returns a list of parsed transient suffix objects."
    ("-d" "Skip permissions on start" "--dangerous-skip-permissions")
    ("-p" "Prompt for project root" "--prompt-project-root")
    ("-f" "Add custom command-line arguments" "" :class transient-option :prompt "Custom arguments: ")]
+  ["Model"
+   :if claudemacs--model-type-toggle-visible-p
+   ("m" claudemacs--get-toggle-model-type-description
+    claudemacs-toggle-model-type
+    :if claudemacs--model-type-toggle-visible-p
+    :transient t)]
   ["Tools"
    :class transient-column
    :setup-children claudemacs--setup-start-tool-suffixes]
-  ["" ("<return>" "Start default tool" (lambda () (interactive) (claudemacs--start-tool-by-index 0)))])
+  ["" ("<return>" "Start default tool" (lambda () (interactive) (claudemacs--start-tool-by-index 0)))]
+  (interactive)
+  (claudemacs--reset-model-type-state)
+  (add-hook 'transient-post-exit-hook #'claudemacs--reset-model-type-state)
+  (transient-setup 'claudemacs-start-menu))
 
 ;;;###autoload (autoload 'claudemacs-resume-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-resume-menu ()

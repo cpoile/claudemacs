@@ -1440,8 +1440,6 @@ buffer name so every displayed live row remains independently visitable."
    (lambda (row)
      (let* ((cwd (plist-get row :cwd))
             (project (and cwd (abbreviate-file-name cwd)))
-            (id (or (plist-get row :session-id)
-                    claudemacs--session-list-unknown-label))
             (workspace (or (plist-get row :workspace) "—"))
             (instance (or (plist-get row :instance)
                           (and (plist-get row :tool)
@@ -1451,7 +1449,6 @@ buffer name so every displayed live row remains independently visitable."
              (vector
               (claudemacs--session-list--cell workspace)
               (claudemacs--session-list--cell instance)
-              (claudemacs--session-list--cell id)
               (claudemacs--session-list--cell project cwd)))))
    claudemacs--session-list-rows))
 
@@ -1505,7 +1502,6 @@ refresh and `RET'."
         [
          ("Workspace" 20 t)
          ("Tool instance" 18 t)
-         ("Session ID" 42 t)
          ("Project" 48 t)])
   (setq tabulated-list-padding 2)
   (setq tabulated-list-sort-key '("Workspace" . t))
