@@ -446,7 +446,7 @@ associated with any history row.")
 (defun claudemacs--find-projectile-root (dir)
   "Find project root by looking for .projectile marker file from DIR.
 Returns the directory containing .projectile, or nil if not found."
-  (when-let ((root (locate-dominating-file dir ".projectile")))
+  (when-let* ((root (locate-dominating-file dir ".projectile")))
     (file-name-as-directory root)))
 
 (defun claudemacs--project-root (&optional dir)
@@ -1305,7 +1305,7 @@ otherwise falls back to the window that invoked the minibuffer."
     (lambda (action cand)
       (pcase action
         ('preview
-         (when-let ((buf (and cand (gethash cand lookup))))
+         (when-let* ((buf (and cand (gethash cand lookup))))
            (when (buffer-live-p buf)
              (when (window-live-p target-win)
                (with-selected-window target-win
@@ -1558,7 +1558,7 @@ Retries using RETRY-COUNT up to 10 times if the backend is not ready yet."
   "Set up or re-setup the completion notification handler.
 Use this if system notifications aren't working after starting a session."
   (interactive)
-  (if-let ((buffer (claudemacs--get-current-session-buffer)))
+  (if-let* ((buffer (claudemacs--get-current-session-buffer)))
       (with-current-buffer buffer
         (claudemacs--terminal-setup-buffer #'claudemacs--bell-handler)
         (message "Bell handler configured for Claudemacs session"))
@@ -1686,7 +1686,7 @@ the prompt's original position while retaining the real Emacs cursor."
 The value is intentionally returned before validation so callers can reject
 empty, option-like, or otherwise unsafe IDs rather than silently treating
 them as absent."
-  (when-let ((tail (member flag args)))
+  (when-let* ((tail (member flag args)))
     (let ((value (cadr tail)))
       (when (stringp value)
         value))))

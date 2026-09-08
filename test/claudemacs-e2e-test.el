@@ -157,7 +157,7 @@ Returns the project directory path."
 Does NOT affect user's existing sessions."
   (claudemacs-e2e--log "Tracked test buffers: %S" claudemacs-e2e--test-buffers)
   (dolist (buf-name claudemacs-e2e--test-buffers)
-    (when-let ((buffer (get-buffer buf-name)))
+    (when-let* ((buffer (get-buffer buf-name)))
       (claudemacs-e2e--log "  Killing: %s" buf-name)
       (with-current-buffer buffer
         (when (ignore-errors (claudemacs--terminal-live-p))

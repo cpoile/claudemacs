@@ -77,7 +77,7 @@ to evaluate repeatedly during development."
   "Ensure BACKEND is loaded and globally initialized."
   (let ((operations (claudemacs--terminal-load-backend backend)))
     (unless (memq backend claudemacs--terminal-initialized-backends)
-      (when-let ((setup (plist-get operations :global-setup)))
+      (when-let* ((setup (plist-get operations :global-setup)))
         (funcall setup))
       (push backend claudemacs--terminal-initialized-backends))
     operations))

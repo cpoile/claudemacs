@@ -59,7 +59,7 @@
 (defun claudemacs--eat-start (buffer program switches)
   "Start PROGRAM with SWITCHES in Eat BUFFER and return its process."
   (with-current-buffer buffer
-    (when-let ((term (getenv "TERM")))
+    (when-let* ((term (getenv "TERM")))
       (setq-local eat-term-name term))
     (apply #'eat-make
            (substring (buffer-name buffer) 1 -1)
@@ -180,7 +180,7 @@
   (claudemacs--eat-force-redraw)
   (setq-local window-adjust-process-window-size-function
               'window-adjust-process-window-size-smallest)
-  (when-let ((window (get-buffer-window (current-buffer))))
+  (when-let* ((window (get-buffer-window (current-buffer))))
     (goto-char (point-min))
     (set-window-point window (point-min))
     (redisplay)
