@@ -449,6 +449,8 @@ Switches available in submenus:
 - `F` - Add current file reference to conversation
 - `a` - Add context (sends file:line or file:line-range without newline)
 
+When `x` or `X` is used from an active Ediff buffer, set `claudemacs-open-new-frame-for-ediff-requests` to non-nil to preserve the Ediff window layout.  Claudemacs shows the session in another frame; if the session is already displayed in a window, that window is reused.  The default is nil, so requests otherwise retain the normal behavior.
+
 **Quick Responses**
 - `y` - Send Yes (RET)
 - `n` - Send No (ESC)
@@ -559,6 +561,9 @@ a complete custom setting suitable for an `init.el`:
 
 ;; Whether to switch to Claudemacs buffer when adding context (default: t)
 (setq claudemacs-switch-to-buffer-on-add-context nil)
+
+;; Show x/X request sessions in a separate frame when invoked from Ediff (default: nil)
+(setq claudemacs-open-new-frame-for-ediff-requests t)
 
 ;; Whether to prefer projectile root over git root when available (default: nil)
 (setq claudemacs-prefer-projectile-root t)

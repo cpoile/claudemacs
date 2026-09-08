@@ -192,6 +192,87 @@ Returns the created buffer. Caller responsible for cleanup."
     ;; Should error on whitespace-only input
     (should-error (claudemacs-ask-without-context))))
 
+(ert-deftest claudemacs-test-ediff-request-frame-setting-defaults-off ()
+  "Test that Ediff requests retain the existing behavior by default."
+  :tags '(:unit :ediff-request-frame)
+  (should-not (default-value 'claudemacs-open-new-frame-for-ediff-requests)))
+
+(ert-deftest claudemacs-test-active-ediff-buffer-detection ()
+  "Test recognition of Ediff control and compared file buffers."
+  :tags '(:unit :ediff-request-frame)
+  (let ((control-buffer (generate-new-buffer " *claudemacs-ediff-control*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer control-buffer
+            (setq major-mode 'ediff-mode)
+            (should (claudemacs--active-ediff-buffer-p)))
+          (with-temp-buffer
+            (setq-local ediff-this-buffer-ediff-sessions
+                        (list control-buffer))
+            (should (claudemacs--active-ediff-buffer-p))))
+      (kill-buffer control-buffer))))
+
+(ert-deftest claudemacs-test-x-actions-honor-ediff-frame-setting ()
+  "Test the opt-in frame behavior for both request commands in Ediff."
+  :tags '(:unit :ediff-request-frame)
+  (let ((session-buffer (generate-new-buffer " *claudemacs-ediff-session*")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq major-mode 'ediff-mode)
+          (dolist (enabled '(nil t))
+            (let ((claudemacs-open-new-frame-for-ediff-requests enabled))
+              (dolist (command '(claudemacs-execute-request
+                                 claudemacs-ask-without-context))
+                (let (sent-no-switch displayed-buffer)
+                  (cl-letf (((symbol-function 'claudemacs--validate-file-and-session)
+                             #'ignore)
+                            ((symbol-function 'claudemacs--validate-process)
+                             (lambda () t))
+                            ((symbol-function 'claudemacs--get-file-context)
+                             (lambda () '(:relative-path "test.el")))
+                            ((symbol-function 'use-region-p) (lambda () nil))
+                            ((symbol-function 'line-number-at-pos)
+                             (lambda (&optional _) 1))
+                            ((symbol-function 'claudemacs--read-multiline-string)
+                             (lambda (_) "question"))
+                            ((symbol-function 'claudemacs--get-current-tool-name)
+                             (lambda () "Claude"))
+                            ((symbol-function 'claudemacs--get-current-session-buffer)
+                             (lambda () session-buffer))
+                            ((symbol-function 'claudemacs--send-message-to-claude)
+                             (lambda (_message &optional _no-return no-switch)
+                               (setq sent-no-switch no-switch)))
+                            ((symbol-function 'claudemacs--display-session-in-separate-frame)
+                             (lambda (buffer) (setq displayed-buffer buffer))))
+                    (funcall command)
+                    (if enabled
+                        (progn
+                          (should sent-no-switch)
+                      (should (eq displayed-buffer session-buffer)))
+                      (should-not sent-no-switch)
+                      (should-not displayed-buffer))))))))
+      (kill-buffer session-buffer))))
+
+(ert-deftest claudemacs-test-separate-frame-display-reuses-session-window ()
+  "Test that a displayed session is reused instead of creating a frame."
+  :tags '(:unit :ediff-request-frame)
+  (let ((session-buffer (generate-new-buffer " *claudemacs-frame-session*"))
+        (created-frame nil))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) session-buffer)
+          (cl-letf (((symbol-function 'make-frame)
+                     (lambda (&rest _)
+                       (setq created-frame t)))
+                    ((symbol-function 'claudemacs--terminal-post-display)
+                     #'ignore)
+                    ((symbol-function 'select-frame-set-input-focus)
+                     #'ignore))
+            (claudemacs--display-session-in-separate-frame session-buffer)
+            (should-not created-frame)
+            (should (eq (window-buffer (selected-window)) session-buffer))))
+      (kill-buffer session-buffer))))
+
 ;;; Integration Tests
 
 (ert-deftest claudemacs-test-transient-menu-has-ask-key ()

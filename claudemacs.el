@@ -22,10 +22,17 @@
 ;; - Selectable Eat and Ghostel terminal backends, with backend ownership
 ;;   captured per session so both can coexist; Ghostel is preferred by default
 ;;   when its package is available
-;; - Windows is fully supported (thanks ot Ghostel)
+;; - Windows is fully supported (thanks to Ghostel)
 ;; - Windows completion alerts use registered, non-modal Notification Center
 ;;   toasts with a one-time setup command
+;; - Start-session menus show configured model/effort and let `m' cycle through
+;;   per-tool model types for newly started sessions
+;; - Start and resume menus accept custom command-line arguments via `-f';
+;;   Codex sessions can also be resumed directly by UUID with `-u'
+;; - Codex waiting-for-input notifications use terminal BEL events by default,
+;;   including while the session is focused
 ;; - Live session list with authoritative Claude/Codex identities
+;; - Optional separate frame for `x' and `X' requests made while using Ediff
 
 ;; Version 0.4.0 (2026-07-10)
 ;; - New `claudemacs-branch-session' command for forking the current Claude or
@@ -308,6 +315,15 @@ focus to it."
   "Whether to switch to the Claudemacs buffer when adding context.
 If non-nil, automatically switch to the Claude buffer after adding context.
 If nil, add the context but don't switch focus to it."
+  :type 'boolean
+  :group 'claudemacs)
+
+(defcustom claudemacs-open-new-frame-for-ediff-requests nil
+  "Whether `x' and `X' requests from Ediff use a separate frame.
+When non-nil, sending either request from an active Ediff buffer preserves the
+Ediff window layout by showing the current Claudemacs session in another frame.
+If that session is already displayed in any frame, reuse its existing window
+instead of creating another frame."
   :type 'boolean
   :group 'claudemacs)
 
@@ -2112,6 +2128,29 @@ If NO-SWITCH is non-nil, don't switch to the Claude buffer."
       (display-buffer claude-buffer)
       (select-window (get-buffer-window claude-buffer)))))
 
+(defun claudemacs--active-ediff-buffer-p (&optional buffer)
+  "Return non-nil when BUFFER is part of an active Ediff session.
+BUFFER defaults to the current buffer.  This recognizes both Ediff control
+buffers and the file buffers participating in a live comparison."
+  (with-current-buffer (or buffer (current-buffer))
+    (or (eq major-mode 'ediff-mode)
+        (and (boundp 'ediff-this-buffer-ediff-sessions)
+             (seq-some #'buffer-live-p ediff-this-buffer-ediff-sessions)))))
+
+(defun claudemacs--display-session-in-separate-frame (buffer)
+  "Show Claudemacs session BUFFER in another frame and select its window.
+Reuse a window already displaying BUFFER on any frame; otherwise create one
+frame for it."
+  (let ((window
+         (display-buffer
+          buffer
+          '((display-buffer-reuse-window display-buffer-pop-up-frame)
+            (reusable-frames . t)))))
+    (select-frame-set-input-focus (window-frame window))
+    (select-window window)
+    (with-current-buffer buffer
+      (claudemacs--terminal-post-display buffer))))
+
 (defun claudemacs--region-end-line ()
   "Return line number of last line with actual selected content.
 If region ends at column 0, returns the previous line since no
@@ -2138,6 +2177,7 @@ ACTION-FUNCTION should return a plist with keys:
   :message - the text to send to Claude
   :no-return - if non-nil, don't send newline
   :no-switch - if non-nil, don't switch to buffer
+  :new-frame-from-ediff - if non-nil, honor the Ediff request-frame setting
   :user-message - message to show user after sending
 
 If SEND-TO-ALL is non-nil, send to all active sessions in current workspace.
@@ -2146,6 +2186,7 @@ Otherwise, send to current/active session only."
          (message-text (plist-get action-result :message))
          (no-return (plist-get action-result :no-return))
          (no-switch (plist-get action-result :no-switch))
+         (new-frame-from-ediff (plist-get action-result :new-frame-from-ediff))
          (user-message (plist-get action-result :user-message)))
 
     (if send-to-all
@@ -2167,7 +2208,13 @@ Otherwise, send to current/active session only."
                     (if (= (length sessions) 1) "" "s"))))
 
       ;; Send to active session only
-      (claudemacs--send-message-to-claude message-text no-return no-switch)
+      (if (and new-frame-from-ediff
+               claudemacs-open-new-frame-for-ediff-requests
+               (claudemacs--active-ediff-buffer-p))
+          (let ((session-buffer (claudemacs--get-current-session-buffer)))
+            (claudemacs--send-message-to-claude message-text no-return t)
+            (claudemacs--display-session-in-separate-frame session-buffer))
+        (claudemacs--send-message-to-claude message-text no-return no-switch))
       (message "%s" user-message))))
 
 (defun claudemacs--fix-error-at-point-action ()
@@ -2219,6 +2266,7 @@ With prefix argument (C-u), send to all active sessions."
     (list :message message-text
           :no-return nil
           :no-switch nil
+          :new-frame-from-ediff t
           :user-message (format "Sent request to %s with context" (claudemacs--get-current-tool-name)))))
 
 ;;;###autoload
@@ -2239,6 +2287,7 @@ With prefix argument (C-u), send to all active sessions."
     (list :message request
           :no-return nil
           :no-switch nil
+          :new-frame-from-ediff t
           :user-message (format "Sent question to %s" (claudemacs--get-current-tool-name)))))
 
 ;;;###autoload
