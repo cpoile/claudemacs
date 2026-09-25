@@ -27,12 +27,40 @@
 ;;   toasts with a one-time setup command
 ;; - Start-session menus show configured model/effort and let `m' cycle through
 ;;   per-tool model types for newly started sessions
+;; - Tool profiles: one CLI can run under several registry entries with their
+;;   own switches, models, and configuration directories.  Registry entries
+;;   accept three new keys:
+;;   - `:label' names the entry in the start and resume menus, shown before
+;;     the session name as "Codex work - codex-work"
+;;   - `:tool' states which CLI the entry runs (`claude', `codex', `gemini',
+;;     etc.).  Every CLI-specific behavior now follows it instead of the
+;;     registry key.  It is inferred from `:program' and then from the key,
+;;     so existing configurations are unchanged and only an alias or wrapper
+;;     `:program' needs to state it
+;;   - `:env' sets environment variables for that entry's sessions only, such
+;;     as a per-profile `CODEX_HOME'.  Claudemacs's own lookups honor it as
+;;     well: the model shown in the menu and the history offered when
+;;     resuming or branching both resolve `CODEX_HOME' and
+;;     `CLAUDE_CONFIG_DIR' from `:env', so a profile reports its own
+;;     configuration and lists its own sessions
+;; - Duplicate `claudemacs-tool-registry' keys now warn; entries are looked up
+;;   by key, so only the first entry for a repeated key was ever used
+;; - Fixed session lookup for registry keys containing a hyphen, which
+;;   previously failed to parse out of the session buffer name
 ;; - Start and resume menus accept custom command-line arguments via `-f';
 ;;   Codex sessions can also be resumed directly by UUID with `-u'
-;; - Codex waiting-for-input notifications use terminal BEL events by default,
-;;   including while the session is focused
+;; - System notifications show the message the tool sent with them -- for
+;;   Codex, normally the last thing the agent said -- instead of generic
+;;   "awaiting your input" text.  Codex is configured for this automatically;
+;;   Claude Code needs `preferredNotifChannel' set to `iterm2' or `ghostty'.
+;;   See `claudemacs-notify-with-tool-message'
+;; - Codex waiting-for-input notifications notify even while the session is
+;;   focused
+;; - Resume session lists sessions by most recently used
 ;; - Live session list with authoritative Claude/Codex identities
 ;; - Optional separate frame for `x' and `X' requests made while using Ediff
+;;   (which means: ask questions about a review without leaving Ediff
+;;    or ruining your window layout)
 
 ;; Version 0.4.0 (2026-07-10)
 ;; - New `claudemacs-branch-session' command for forking the current Claude or
@@ -176,17 +204,33 @@ E.g, `\'(\"--verbose\" \"--dangerously-skip-permissions\")'"
   :group 'claudemacs)
 
 (defcustom claudemacs-tool-registry
-  '((claude :program "claude" :switches nil
+  '((claude :label "Claude" :program "claude" :switches nil
             :model-types (("opus-high" :model "opus" :effort "high")
                           ("sonnet-high" :model "sonnet" :effort "high")))
-    (codex :program "codex" :switches nil
+    (codex :label "Codex" :program "codex" :switches nil
            :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
                          ("sol-high" :model "gpt-5.6-sol" :effort "high")))
-    (gemini :program "gemini-cli" :switches nil))
+    (gemini :label "Gemini" :program "gemini-cli" :switches nil))
   "Registry of AI coding tools available for use with claudemacs.
 Each entry is a list of the form (TOOL-NAME PLIST) where PLIST contains:
+  :label    - Optional display name shown before the session name in the
+              start and resume menus, e.g. \"Claude - claude-2\".  When
+              omitted, only the session name is shown.
+  :tool     - Which CLI this entry runs: `claude', `codex', `gemini', etc.
+              It selects every CLI-specific behavior (notification switches,
+              resume and fork arguments, `-d' translation, and session
+              identity tracking), so several keys can run the same CLI with
+              different settings.  When omitted it is inferred from
+              `:program' and then from the entry's key, which is why a
+              conventionally named program needs no `:tool' and a `:program'
+              that is a path or an alias does.
   :program  - The name or path of the tool's executable
   :switches - List of command line switches to pass to the program
+  :env      - Optional list of \"VAR=VALUE\" strings set in the environment of
+              this tool's sessions only.  They take precedence over
+              `claudemacs-process-environment'.  Values are used literally:
+              no shell expansion happens, so build paths with
+              `expand-file-name' rather than writing \"$HOME\" or \"~\".
   :model-types - Optional list of (NAME PLIST) model choices.  The model
                 plist may contain :model, :effort, and/or :switches.
 
@@ -195,11 +239,13 @@ from the start-session menu.  `:model' and `:effort' are translated to the
 appropriate command-line switches for Claude Code and Codex.  Use `:switches'
 when a tool needs custom model-selection arguments.
 
-Example:
-  ((claude :program \"claude\" :switches nil
+Example, with two Codex profiles under distinct keys:
+  ((claude :label \"Claude\" :program \"claude\" :switches nil
            :model-types ((\"opus-max\" :model \"opus\" :effort \"max\")))
-   (codex :program \"codex\" :switches '(\"--model\" \"gpt-4\")
-          :model-types ((\"fast\" :switches (\"--model\" \"gpt-4\"))))
+   (codex-work :label \"Codex work\" :program \"codex\"
+               :model-types ((\"fast\" :switches (\"--model\" \"gpt-4\"))))
+   (codex-personal :label \"Codex personal\" :tool codex :program \"cdx\"
+                   :env (\"CODEX_HOME=/home/me/.codex-personal\"))
    (gemini :program \"gemini\" :switches nil)
    (aider :program \"aider\" :switches '(\"--no-auto-commits\")))"
   :type '(alist :key-type symbol
@@ -334,19 +380,47 @@ When nil, no notification is shown (silent operation)."
   :type 'boolean
   :group 'claudemacs)
 
-(defcustom claudemacs-codex-notification-switches
+(defconst claudemacs--legacy-codex-notification-switches
   '("--config" "tui.notification_method=\"bel\""
     "--config" "tui.notification_condition=\"always\"")
+  "Codex notification default used before message-bearing notifications.")
+
+(defconst claudemacs--default-codex-notification-switches
+  '("--config" "tui.notification_method=\"osc9\""
+    "--config" "tui.notification_condition=\"always\"")
+  "Default switches for message-bearing Codex notifications.")
+
+(defcustom claudemacs-codex-notification-switches
+  (copy-tree claudemacs--default-codex-notification-switches)
   "Command-line switches used to route Codex notifications through the terminal.
 
 Codex can emit TUI notifications as OSC 9 or BEL, and by default only emits
-them when it believes its terminal is unfocused.  Claudemacs terminal backends
-handle BEL through their notification integration.  These
-switches make Codex emit BEL regardless of its focus state so Claudemacs can
-use the same system notification handler as Claude Code.
+them when it believes its terminal is unfocused.  Both forms reach
+Claudemacs' system notification handler, and these switches make Codex
+notify regardless of its focus state.
+
+The OSC 9 form carries Codex's own notification text — normally the last
+thing the agent said — which Claudemacs shows as the body of the system
+notification.  BEL carries nothing but the event, so a session configured
+with `tui.notification_method=\"bel\"' falls back to the generic
+\"awaiting your input\" text.  See `claudemacs-notify-with-tool-message'.
 
 Set this to nil to use Codex's own notification settings."
   :type '(repeat string)
+  :group 'claudemacs)
+
+(defcustom claudemacs-notify-with-tool-message t
+  "Whether system notifications show the message the AI tool sent with them.
+
+Tools raise a desktop notification by writing an OSC 9 or OSC 777 escape
+sequence that carries the notification text — for Codex, normally the last
+thing the agent said.  When non-nil, Claudemacs uses that text as the body
+of the system notification instead of the generic \"awaiting your input\"
+message.
+
+Tools that only ring the terminal bell have no message to show, so those
+notifications keep the generic text either way."
+  :type 'boolean
   :group 'claudemacs)
 
 (defcustom claudemacs-notification-sound-mac "Submarine"
@@ -403,6 +477,15 @@ are executed with the claudemacs buffer as the current buffer."
 
 (defvar-local claudemacs--tool nil
   "Buffer-local variable storing the AI tool name (symbol) for this session.")
+
+(defvar-local claudemacs--tool-instance nil
+  "Buffer-local instance number for this session.")
+
+(defvar-local claudemacs--session-tool-kind nil
+  "CLI family captured when this session started.")
+
+(defvar-local claudemacs--session-tool-kind-set-p nil
+  "Non-nil when `claudemacs--session-tool-kind' is an authoritative snapshot.")
 
 (defvar-local claudemacs--claude-session-uuid nil
   "Buffer-local variable storing the Claude Code session UUID.
@@ -503,6 +586,149 @@ Then falls back to `vc-git-root', then to the directory itself."
 Returns nil if the tool is not found in the registry."
   (cdr (assq tool claudemacs-tool-registry)))
 
+(defun claudemacs--get-tool-label (tool)
+  "Return the display label for TOOL, or nil when none is configured.
+The label comes from the `:label' entry in `claudemacs-tool-registry'.  An
+empty or non-string value is treated as no label."
+  (let ((label (plist-get (claudemacs--get-tool-config tool) :label)))
+    (when (and (stringp label) (not (string-empty-p label)))
+      label)))
+
+(defconst claudemacs--tool-kinds '(claude codex gemini)
+  "CLI families Claudemacs can infer from a program name or registry key.
+An entry's `:tool' may name any family, including one absent from this list;
+the list only drives inference when `:tool' is omitted.")
+
+(defun claudemacs--tool-kind-from-name (name)
+  "Return the CLI family implied by NAME, or nil when none matches.
+NAME is a program name or a registry key.  Directory components and an
+executable extension are ignored, and a family name followed by a separator
+matches too, so \"/usr/bin/codex\", \"codex.exe\", and \"codex-personal\" are
+all Codex.  Inference is a convenience for conventionally named programs; an
+alias such as \"cdx\" is why entries can state `:tool' outright."
+  (when (stringp name)
+    (let ((base (downcase (file-name-sans-extension
+                           (file-name-nondirectory name)))))
+      (seq-find
+       (lambda (kind)
+         (let ((kind-name (symbol-name kind)))
+           (or (string= base kind-name)
+               (string-match-p (format "\\`%s[-_.]" (regexp-quote kind-name))
+                               base))))
+       claudemacs--tool-kinds))))
+
+(defun claudemacs--tool-kind (tool)
+  "Return the CLI family for TOOL, or nil when no family applies.
+TOOL is a key in `claudemacs-tool-registry'.  The family decides every
+CLI-specific behavior: notification switches, resume and fork arguments,
+`-d' translation, and session-identity tracking.  It is resolved in order
+from the entry's `:tool', then its `:program', then the registry key, so
+several keys can run the same CLI and an entry whose program is a path or an
+alias can state its family explicitly."
+  (when (symbolp tool)
+    (let* ((config (claudemacs--get-tool-config tool))
+           (declared (plist-get config :tool))
+           (program (and config
+                         (or (plist-get config :program) claudemacs-program))))
+      (cond
+       ((and declared (symbolp declared)) declared)
+       ((stringp declared) (intern declared))
+       (t (or (claudemacs--tool-kind-from-name program)
+              (claudemacs--tool-kind-from-name (symbol-name tool))))))))
+
+(defun claudemacs--tool-kind-p (tool kind)
+  "Return non-nil when TOOL belongs to the CLI family KIND."
+  (eq (claudemacs--tool-kind tool) kind))
+
+(defun claudemacs--tool-kind-for-buffer (buffer tool)
+  "Return TOOL's CLI family as owned by session BUFFER.
+Existing sessions lazily capture the current family for reload compatibility;
+new sessions capture it at launch."
+  (if (not (buffer-live-p buffer))
+      (claudemacs--tool-kind tool)
+    (with-current-buffer buffer
+      (unless claudemacs--session-tool-kind-set-p
+        (setq-local claudemacs--session-tool-kind (claudemacs--tool-kind tool)
+                    claudemacs--session-tool-kind-set-p t))
+      claudemacs--session-tool-kind)))
+
+(defun claudemacs--get-tool-env (tool)
+  "Return TOOL's `:env' entries from `claudemacs-tool-registry'.
+The value is a list of \"VAR=VALUE\" strings that are prepended to
+`process-environment' when a session for TOOL starts, so they take precedence
+over `claudemacs-process-environment' and the Emacs environment.  Signal an
+error when an entry is not a \"VAR=VALUE\" string, because silently dropping it
+would start the tool with an environment the user did not ask for."
+  (let ((env (plist-get (claudemacs--get-tool-config tool) :env)))
+    (when env
+      (unless (listp env)
+        (error "Invalid :env for tool `%s': %S is not a list" tool env))
+      (dolist (entry env)
+        (unless (and (stringp entry)
+                     (string-match-p "\\`[^=]+=" entry))
+          (error "Invalid :env entry for tool `%s': %S is not \"VAR=VALUE\""
+                 tool entry)))
+      env)))
+
+(defun claudemacs--tool-env-value (environment variable)
+  "Return VARIABLE's value from ENVIRONMENT, or nil when it is absent."
+  (let ((prefix (concat variable "=")))
+    (seq-some (lambda (entry)
+                (when (string-prefix-p prefix entry)
+                  (substring entry (length prefix))))
+              environment)))
+
+(defun claudemacs--effective-tool-env (tool)
+  "Return TOOL's environment with profile isolation defaults applied.
+An explicit Codex `CODEX_HOME' also owns its SQLite state unless the profile
+states `CODEX_SQLITE_HOME' separately."
+  (let* ((environment (claudemacs--get-tool-env tool))
+         (codex-home (claudemacs--tool-env-value environment "CODEX_HOME")))
+    (if (and (claudemacs--tool-kind-p tool 'codex)
+             codex-home
+             (not (string-empty-p codex-home))
+             (null (claudemacs--tool-env-value environment "CODEX_SQLITE_HOME")))
+        (cons (concat "CODEX_SQLITE_HOME=" codex-home) environment)
+      environment)))
+
+(defun claudemacs--tool-getenv (tool variable)
+  "Return VARIABLE for TOOL, preferring TOOL's `:env' over Emacs's environment.
+This keeps a setting such as `CODEX_HOME' consistent between the session
+Claudemacs starts and the configuration it reads to describe that session."
+  (let ((prefix (concat variable "=")))
+    (or (seq-some (lambda (entry)
+                    (when (string-prefix-p prefix entry)
+                      (substring entry (length prefix))))
+                  (ignore-errors (claudemacs--effective-tool-env tool)))
+        (getenv variable))))
+
+(defun claudemacs--call-with-tool-env (tool function)
+  "Call FUNCTION with TOOL's `:env' applied to `process-environment'.
+History and configuration lookups resolve their storage through the
+environment, so reading a profile's sessions has to use the same environment
+that profile's sessions are started with.  The binding is undone when
+FUNCTION returns, and a malformed `:env' is ignored here: a lookup should
+degrade to the default environment rather than fail, and starting a session
+reports that error already."
+  (let ((process-environment
+         (append (ignore-errors (claudemacs--effective-tool-env tool))
+                 process-environment)))
+    (funcall function)))
+
+(defun claudemacs--tool-config-file (tool file)
+  "Return TOOL's configuration FILE, honoring TOOL's configuration directory.
+Codex reads `CODEX_HOME' and Claude Code reads `CLAUDE_CONFIG_DIR', each from
+TOOL's `:env' first, so a second profile reads its own configuration."
+  (let* ((kind (claudemacs--tool-kind tool))
+         (directory
+          (pcase kind
+            ('codex (or (claudemacs--tool-getenv tool "CODEX_HOME") "~/.codex"))
+            ('claude (or (claudemacs--tool-getenv tool "CLAUDE_CONFIG_DIR")
+                         "~/.claude"))
+            (_ nil))))
+    (when directory
+      (expand-file-name file (expand-file-name directory)))))
+
 (defun claudemacs--read-setting-from-file (file regexp)
   "Read the first captured value matching REGEXP from FILE.
 Return nil when FILE cannot be read or REGEXP does not match.  This small
@@ -519,9 +745,12 @@ it avoids adding a TOML dependency just to inspect Codex's default model."
 
 (defun claudemacs--get-tool-configured-model (tool)
   "Return TOOL's configured model and effort as a plist.
-Codex stores these values in `~/.codex/config.toml'.  Claude Code stores an
-optional model and effort level in `~/.claude/settings.json'; its documented
-CLI default is the latest Sonnet alias when no model is configured."
+Codex stores these values in `config.toml' under `CODEX_HOME' (`~/.codex' by
+default).  Claude Code stores an optional model and effort level in
+`settings.json' under `CLAUDE_CONFIG_DIR' (`~/.claude' by default); its
+documented CLI default is the latest Sonnet alias when no model is configured.
+Both directories are resolved through TOOL's `:env' first, so each profile
+reports its own configuration."
   (let* ((tool-config (claudemacs--get-tool-config tool))
          (configured-model (plist-get tool-config :model))
          (configured-effort (or (plist-get tool-config :effort)
@@ -529,29 +758,31 @@ CLI default is the latest Sonnet alias when no model is configured."
     (cond
      ((or configured-model configured-effort)
       (list :model configured-model :effort configured-effort))
-     ((eq tool 'codex)
-      (list :model
-            (claudemacs--read-setting-from-file
-             (expand-file-name "~/.codex/config.toml")
-             "^[[:space:]]*model[[:space:]]*=[[:space:]]*[\"']\\([^\"']+\\)[\"']")
-            :effort
-            (claudemacs--read-setting-from-file
-             (expand-file-name "~/.codex/config.toml")
-             "^[[:space:]]*model_reasoning_effort[[:space:]]*=[[:space:]]*[\"']\\([^\"']+\\)[\"']")))
-     ((eq tool 'claude)
-      (list :model
-            (or (getenv "ANTHROPIC_MODEL")
-                (claudemacs--read-setting-from-file
-                 (expand-file-name "~/.claude/settings.json")
-                 "\"model\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")
-                "sonnet")
-            :effort
-            (or (claudemacs--read-setting-from-file
-                 (expand-file-name "~/.claude/settings.json")
-                 "\"effortLevel\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")
-                (claudemacs--read-setting-from-file
-                 (expand-file-name "~/.claude/settings.json")
-                 "\"effort\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\""))))
+     ((claudemacs--tool-kind-p tool 'codex)
+      (let ((config-file (claudemacs--tool-config-file tool "config.toml")))
+        (list :model
+              (claudemacs--read-setting-from-file
+               config-file
+               "^[[:space:]]*model[[:space:]]*=[[:space:]]*[\"']\\([^\"']+\\)[\"']")
+              :effort
+              (claudemacs--read-setting-from-file
+               config-file
+               "^[[:space:]]*model_reasoning_effort[[:space:]]*=[[:space:]]*[\"']\\([^\"']+\\)[\"']"))))
+     ((claudemacs--tool-kind-p tool 'claude)
+      (let ((settings-file (claudemacs--tool-config-file tool "settings.json")))
+        (list :model
+              (or (claudemacs--tool-getenv tool "ANTHROPIC_MODEL")
+                  (claudemacs--read-setting-from-file
+                   settings-file
+                   "\"model\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")
+                  "sonnet")
+              :effort
+              (or (claudemacs--read-setting-from-file
+                   settings-file
+                   "\"effortLevel\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")
+                  (claudemacs--read-setting-from-file
+                   settings-file
+                   "\"effort\"[[:space:]]*:[[:space:]]*\"\\([^\"]+\\)\"")))))
      (t nil))))
 
 (defun claudemacs--get-tool-model-types (tool)
@@ -618,12 +849,12 @@ Claude Code and Codex model/effort switches are generated."
           (copy-sequence explicit-switches)
         (list explicit-switches)))
      ((null model) nil)
-     ((eq tool 'codex)
+     ((claudemacs--tool-kind-p tool 'codex)
       (append (list "--model" model)
               (when effort
                 (list "--config"
                       (format "model_reasoning_effort=%S" effort)))))
-     ((eq tool 'claude)
+     ((claudemacs--tool-kind-p tool 'claude)
       (append (list "--model" model)
               (when effort (list "--effort" (format "%s" effort)))))
      (t (list "--model" model)))))
@@ -797,7 +1028,7 @@ selection is reset when the start menu is opened again."
   "Get notification-related command-line switches for TOOL.
 Codex notifications are routed through Eat's BEL handler; other tools use
 their own notification mechanisms."
-  (when (eq tool 'codex)
+  (when (claudemacs--tool-kind-p tool 'codex)
     claudemacs-codex-notification-switches))
 
 (defun claudemacs--get-resume-flag (tool)
@@ -805,7 +1036,7 @@ their own notification mechanisms."
 
 This token is not a complete launch command; new lifecycle code must use
 `claudemacs--get-resume-args' so an authoritative ID is always supplied."
-  (pcase tool
+  (pcase (claudemacs--tool-kind tool)
     ('claude "--resume")
     ('codex "resume")
     (_ "--resume")))
@@ -844,7 +1075,7 @@ returns Codex's bare `resume' selector or Claude's interactive resume picker."
     (user-error "No authoritative %s session ID is available"
                 (capitalize (symbol-name tool))))
   (setq session-id (claudemacs--validate-session-id session-id tool))
-  (pcase tool
+  (pcase (claudemacs--tool-kind tool)
     ('claude (list "--resume" session-id))
     ('codex (list "resume" session-id))
     (_ (list "--resume" session-id))))
@@ -863,7 +1094,7 @@ must not replace it with a bare picker or `--last' selector."
     (when destination-id
       (setq destination-id
             (claudemacs--validate-session-id destination-id tool)))
-    (pcase tool
+    (pcase (claudemacs--tool-kind tool)
       ('claude (append (list "--resume" source-id "--fork-session")
                        (when destination-id
                          (list "--session-id" destination-id))))
@@ -878,27 +1109,34 @@ must not replace it with a bare picker or `--last' selector."
                   "claudemacs-session-list" (&optional cwd))
 (declare-function claudemacs--session-list-codex-history
                   "claudemacs-session-list" (&optional cwd))
+(declare-function claudemacs--session-list--newer-first-p
+                  "claudemacs-session-list" (left right))
+(declare-function claudemacs--session-list--same-path-p
+                  "claudemacs-session-list" (left right))
 
 (defun claudemacs--call-history-provider (tool cwd)
   "Call TOOL's session-list history provider for CWD, or return nil.
 
 The unified provider name is retained as a small forward-compatible contract;
 the current module also exposes the two focused provider functions directly.
-Provider exceptions are returned as `(:error MESSAGE)' so callers that need a
-trustworthy snapshot can distinguish them from an empty history."
+The provider runs with TOOL's `:env' applied, so a profile that sets
+`CODEX_HOME' or `CLAUDE_CONFIG_DIR' lists its own sessions rather than the
+default installation's.  Provider exceptions are returned as `(:error
+MESSAGE)' so callers that need a trustworthy snapshot can distinguish them
+from an empty history."
   (let ((function
          (cond
           ((fboundp 'claudemacs--session-list-history-rows)
            (lambda () (claudemacs--session-list-history-rows tool cwd)))
-          ((and (eq tool 'claude)
+          ((and (claudemacs--tool-kind-p tool 'claude)
                 (fboundp 'claudemacs--session-list-claude-history))
            (lambda () (claudemacs--session-list-claude-history cwd)))
-          ((and (eq tool 'codex)
+          ((and (claudemacs--tool-kind-p tool 'codex)
                 (fboundp 'claudemacs--session-list-codex-history))
            (lambda () (claudemacs--session-list-codex-history cwd))))))
     (when function
       (condition-case error-data
-          (funcall function)
+          (claudemacs--call-with-tool-env tool function)
         ;; Preserve provider failures as an explicit wrapper.  A nil result is
         ;; a valid empty history for the focused providers, so collapsing an
         ;; exception to nil would make an unavailable provider indistinguishable
@@ -945,28 +1183,26 @@ or become a command-line argument."
 (defun claudemacs--same-cwd-p (left right)
   "Return non-nil when LEFT and RIGHT identify the same directory."
   (and (stringp left) (stringp right)
-       (or (condition-case nil
-               (file-equal-p (file-truename left) (file-truename right))
-             (error nil))
-           ;; `file-equal-p' returns nil rather than signaling when both
-           ;; paths do not exist, which is common in isolated lifecycle
-           ;; tests and during a concurrently removed worktree.
-           (string= (directory-file-name (expand-file-name left))
-                    (directory-file-name (expand-file-name right))))))
+       (claudemacs--session-list--same-path-p left right)))
 
 (defun claudemacs--history-rows-for-cwd (tool cwd)
-  "Return TOOL history rows whose authoritative CWD is exactly CWD."
-  (seq-filter
-   (lambda (row)
-     (claudemacs--same-cwd-p cwd (claudemacs--history-row-cwd row)))
-   (or (claudemacs--history-rows-for-tool tool cwd) nil)))
+  "Return TOOL history rows for CWD, ordered from newest to oldest."
+  (sort
+   (seq-filter
+    (lambda (row)
+      (claudemacs--same-cwd-p cwd (claudemacs--history-row-cwd row)))
+    (or (claudemacs--history-rows-for-tool tool cwd) nil))
+   (lambda (left right)
+     (claudemacs--session-list--newer-first-p
+      (plist-get left :updated-at)
+      (plist-get right :updated-at)))))
 
 (defun claudemacs--select-history-session-id (tool cwd)
   "Prompt for an authoritative history ID for TOOL in CWD.
 
-Rows are supplied by the session-list module, not by a recency guess.  If a
-provider is unavailable, an explicit ID may still be entered manually; an
-invalid or empty answer is rejected before launch."
+Rows are ordered by the history provider's last-used time, newest first.
+If a provider is unavailable, an explicit ID may still be entered manually;
+an invalid or empty answer is rejected before launch."
   (let* ((rows (claudemacs--history-rows-for-cwd tool cwd))
          (choices
           (mapcar
@@ -986,10 +1222,14 @@ invalid or empty answer is rejected before launch."
                      id)))
            (seq-filter #'claudemacs--history-row-session-id rows))))
     (if choices
-        (cdr (assoc (completing-read
-                     (format "Select %s session: " (capitalize (symbol-name tool)))
-                     choices nil t)
-                    choices))
+        (let ((completion-extra-properties
+               '(:display-sort-function identity
+                 :cycle-sort-function identity)))
+          (cdr (assoc (completing-read
+                       (format "Select %s session: "
+                               (capitalize (symbol-name tool)))
+                       choices nil t)
+                      choices)))
       (let ((id (read-string
                  (format "%s session ID (history unavailable): "
                          (capitalize (symbol-name tool))))))
@@ -1068,7 +1308,10 @@ Returns 1 if no instances exist, or the next sequential number."
         1
       ;; Find first gap or use max+1
       (let ((n 1))
-        (while (member n used)
+        (while (or (member n used)
+                   (and (> n 1)
+                        (assq (intern (format "%s-%d" tool n))
+                              claudemacs-tool-registry)))
           (setq n (1+ n)))
         n))))
 
@@ -1078,6 +1321,23 @@ Returns 'tool' for instance 1, 'tool-N' for N > 1."
   (if (or (null instance-num) (= instance-num 1))
       (symbol-name tool)
     (format "%s-%d" tool instance-num)))
+
+(defun claudemacs--split-tool-instance-name (instance-name)
+  "Split INSTANCE-NAME into a (TOOL . INSTANCE) pair.
+INSTANCE-NAME is the display name produced by
+`claudemacs--format-tool-instance-name', so \"codex\" is instance 1 and
+\"codex-2\" is instance 2.  Only a trailing number is an instance, which
+keeps a hyphenated registry key such as `codex-personal' intact.
+The caller's match data is preserved, because callers parse this name out of
+a buffer name and go on to read their own match groups."
+  (save-match-data
+    (let ((exact-tool (intern instance-name)))
+      (if (assq exact-tool claudemacs-tool-registry)
+          (cons exact-tool 1)
+        (if (string-match "\\`\\(.+\\)-\\([0-9]+\\)\\'" instance-name)
+            (cons (intern (match-string 1 instance-name))
+                  (string-to-number (match-string 2 instance-name)))
+          (cons exact-tool 1))))))
 
 (defun claudemacs--get-buffer-name-for-instance (tool instance-num &optional directory)
   "Generate buffer name for TOOL at INSTANCE-NUM.
@@ -1213,7 +1473,9 @@ identity has been established it is immutable unless FORCE is non-nil.  This
       ;; Keep the old Claude-only slot synchronized for callers that still
       ;; inspect it.  A discovered Codex ID must never appear there.
       (setq-local claudemacs--claude-session-uuid
-                  (when (and (eq claudemacs--tool 'claude)
+                  (when (and (eq (claudemacs--tool-kind-for-buffer
+                                  (current-buffer) claudemacs--tool)
+                                 'claude)
                              (stringp id)
                              (eq provenance 'exact))
                     id))))
@@ -1221,25 +1483,33 @@ identity has been established it is immutable unless FORCE is non-nil.  This
 
 (defun claudemacs--get-session-info (buffer)
   "Extract session information from BUFFER.
-Returns a plist with :tool, :instance, :session-id, :buffer, :buffer-name,
-and :claude-uuid (the Claude Code session UUID, if tracked), plus
+Returns a plist with :tool, :tool-kind, :instance, :session-id, :buffer,
+:buffer-name, and :claude-uuid (the Claude Code session UUID, if tracked), plus
 :authoritative-session-id and :identity-provenance.
-The :tool is the base tool symbol (e.g., claude even for claude-2).
+The :tool is the registry key and :tool-kind is its captured CLI family.
 The :instance is the instance number (1 for claude, 2 for claude-2, etc.).
 Returns nil if the buffer is not a claudemacs buffer."
   (when (claudemacs--is-claudemacs-buffer-p buffer)
     (let ((buf-name (buffer-name buffer)))
       ;; Buffer name format: *claudemacs:TOOL:SESSION-ID* or *claudemacs:TOOL-N:SESSION-ID*
-      (when (string-match "^\\*claudemacs:\\([^-:]+\\)\\(?:-\\([0-9]+\\)\\)?:\\(.+\\)\\*$" buf-name)
-        (let* ((tool-str (match-string 1 buf-name))
-               (instance-str (match-string 2 buf-name))
-               (session-id (match-string 3 buf-name))
-               (instance (if instance-str (string-to-number instance-str) 1))
+      (when (string-match "^\\*claudemacs:\\([^:]+\\):\\(.+\\)\\*$" buf-name)
+        (let* ((name-parts (claudemacs--split-tool-instance-name
+                            (match-string 1 buf-name)))
+               (tool (or (and (local-variable-p 'claudemacs--tool buffer)
+                              (buffer-local-value 'claudemacs--tool buffer))
+                         (car name-parts)))
+               (instance
+                (or (and (local-variable-p 'claudemacs--tool-instance buffer)
+                         (buffer-local-value 'claudemacs--tool-instance buffer))
+                    (cdr name-parts)))
+               (tool-kind (claudemacs--tool-kind-for-buffer buffer tool))
+               (session-id (match-string 2 buf-name))
                (identity (claudemacs--buffer-session-identity buffer))
                (claude-uuid (and (eq (plist-get identity :provenance) 'exact)
-                                 (eq (intern tool-str) 'claude)
+                                 (eq tool-kind 'claude)
                                  (plist-get identity :id))))
-          (list :tool (intern tool-str)
+          (list :tool tool
+                :tool-kind tool-kind
                 :instance instance
                 :session-id session-id
                 :workspace session-id
@@ -1402,12 +1672,86 @@ Returns the session info plist, or nil if there aren't enough sessions."
 ;;;; Terminal Integration
 
 ;;;; Bell Handling
+(defconst claudemacs--notification-message-width 180
+  "Width at which a tool-supplied notification message is truncated.")
+
+(defun claudemacs--notification-tool-name ()
+  "Return the display name of the AI tool owning the current buffer."
+  (capitalize (symbol-name (or claudemacs--tool claudemacs-default-tool))))
+
+(defun claudemacs--notification-message-text (text)
+  "Return TEXT as a one-line notification body, or nil when it has no content.
+Control characters are collapsed to spaces so a multi-line agent message
+stays readable in a system notification."
+  (when (stringp text)
+    (let ((clean (string-trim
+                  (replace-regexp-in-string
+                   "[ \t]+" " "
+                   (replace-regexp-in-string "[[:cntrl:]]+" " " text)))))
+      (unless (string-empty-p clean)
+        (truncate-string-to-width
+         clean claudemacs--notification-message-width nil nil t)))))
+
+(defvar-local claudemacs--last-tool-notification-time nil
+  "When this session last handled an OSC notification from the tool.")
+
+(defconst claudemacs--tool-notification-bell-window 2.0
+  "Seconds after a tool notification during which a BEL is a duplicate.
+A tool can be configured to announce the same event twice, as Claude Code
+does with its `iterm2_with_bell' channel: once with its message and once as
+a bare bell.  The second one has nothing to add, so it is dropped.")
+
+(defconst claudemacs--bell-notification-delay 0.01
+  "Seconds to wait for a preceding OSC notification before handling BEL.")
+
+(defun claudemacs--duplicate-bell-p ()
+  "Return non-nil when a BEL just repeats a notification already shown."
+  (and claudemacs--last-tool-notification-time
+       (< (float-time (time-subtract nil claudemacs--last-tool-notification-time))
+          claudemacs--tool-notification-bell-window)))
+
+(defun claudemacs--show-generic-notification (&optional title)
+  "Show the generic completion notification with optional TITLE."
+  (let ((tool-name (claudemacs--notification-tool-name)))
+    (claudemacs--system-notification
+     (format "%s finished and is awaiting your input" tool-name)
+     title)))
+
+(defun claudemacs--deliver-bell-notification (buffer)
+  "Handle a deferred bell notification belonging to BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and claudemacs-notify-on-await
+                 (not (claudemacs--duplicate-bell-p)))
+        (claudemacs--show-generic-notification)))))
+
 (defun claudemacs--bell-handler (&rest _arguments)
-  "Handle a bell event from the current AI tool.
-This function is called when the tool sends a bell character."
+  "Queue a bell event from the current AI tool.
+The short delay lets a message-bearing OSC event suppress its duplicate BEL."
+  (when (and claudemacs-notify-on-await
+             (buffer-live-p (current-buffer)))
+    (run-at-time claudemacs--bell-notification-delay nil
+                 #'claudemacs--deliver-bell-notification (current-buffer))))
+
+(defun claudemacs--notification-handler (body &optional title)
+  "Handle a desktop notification from the current AI tool.
+
+BODY is the message the tool sent with its OSC 9 or OSC 777 notification and
+TITLE is the title it supplied, if any.  Tools send these instead of a
+bell character, so this is the same completion event `claudemacs--bell-handler'
+reports — just one that arrives with the tool's own text attached.  Fall back
+to that generic handler when there is no usable message."
   (when claudemacs-notify-on-await
-    (let ((tool-name (capitalize (symbol-name (or claudemacs--tool claudemacs-default-tool)))))
-      (claudemacs--system-notification (format "%s finished and is awaiting your input" tool-name)))))
+    (let ((message (and claudemacs-notify-with-tool-message
+                        (claudemacs--notification-message-text body))))
+      (setq-local claudemacs--last-tool-notification-time (current-time))
+      (if message
+          (claudemacs--system-notification
+           message
+           (or (claudemacs--notification-message-text title)
+               (claudemacs--notification-tool-name)))
+        (claudemacs--show-generic-notification
+         (claudemacs--notification-message-text title))))))
 
 
 (defun claudemacs--windows-notification-shortcut ()
@@ -1513,6 +1857,12 @@ Claudemacs normally installs this automatically when first needed."
         (message "Claudemacs Windows notifications installed"))
     (error (user-error "%s" (error-message-string error-data)))))
 
+(defun claudemacs--escape-applescript-string (string)
+  "Escape STRING for use inside an AppleScript double-quoted literal.
+Notification text can come from the AI tool itself, so it may contain the
+quotes and backslashes that would otherwise end the literal."
+  (replace-regexp-in-string "[\\\"]" "\\\\\\&" string))
+
 (defun claudemacs--system-notification (message &optional title)
   "Show a system notification with MESSAGE and optional TITLE.
 This works across macOS, Linux, and Windows platforms."
@@ -1523,7 +1873,10 @@ This works across macOS, Linux, and Windows platforms."
      ((eq system-type 'darwin)
       (call-process "osascript" nil nil nil
                     "-e" (format "display notification \"%s\" with title \"%s\" sound name \"%s\""
-                                message title claudemacs-notification-sound-mac)))
+                                (claudemacs--escape-applescript-string message)
+                                (claudemacs--escape-applescript-string title)
+                                (claudemacs--escape-applescript-string
+                                 claudemacs-notification-sound-mac))))
      ;; Linux with notify-send and canberra-gtk-play
      ((and (eq system-type 'gnu/linux)
            (executable-find "notify-send"))
@@ -1577,6 +1930,7 @@ Use this if system notifications aren't working after starting a session."
   (if-let* ((buffer (claudemacs--get-current-session-buffer)))
       (with-current-buffer buffer
         (claudemacs--terminal-setup-buffer #'claudemacs--bell-handler)
+        (claudemacs--terminal-setup-notifications #'claudemacs--notification-handler)
         (message "Bell handler configured for Claudemacs session"))
     (user-error "No Claudemacs session is active")))
 
@@ -1692,7 +2046,7 @@ Claude Code's normal prompt renderer draws its own cursor indicator.  Ghostel
 provides the terminal cursor to Emacs, so use Claude Code's accessibility
 cursor path for Ghostel sessions to avoid leaving the renderer's indicator at
 the prompt's original position while retaining the real Emacs cursor."
-  (when (and (eq tool 'claude)
+  (when (and (claudemacs--tool-kind-p tool 'claude)
              (eq backend 'ghostel))
     (setenv "CLAUDE_CODE_ACCESSIBILITY" "1")))
 
@@ -1727,10 +2081,10 @@ An explicit Codex resume remains exact."
     (when (member "--resume" args)
       (setq resume-id
             (claudemacs--validate-session-id resume-id tool)))
-    (when (and (eq tool 'codex) (member "fork" args))
+    (when (and (claudemacs--tool-kind-p tool 'codex) (member "fork" args))
       (setq codex-fork-source-id
             (claudemacs--validate-session-id codex-fork-source-id tool)))
-    (pcase tool
+    (pcase (claudemacs--tool-kind tool)
       ('claude
        (cond
         ((member "--session-id" args)
@@ -1762,13 +2116,16 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
   (let* ((tool-name (or tool claudemacs-default-tool))
          (terminal-backend claudemacs-terminal-backend)
          (tool-config (claudemacs--get-tool-config tool-name))
+         ;; Validate the tool's environment before a session buffer exists, so
+         ;; a malformed `:env' never leaves an empty buffer behind.
+         (tool-env (claudemacs--effective-tool-env tool-name))
          (instance (or instance-num
                        (claudemacs--get-next-instance-number tool-name work-dir)))
          (default-directory work-dir)
          ;; Generate UUID and validate explicit identity arguments before
          ;; allocating the session buffer.  Invalid launch IDs must fail
          ;; without leaving an empty live-session buffer behind.
-         (session-uuid (when (and (eq tool-name 'claude)
+         (session-uuid (when (and (claudemacs--tool-kind-p tool-name 'claude)
                                   (not (member "--session-id" args))
                                   (not (member "--resume" args))
                                   (not (member "--continue" args)))
@@ -1778,6 +2135,22 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
            tool-name args session-uuid))
          (buffer-name (claudemacs--get-buffer-name-for-instance
                        tool-name instance work-dir))
+         (_reserved-name-check
+          (when (and (> instance 1)
+                     (assq (intern (format "%s-%d" tool-name instance))
+                           claudemacs-tool-registry))
+            (user-error "Instance name `%s-%d' is reserved by a tool profile"
+                        tool-name instance)))
+         (existing-buffer (get-buffer buffer-name))
+         (_buffer-owner-check
+          (when (and existing-buffer
+                     (local-variable-p 'claudemacs--tool existing-buffer)
+                     (buffer-local-value 'claudemacs--tool existing-buffer)
+                     (not (eq (buffer-local-value 'claudemacs--tool existing-buffer)
+                              tool-name)))
+            (user-error "Buffer name `%s' is already owned by tool `%s'"
+                        buffer-name
+                        (buffer-local-value 'claudemacs--tool existing-buffer))))
          (buffer (get-buffer-create buffer-name))
          ;; Capture buffer-local and tool-specific values before switching buffers
          (program (or (plist-get tool-config :program) claudemacs-program))
@@ -1787,7 +2160,7 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
                   (plist-get tool-config :switches)))
          (use-shell-env claudemacs-use-shell-env)
          (process-environment
-          (append claudemacs-process-environment process-environment)))
+          (append tool-env claudemacs-process-environment process-environment)))
     (claudemacs--configure-terminal-process-environment
      tool-name terminal-backend)
     ;; Verify program exists before attempting to start
@@ -1821,7 +2194,11 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
 
               ;; Set session state after the backend establishes its major mode.
               (setq-local claudemacs--cwd work-dir)
-              (setq-local claudemacs--tool tool-name)
+              (setq-local claudemacs--tool tool-name
+                          claudemacs--tool-instance instance
+                          claudemacs--session-tool-kind
+                          (claudemacs--tool-kind tool-name)
+                          claudemacs--session-tool-kind-set-p t)
               ;; A reused buffer can still hold the identity of an older
               ;; process.  Reset it before establishing this process's
               ;; identity; ordinary library reloads never call this path and
@@ -1854,8 +2231,10 @@ tool-specific equivalents."
              ;; Translate dangerous skip permissions
              ((string= arg "--dangerous-skip-permissions")
               (cond
-               ((eq tool 'claude) "--dangerously-skip-permissions")
-               ((eq tool 'codex) "--dangerously-bypass-approvals-and-sandbox")
+               ((claudemacs--tool-kind-p tool 'claude)
+                "--dangerously-skip-permissions")
+               ((claudemacs--tool-kind-p tool 'codex)
+                "--dangerously-bypass-approvals-and-sandbox")
                (t arg)))  ; Unknown tool, pass through
              ;; All other args pass through unchanged
              (t arg)))
@@ -1980,7 +2359,13 @@ because the installed CLI has no destination-ID option.  A bare `--continue',
     (unless session
       (user-error "No live Claudemacs session is available to branch"))
     (let* ((tool (plist-get session :tool))
+           (tool-kind (plist-get session :tool-kind))
            (session-buffer (plist-get session :buffer))
+           (_family-check
+            (unless (eq tool-kind (claudemacs--tool-kind tool))
+              (user-error
+               "Tool profile `%s' changed family; restart it before branching"
+               tool)))
            (work-dir (and (buffer-live-p session-buffer)
                           (buffer-local-value 'claudemacs--cwd session-buffer)))
            (work-dir (or work-dir (claudemacs--project-root)))
@@ -2003,7 +2388,7 @@ because the installed CLI has no destination-ID option.  A bare `--continue',
                       1))
               (plist-get (car live-identities) :authoritative-session-id))
              (t (claudemacs--select-history-session-id tool work-dir))))
-           (destination-id (when (eq tool 'claude)
+           (destination-id (when (eq tool-kind 'claude)
                              (claudemacs--generate-uuid)))
            (branch-args (or (claudemacs--get-branch-args
                             tool source-id destination-id)
@@ -2070,7 +2455,7 @@ If NO-RETURN is non-nil, don't send a return/newline."
                                 (intern (match-string 1 (buffer-name buffer))))
                               'claude))
            (plain-message (substring-no-properties message)))
-      (if (eq resolved-tool 'codex)
+      (if (eq (claudemacs--tool-kind-for-buffer buffer resolved-tool) 'codex)
           (claudemacs--terminal-paste-string plain-message)
         (claudemacs--terminal-send-string plain-message))
       (unless no-return
@@ -2523,10 +2908,20 @@ Shows which tool will be resumed."
      (message "Error in smart-resume-description: %S" err)
      "Smart Resume")))
 
+(defun claudemacs--format-tool-menu-name (tool instance-name)
+  "Format TOOL's INSTANCE-NAME for a menu, prefixed by its label when set.
+Returns \"LABEL - INSTANCE-NAME\" when TOOL has a `:label', otherwise just
+the instance name."
+  (let ((label (claudemacs--get-tool-label tool))
+        (name (propertize instance-name 'face 'claudemacs-tool-name-face)))
+    (if label
+        (concat (propertize label 'face 'claudemacs-tool-name-face) " - " name)
+      name)))
+
 (defun claudemacs--get-tool-start-description (tool &optional is-default)
   "Get the description for starting TOOL.
-Show the next instance name, the configured model when enabled, and a default
-indicator when IS-DEFAULT is non-nil."
+Show the tool label and next instance name, the configured model when enabled,
+and a default indicator when IS-DEFAULT is non-nil."
   (let* ((next-instance (claudemacs--get-next-instance-number tool))
          (instance-name (claudemacs--format-tool-instance-name tool next-instance))
          (model-description
@@ -2537,17 +2932,18 @@ indicator when IS-DEFAULT is non-nil."
          (default-description
           (when is-default
             (propertize "(default)" 'face 'font-lock-comment-face))))
-    (concat (propertize instance-name 'face 'claudemacs-tool-name-face)
+    (concat (claudemacs--format-tool-menu-name tool instance-name)
             (when model-description (concat " " model-description))
             (when default-description (concat " " default-description)))))
 
 (defun claudemacs--get-tool-resume-description (tool &optional is-default)
   "Get the description for resuming TOOL, showing next instance name with (resume).
+The tool label is shown before the instance name when one is configured.
 If IS-DEFAULT is non-nil, also append a default indicator."
   (let* ((next-instance (claudemacs--get-next-instance-number tool))
          (instance-name (claudemacs--format-tool-instance-name tool next-instance)))
     (format "%s %s%s"
-            (propertize instance-name 'face 'claudemacs-tool-name-face)
+            (claudemacs--format-tool-menu-name tool instance-name)
             (propertize "(resume)" 'face 'font-lock-comment-face)
             (if is-default
                 (concat " " (propertize "(default)" 'face 'font-lock-comment-face))
@@ -2600,9 +2996,35 @@ case."
         (apply #'claudemacs--run-with-args tool work-dir
                (append resume-args expanded-args))))))
 
+(defun claudemacs--warn-on-duplicate-tool-keys ()
+  "Warn once per menu build when `claudemacs-tool-registry' repeats a key.
+Entries are looked up by key, so a repeated key makes every later entry
+resolve to the first one's settings.  Distinct keys with the same `:tool'
+are the supported way to run one CLI under several profiles."
+  (let ((seen '())
+        (duplicates '()))
+    (dolist (entry claudemacs-tool-registry)
+      (let ((tool (car-safe entry)))
+        (when tool
+          (if (memq tool seen)
+              (cl-pushnew tool duplicates)
+            (push tool seen)))))
+    (when duplicates
+      (display-warning
+       'claudemacs
+       (format (concat "`claudemacs-tool-registry' repeats the key%s %s; "
+                       "only the first entry for each is used.  Give each "
+                       "entry a distinct key and set `:tool' to the CLI it "
+                       "runs.")
+               (if (cdr duplicates) "s" "")
+               (mapconcat (lambda (tool) (format "`%s'" tool))
+                          (nreverse duplicates) ", "))
+       :warning))))
+
 (defun claudemacs--setup-start-tool-suffixes (_)
   "Generate tool suffixes dynamically for the start menu.
 Returns a list of parsed transient suffix objects."
+  (claudemacs--warn-on-duplicate-tool-keys)
   (cl-loop for index from 0
            for (tool . _) in claudemacs-tool-registry
            for key = (number-to-string (1+ index))
@@ -2617,6 +3039,7 @@ Returns a list of parsed transient suffix objects."
 (defun claudemacs--setup-resume-tool-suffixes (_)
   "Generate tool suffixes dynamically for the resume menu.
 Returns a list of parsed transient suffix objects."
+  (claudemacs--warn-on-duplicate-tool-keys)
   (cl-loop for index from 0
            for (tool . _) in claudemacs-tool-registry
            for key = (number-to-string (1+ index))
@@ -2637,8 +3060,8 @@ Returns a list of parsed transient suffix objects."
    ("-f" "Add custom command-line arguments" "" :class transient-option :prompt "Custom arguments: ")]
   ["Model"
    :if claudemacs--model-type-toggle-visible-p
-   ("m" claudemacs--get-toggle-model-type-description
-    claudemacs-toggle-model-type
+   ("m" claudemacs-toggle-model-type
+    :description claudemacs--get-toggle-model-type-description
     :if claudemacs--model-type-toggle-visible-p
     :transient t)]
   ["Tools"
@@ -2717,11 +3140,23 @@ Returns a list of parsed transient suffix objects."
     (claudemacs--terminal-unstick)))
 
 ;;;###autoload
+(defun claudemacs--migrated-codex-notification-switches ()
+  "Return the OSC9 default when the old BEL default was not customized."
+  (when (and (equal claudemacs-codex-notification-switches
+                    claudemacs--legacy-codex-notification-switches)
+             (null (get 'claudemacs-codex-notification-switches 'saved-value))
+             (null (get 'claudemacs-codex-notification-switches
+                        'customized-value)))
+    (copy-tree claudemacs--default-codex-notification-switches)))
+
+;;;###autoload
 (defun claudemacs-setup ()
   "Set up integrations for loaded Claudemacs terminal backends.
 This is called automatically when the package is loaded.
 Safe to call multiple times."
   (interactive)
+  (when-let* ((migrated (claudemacs--migrated-codex-notification-switches)))
+    (setq-default claudemacs-codex-notification-switches migrated))
   (claudemacs--terminal-setup-loaded-backends))
 
 (defun claudemacs-unload-function ()

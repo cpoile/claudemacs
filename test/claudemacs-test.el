@@ -563,7 +563,10 @@ The file is automatically cleaned up after BODY executes."
   (let ((notification-called nil))
     ;; Mock system notification
     (cl-letf (((symbol-function 'claudemacs--system-notification)
-               (lambda (&rest args) (setq notification-called t))))
+               (lambda (&rest args) (setq notification-called t)))
+              ((symbol-function 'run-at-time)
+               (lambda (_time _repeat function &rest arguments)
+                 (apply function arguments))))
       
       ;; Test with notifications enabled
       (let ((claudemacs-notify-on-await t))
@@ -577,15 +580,157 @@ The file is automatically cleaned up after BODY executes."
         (should-not notification-called)))))
 
 (ert-deftest claudemacs-test-tool-notification-switches ()
-  "Test that Codex gets switches compatible with Eat's bell handler."
+  "Test that Codex notifies through the terminal regardless of focus."
   :tags '(:unit :codex :config)
   (should (equal (claudemacs--get-tool-notification-switches 'codex)
-                 '("--config" "tui.notification_method=\"bel\""
+                 '("--config" "tui.notification_method=\"osc9\""
                    "--config" "tui.notification_condition=\"always\"")))
   (should-not (claudemacs--get-tool-notification-switches 'claude))
   (should-not (claudemacs--get-tool-notification-switches 'gemini))
   (let ((claudemacs-codex-notification-switches nil))
     (should-not (claudemacs--get-tool-notification-switches 'codex))))
+
+(ert-deftest claudemacs-test-migrates-uncustomized-codex-bel-default ()
+  "A live reload upgrades the old uncustomized BEL default to OSC9."
+  :tags '(:unit :codex :config)
+  (let ((claudemacs-codex-notification-switches
+         (copy-tree claudemacs--legacy-codex-notification-switches)))
+    (should (equal (claudemacs--migrated-codex-notification-switches)
+                   claudemacs--default-codex-notification-switches))))
+
+(ert-deftest claudemacs-test-preserves-customized-codex-bel-setting ()
+  "An explicit Customize-backed BEL setting is not migrated."
+  :tags '(:unit :codex :config)
+  (let ((old-saved (get 'claudemacs-codex-notification-switches 'saved-value))
+        (claudemacs-codex-notification-switches
+         (copy-tree claudemacs--legacy-codex-notification-switches)))
+    (unwind-protect
+        (progn
+          (put 'claudemacs-codex-notification-switches 'saved-value '(explicit))
+          (should-not (claudemacs--migrated-codex-notification-switches)))
+      (put 'claudemacs-codex-notification-switches 'saved-value old-saved))))
+
+(ert-deftest claudemacs-test-notification-handler-uses-tool-message ()
+  "A notification carrying the tool's own message shows that message."
+  :tags '(:unit :config)
+  (let ((claudemacs-notify-on-await t)
+        (claudemacs-notify-with-tool-message t)
+        (claudemacs--tool 'codex)
+        (received nil))
+    (cl-letf (((symbol-function 'claudemacs--system-notification)
+               (lambda (message &optional title)
+                 (setq received (cons message title)))))
+      (with-temp-buffer
+        (claudemacs--notification-handler "Renamed the helper and ran the tests")
+        (should (equal (car received) "Renamed the helper and ran the tests"))
+        (should (equal (cdr received) "Codex"))
+        ;; A tool-supplied title wins over the tool name.
+        (claudemacs--notification-handler "body text" "Codex review")
+        (should (equal (cdr received) "Codex review"))))))
+
+(ert-deftest claudemacs-test-notification-handler-falls-back-to-generic-text ()
+  "Without a usable message, notifications keep the generic completion text."
+  :tags '(:unit :config)
+  (let ((claudemacs-notify-on-await t)
+        (claudemacs--tool 'codex)
+        (received nil)
+        (count 0))
+    (cl-letf (((symbol-function 'claudemacs--system-notification)
+               (lambda (message &optional _title)
+                 (setq received message
+                       count (1+ count))))
+              ((symbol-function 'run-at-time)
+               (lambda (_time _repeat function &rest arguments)
+                 (apply function arguments))))
+      ;; An empty message is not worth showing.
+      (with-temp-buffer
+        (let ((claudemacs-notify-with-tool-message t))
+          (claudemacs--notification-handler "   ")))
+      (should (equal received "Codex finished and is awaiting your input"))
+      ;; Neither is any message when the user turned the feature off.
+      (setq received nil)
+      (with-temp-buffer
+        (let ((claudemacs-notify-with-tool-message nil))
+          (claudemacs--notification-handler "Renamed the helper")
+          (claudemacs--bell-handler)))
+      (should (equal received "Codex finished and is awaiting your input"))
+      (should (= count 2)))))
+
+(ert-deftest claudemacs-test-bell-after-tool-message-is-not-shown-twice ()
+  "A tool that announces one event twice produces one notification."
+  :tags '(:unit :config)
+  (let ((claudemacs-notify-on-await t)
+        (claudemacs-notify-with-tool-message t)
+        (claudemacs--tool 'claude)
+        (count 0))
+    (cl-letf (((symbol-function 'claudemacs--system-notification)
+               (lambda (&rest _args) (setq count (1+ count))))
+              ((symbol-function 'run-at-time)
+               (lambda (_time _repeat function &rest arguments)
+                 (apply function arguments))))
+      (with-temp-buffer
+        ;; Claude Code's `iterm2_with_bell' channel sends OSC 9 and then BEL.
+        (claudemacs--notification-handler "Finished the refactor")
+        (claudemacs--bell-handler)
+        (should (= count 1))
+        ;; A bell arriving on its own still notifies.
+        (setq-local claudemacs--last-tool-notification-time nil)
+        (claudemacs--bell-handler)
+        (should (= count 2))))))
+
+(ert-deftest claudemacs-test-deferred-bell-lets-ghostel-notification-win ()
+  "A deferred Ghostel OSC callback suppresses its following BEL."
+  :tags '(:unit :config :ghostel)
+  (let ((claudemacs-notify-on-await t)
+        (claudemacs-notify-with-tool-message t)
+        (claudemacs--tool 'claude)
+        (scheduled nil)
+        (count 0))
+    (cl-letf (((symbol-function 'claudemacs--system-notification)
+               (lambda (&rest _args) (setq count (1+ count))))
+              ((symbol-function 'run-at-time)
+               (lambda (delay _repeat function &rest arguments)
+                 (push (list delay function arguments) scheduled))))
+      (with-temp-buffer
+        ;; BEL is observed before Ghostel invokes its already-deferred OSC hook.
+        (claudemacs--bell-handler)
+        (claudemacs--notification-handler "Finished the refactor")
+        (should (= count 1))
+        (pcase-let ((`(,delay ,function ,arguments) (car scheduled)))
+          (should (> delay 0))
+          (apply function arguments))
+        (should (= count 1))))))
+
+(ert-deftest claudemacs-test-notification-handler-respects-notify-on-await ()
+  "Tool notifications stay silent when notifications are disabled."
+  :tags '(:unit :config)
+  (let ((claudemacs-notify-on-await nil)
+        (notified nil))
+    (cl-letf (((symbol-function 'claudemacs--system-notification)
+               (lambda (&rest _args) (setq notified t))))
+      (with-temp-buffer
+        (claudemacs--notification-handler "Renamed the helper"))
+      (should-not notified))))
+
+(ert-deftest claudemacs-test-notification-message-is-single-line-and-bounded ()
+  "Multi-line agent messages are flattened and truncated for the popup."
+  :tags '(:unit :config)
+  (let ((flattened (claudemacs--notification-message-text
+                    "first line\nsecond\tline")))
+    (should (equal flattened "first line second line")))
+  (should-not (claudemacs--notification-message-text "\n \t"))
+  (should-not (claudemacs--notification-message-text nil))
+  (should (<= (length (claudemacs--notification-message-text
+                       (make-string 500 ?x)))
+              (1+ claudemacs--notification-message-width))))
+
+(ert-deftest claudemacs-test-notification-text-cannot-break-applescript ()
+  "Tool-supplied text stays inside its AppleScript string literal."
+  :tags '(:unit :config)
+  (should (equal (claudemacs--escape-applescript-string "say \"hi\"")
+                 "say \\\"hi\\\""))
+  (should (equal (claudemacs--escape-applescript-string "back\\slash")
+                 "back\\\\slash")))
 
 (ert-deftest claudemacs-test-ghostel-claude-enables-native-cursor ()
   "Ghostel Claude sessions use Claude Code's terminal cursor path."
@@ -980,6 +1125,400 @@ The file is automatically cleaned up after BODY executes."
     (dolist (buf '("*claudemacs:claude:main*" "*claudemacs:codex:main*"))
       (when (get-buffer buf)
         (kill-buffer buf)))))
+
+;;; Tool Label Tests
+
+(ert-deftest claudemacs-test-start-description-shows-tool-label ()
+  "A tool's `:label' precedes the session name in the start menu."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-show-model-in-menu nil)
+        (claudemacs-tool-registry
+         '((claude :label "Claude" :program "claude" :switches nil))))
+    (cl-letf (((symbol-function 'claudemacs--get-next-instance-number)
+               (lambda (&rest _) 2)))
+      (should (equal (substring-no-properties
+                      (claudemacs--get-tool-start-description 'claude t))
+                     "Claude - claude-2 (default)")))))
+
+(ert-deftest claudemacs-test-start-description-omits-missing-label ()
+  "A tool without a `:label' shows only its session name."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-show-model-in-menu nil)
+        (claudemacs-tool-registry
+         '((claude :program "claude" :switches nil))))
+    (cl-letf (((symbol-function 'claudemacs--get-next-instance-number)
+               (lambda (&rest _) 2)))
+      (should (equal (substring-no-properties
+                      (claudemacs--get-tool-start-description 'claude nil))
+                     "claude-2")))))
+
+(ert-deftest claudemacs-test-resume-description-shows-tool-label ()
+  "A tool's `:label' precedes the session name in the resume menu."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :label "Codex" :program "codex" :switches nil))))
+    (cl-letf (((symbol-function 'claudemacs--get-next-instance-number)
+               (lambda (&rest _) 1)))
+      (should (equal (substring-no-properties
+                      (claudemacs--get-tool-resume-description 'codex nil))
+                     "Codex - codex (resume)")))))
+
+;;; Per-tool Environment in History Lookups
+
+(ert-deftest claudemacs-test-history-picker-is-most-recent-first ()
+  "The resume picker sorts history by recency and preserves that display order."
+  :tags '(:unit :multi-tool)
+  (dolist (tool '(claude codex))
+    (let ((rows (list (list :session-id "oldest" :cwd "/tmp/project"
+                            :updated-at (seconds-to-time 10))
+                      (list :session-id "middle" :cwd "/tmp/project"
+                            :updated-at (seconds-to-time 20))
+                      (list :session-id "newest" :cwd "/tmp/project"
+                            :updated-at (seconds-to-time 30))))
+          choices
+          properties)
+      (cl-letf (((symbol-function 'claudemacs--history-rows-for-tool)
+                 (lambda (_tool _cwd) rows))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _arguments)
+                   (setq choices collection
+                         properties completion-extra-properties)
+                   (caar collection))))
+        (should (equal (claudemacs--select-history-session-id
+                        tool "/tmp/project")
+                       "newest")))
+      (should (equal (mapcar #'cdr choices)
+                     '("newest" "middle" "oldest")))
+      (should (eq (plist-get properties :display-sort-function) #'identity))
+      (should (eq (plist-get properties :cycle-sort-function) #'identity)))))
+
+(ert-deftest claudemacs-test-history-provider-runs-with-tool-env ()
+  "History lookups run in the profile's environment, then restore it."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-pers :tool codex :program "cdx"
+                       :env ("CODEX_HOME=/tmp/personal-home"))))
+        (before (getenv "CODEX_HOME"))
+        seen)
+    (cl-letf (((symbol-function 'claudemacs--session-list-history-rows)
+               (lambda (&rest _)
+                 (setq seen (getenv "CODEX_HOME"))
+                 (list :rows nil))))
+      (claudemacs--call-history-provider 'codex-pers "/tmp/project"))
+    (should (equal seen "/tmp/personal-home"))
+    ;; The binding must not outlive the lookup.
+    (should (equal (getenv "CODEX_HOME") before))))
+
+(ert-deftest claudemacs-test-history-provider-without-env-is-unchanged ()
+  "A tool without `:env' sees Emacs's own environment."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry '((codex :program "codex")))
+        (process-environment (cons "CODEX_HOME=/tmp/ambient" process-environment))
+        seen)
+    (cl-letf (((symbol-function 'claudemacs--session-list-history-rows)
+               (lambda (&rest _)
+                 (setq seen (getenv "CODEX_HOME"))
+                 (list :rows nil))))
+      (claudemacs--call-history-provider 'codex "/tmp/project"))
+    (should (equal seen "/tmp/ambient"))))
+
+(ert-deftest claudemacs-test-history-provider-resolves-profile-codex-home ()
+  "Each Codex profile resolves the session storage under its own CODEX_HOME."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-work :program "codex" :env ("CODEX_HOME=/tmp/work-home"))
+           (codex-pers :tool codex :program "cdx"
+                       :env ("CODEX_HOME=/tmp/personal-home"))))
+        homes)
+    (cl-letf (((symbol-function 'claudemacs--session-list-codex-history)
+               (lambda (&rest _)
+                 (push (claudemacs--session-list-codex-home) homes)
+                 nil))
+              ((symbol-function 'claudemacs--session-list-claude-history)
+               (lambda (&rest _) nil)))
+      (claudemacs--call-history-provider 'codex-work "/tmp/project")
+      (claudemacs--call-history-provider 'codex-pers "/tmp/project"))
+    (should (equal (nreverse homes)
+                   (list (file-name-as-directory (expand-file-name "/tmp/work-home"))
+                         (file-name-as-directory (expand-file-name "/tmp/personal-home")))))))
+
+(ert-deftest claudemacs-test-history-provider-resolves-profile-claude-dir ()
+  "A Claude profile resolves history under its own CLAUDE_CONFIG_DIR."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((claude-alt :tool claude :program "cl"
+                       :env ("CLAUDE_CONFIG_DIR=/tmp/alt-claude"))))
+        seen)
+    (cl-letf (((symbol-function 'claudemacs--session-list-claude-history)
+               (lambda (&rest _)
+                 (setq seen (claudemacs--session-list-claude-config-dir))
+                 nil)))
+      (claudemacs--call-history-provider 'claude-alt "/tmp/project"))
+    (should (equal seen
+                   (file-name-as-directory (expand-file-name "/tmp/alt-claude"))))))
+
+;;; Tool Family (:tool) Tests
+
+(ert-deftest claudemacs-test-tool-kind-prefers-declared-tool ()
+  "An explicit `:tool' decides the CLI family even for an alias program."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-personal :tool codex :program "cdx")
+           (work :tool claude :program "/opt/bin/my-wrapper")
+           (quoted :tool "codex" :program "zz"))))
+    (should (eq (claudemacs--tool-kind 'codex-personal) 'codex))
+    (should (eq (claudemacs--tool-kind 'work) 'claude))
+    (should (eq (claudemacs--tool-kind 'quoted) 'codex))))
+
+(ert-deftest claudemacs-test-tool-kind-infers-from-program-then-key ()
+  "Without `:tool', the family comes from the program, then the registry key."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((profile-one :program "/usr/local/bin/codex")
+           (profile-two :program "codex-personal")
+           (gemini :program "gemini-cli")
+           (codex-work :program "/opt/bin/unrecognized")
+           (mystery :program "/opt/bin/unrecognized"))))
+    (should (eq (claudemacs--tool-kind 'profile-one) 'codex))
+    (should (eq (claudemacs--tool-kind 'profile-two) 'codex))
+    (should (eq (claudemacs--tool-kind 'gemini) 'gemini))
+    ;; Program says nothing, so the key settles it.
+    (should (eq (claudemacs--tool-kind 'codex-work) 'codex))
+    ;; Neither says anything: a generic tool, with no CLI-specific behavior.
+    (should-not (claudemacs--tool-kind 'mystery))))
+
+(ert-deftest claudemacs-test-tool-family-drives-cli-specific-behavior ()
+  "Two keys running Codex get identical Codex-specific handling."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-work :program "codex")
+           (codex-personal :tool codex :program "cdx")))
+        (claudemacs-codex-notification-switches '("--notify")))
+    (dolist (tool '(codex-work codex-personal))
+      (should (equal (claudemacs--get-tool-notification-switches tool)
+                     '("--notify")))
+      (should (equal (claudemacs--get-resume-args tool "abc123")
+                     '("resume" "abc123")))
+      (should (equal (claudemacs--get-branch-args tool "abc123")
+                     '("fork" "abc123")))
+      (should (equal (claudemacs--translate-args-for-tool
+                      tool '("--dangerous-skip-permissions"))
+                     '("--dangerously-bypass-approvals-and-sandbox")))
+      (should (equal (claudemacs--model-type-switches
+                      tool '("deep" :model "gpt-test" :effort "max"))
+                     '("--model" "gpt-test" "--config"
+                       "model_reasoning_effort=\"max\""))))))
+
+(ert-deftest claudemacs-test-tool-family-reads-profile-config ()
+  "Each profile reads the configuration directory from its own `:env'."
+  :tags '(:unit :multi-tool)
+  (let* ((work-home (make-temp-file "claudemacs-codex-work" t))
+         (personal-home (make-temp-file "claudemacs-codex-pers" t))
+         (claudemacs-tool-registry
+          `((codex-work :program "codex"
+                        :env (,(concat "CODEX_HOME=" work-home)))
+            (codex-personal :tool codex :program "cdx"
+                            :env (,(concat "CODEX_HOME=" personal-home))))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "config.toml" work-home)
+            (insert "model = \"gpt-work\"\nmodel_reasoning_effort = \"high\"\n"))
+          (with-temp-file (expand-file-name "config.toml" personal-home)
+            (insert "model = \"gpt-personal\"\nmodel_reasoning_effort = \"low\"\n"))
+          (should (equal (claudemacs--get-tool-configured-model 'codex-work)
+                         '(:model "gpt-work" :effort "high")))
+          (should (equal (claudemacs--get-tool-configured-model 'codex-personal)
+                         '(:model "gpt-personal" :effort "low"))))
+      (delete-directory work-home t)
+      (delete-directory personal-home t))))
+
+(ert-deftest claudemacs-test-hyphenated-tool-keys-parse-from-buffer-name ()
+  "Session info survives a hyphenated registry key, with and without instances."
+  :tags '(:unit :multi-tool)
+  (should (equal (claudemacs--split-tool-instance-name "codex-personal")
+                 '(codex-personal . 1)))
+  (should (equal (claudemacs--split-tool-instance-name "codex-personal-3")
+                 '(codex-personal . 3)))
+  (should (equal (claudemacs--split-tool-instance-name "codex") '(codex . 1)))
+  (cl-letf (((symbol-function 'claudemacs--session-id) (lambda (&rest _) "main")))
+    (let ((buffer (get-buffer-create "*claudemacs:codex-personal-2:main*")))
+      (unwind-protect
+          (let ((info (claudemacs--get-session-info buffer)))
+            (should (eq (plist-get info :tool) 'codex-personal))
+            (should (= (plist-get info :instance) 2))
+            (should (equal (plist-get info :session-id) "main")))
+        (kill-buffer buffer)))))
+
+(ert-deftest claudemacs-test-numeric-suffix-profile-key-stays-intact ()
+  "An exact registry key wins over the display instance suffix grammar."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :program "codex")
+           (codex-personal-2024 :tool codex :program "cdx"))))
+    (should (equal (claudemacs--split-tool-instance-name
+                    "codex-personal-2024")
+                   '(codex-personal-2024 . 1)))
+    (should (equal (claudemacs--split-tool-instance-name "codex-2")
+                   '(codex . 2)))))
+
+(ert-deftest claudemacs-test-next-instance-skips-profile-name-collision ()
+  "Automatic instance allocation does not claim another profile's name."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :program "codex")
+           (codex-2 :tool codex :program "codex"))))
+    (cl-letf (((symbol-function 'claudemacs--get-instance-numbers-for-tool)
+               (lambda (&rest _) '(1))))
+      (should (= (claudemacs--get-next-instance-number 'codex) 3)))))
+
+(ert-deftest claudemacs-test-running-session-keeps-captured-tool-family ()
+  "Registry edits do not change how an existing session receives text."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry '((work :tool codex :program "codex")))
+        events)
+    (with-temp-buffer
+      (setq-local claudemacs--tool 'work
+                  claudemacs--tool-instance 1
+                  claudemacs--session-tool-kind 'codex
+                  claudemacs--session-tool-kind-set-p t)
+      (setq claudemacs-tool-registry '((work :tool claude :program "claude")))
+      (cl-letf (((symbol-function 'claudemacs--terminal-paste-string)
+                 (lambda (text) (push (list :paste text) events)))
+                ((symbol-function 'claudemacs--terminal-send-string)
+                 (lambda (text) (push (list :send text) events))))
+        (claudemacs--send-to-buffer (current-buffer) "hello" t))
+      (should (equal events '((:paste "hello")))))))
+
+(ert-deftest claudemacs-test-branch-rejects-changed-profile-family ()
+  "Branching stops when a live session's profile changed CLI families."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((work :tool codex :program "codex"))))
+    (with-temp-buffer
+      (let ((session (list :tool 'work
+                           :tool-kind 'claude
+                           :buffer (current-buffer))))
+        (cl-letf (((symbol-function 'claudemacs--list-sessions-for-workspace)
+                   (lambda () (list session))))
+          (should-error (claudemacs-branch-session)
+                        :type 'user-error))))))
+
+(ert-deftest claudemacs-test-duplicate-registry-keys-warn ()
+  "Repeated registry keys warn instead of silently collapsing."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :label "Codex work" :program "codex")
+           (codex :label "Codex pers" :program "codex")
+           (claude :label "Claude" :program "claude")))
+        warning-text)
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (_type message &rest _) (setq warning-text message))))
+      (claudemacs--warn-on-duplicate-tool-keys)
+      (should warning-text)
+      (should (string-match-p "`codex'" warning-text)))))
+
+;;; Tool Environment Tests
+
+(ert-deftest claudemacs-test-tool-env-returns-registry-entries ()
+  "A tool's `:env' entries are read from the registry."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :program "codex" :env ("CODEX_HOME=/tmp/personal"))
+           (claude :program "claude"))))
+    (should (equal (claudemacs--get-tool-env 'codex)
+                   '("CODEX_HOME=/tmp/personal")))
+    (should-not (claudemacs--get-tool-env 'claude))))
+
+(ert-deftest claudemacs-test-codex-profile-home-isolates-sqlite-state ()
+  "A profile CODEX_HOME outranks an ambient SQLite home for that profile."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-personal :tool codex :program "codex"
+                           :env ("CODEX_HOME=/tmp/personal"))))
+        (process-environment
+         (cons "CODEX_SQLITE_HOME=/tmp/ambient" process-environment))
+        seen)
+    (claudemacs--call-with-tool-env
+     'codex-personal
+     (lambda ()
+       (setq seen (list (getenv "CODEX_HOME")
+                        (getenv "CODEX_SQLITE_HOME")))))
+    (should (equal seen '("/tmp/personal" "/tmp/personal")))))
+
+(ert-deftest claudemacs-test-explicit-profile-sqlite-home-wins ()
+  "An explicit profile SQLite home is not replaced by CODEX_HOME."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-personal :tool codex :program "codex"
+                           :env ("CODEX_HOME=/tmp/personal"
+                                 "CODEX_SQLITE_HOME=/tmp/sqlite")))))
+    (should (equal (claudemacs--effective-tool-env 'codex-personal)
+                   '("CODEX_HOME=/tmp/personal"
+                     "CODEX_SQLITE_HOME=/tmp/sqlite")))))
+
+(ert-deftest claudemacs-test-tool-env-rejects-malformed-entries ()
+  "Malformed `:env' entries signal rather than starting with a wrong environment."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :program "codex" :env ("CODEX_HOME"))
+           (gemini :program "gemini" :env ("=novar"))
+           (aider :program "aider" :env (bad-entry)))))
+    (should-error (claudemacs--get-tool-env 'codex))
+    (should-error (claudemacs--get-tool-env 'gemini))
+    (should-error (claudemacs--get-tool-env 'aider))))
+
+(ert-deftest claudemacs-test-tool-env-applies-to-session-process ()
+  "A tool's `:env' reaches the session process and outranks the global list."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :program "codex"
+                  :env ("CODEX_HOME=/tmp/personal" "TERM=dumb"))))
+        (claudemacs-process-environment '("TERM=xterm-256color"))
+        (claudemacs-use-shell-env nil)
+        captured-env)
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/codex"))
+              ((symbol-function 'claudemacs--terminal-ensure-backend) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--terminal-post-display) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--setup-terminal-integration) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--set-session-identity) (lambda (&rest _) nil))
+              ((symbol-function 'display-buffer) (lambda (buffer &rest _)
+                                                   (set-window-buffer (selected-window) buffer)
+                                                   (selected-window)))
+              ((symbol-function 'select-window) (lambda (&rest _) nil))
+              ((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--terminal-start)
+               (lambda (&rest _)
+                 (setq captured-env (list (getenv "CODEX_HOME")
+                                          (getenv "CODEX_SQLITE_HOME")
+                                          (getenv "TERM")))
+                 nil)))
+      (let ((buffer (claudemacs--start default-directory 'codex 1)))
+        (unwind-protect
+            (should (equal captured-env
+                           '("/tmp/personal" "/tmp/personal" "dumb")))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest claudemacs-test-tool-env-does-not-leak-outside-session ()
+  "A tool's `:env' does not modify the Emacs environment."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex :program "codex" :env ("CLAUDEMACS_TEST_ENV=set"))))
+        (claudemacs-use-shell-env nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/codex"))
+              ((symbol-function 'claudemacs--terminal-ensure-backend) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--terminal-post-display) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--setup-terminal-integration) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--set-session-identity) (lambda (&rest _) nil))
+              ((symbol-function 'display-buffer) (lambda (buffer &rest _)
+                                                   (set-window-buffer (selected-window) buffer)
+                                                   (selected-window)))
+              ((symbol-function 'select-window) (lambda (&rest _) nil))
+              ((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--terminal-start) (lambda (&rest _) nil)))
+      (let ((buffer (claudemacs--start default-directory 'codex 1)))
+        (unwind-protect
+            (should-not (getenv "CLAUDEMACS_TEST_ENV"))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 ;;; Model Menu Tests
 

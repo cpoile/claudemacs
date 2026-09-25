@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 
 (defvar claudemacs-terminal-backend)
 
@@ -153,6 +154,116 @@ KEY is one of `return', `meta-return', `left', or `escape'."
 (defun claudemacs--terminal-setup-buffer (bell-function)
   "Configure the current terminal buffer to call BELL-FUNCTION on BEL."
   (claudemacs--terminal-call :setup-buffer bell-function))
+
+(defun claudemacs--terminal-setup-notifications (handler)
+  "Ask the current backend to report tool notifications to HANDLER.
+
+HANDLER is called with a BODY string and an optional TITLE string whenever
+the tool emits a desktop-notification escape sequence (OSC 9 or OSC 777).
+`:setup-notifications' is optional: backends that cannot observe those
+sequences simply omit it, and this returns nil for them."
+  (let* ((backend (claudemacs--terminal-current-backend))
+         (operations (claudemacs--terminal-ensure-backend backend))
+         (function (plist-get operations :setup-notifications)))
+    (when function
+      (funcall function handler))))
+
+;;;; Desktop Notification Escape Sequences
+
+;; Terminal programs that want to raise a desktop notification write it as an
+;; OSC sequence rather than as a plain BEL: OSC 9 carries a body only
+;; (iTerm2 style), OSC 777 carries a title and a body (urxvt style).  Codex
+;; uses OSC 9 when its `tui.notification_method' is set to "osc9", and the
+;; body is the text it would have shown in a desktop notification.  Backends
+;; that see raw terminal output use the helpers below to pull those
+;; sequences out of the stream.
+
+(defconst claudemacs--terminal-osc-notification-regexp
+  "\e\\]\\(9\\|777\\);\\([^\a\e]*\\)\\(?:\a\\|\e\\\\\\)"
+  "Regexp matching an OSC 9 or OSC 777 desktop notification sequence.")
+
+(defconst claudemacs--terminal-osc-carry-limit 4096
+  "Maximum number of bytes of a partial OSC sequence to keep between chunks.
+Terminal output arrives in arbitrary chunks, so a notification sequence can
+be split across two of them.  Anything longer than this is not a
+notification Claudemacs can use, and is dropped instead of buffered.")
+
+(defun claudemacs--terminal-decode-osc-text (text)
+  "Decode TEXT from raw terminal bytes to a string.
+Process output reaches backends undecoded, but callers may also pass an
+already-decoded string."
+  (if (multibyte-string-p text)
+      text
+    (decode-coding-string text 'utf-8 t)))
+
+(defun claudemacs--terminal-osc-carry (text)
+  "Return the tail of TEXT that may be the start of an unterminated OSC.
+TEXT is the part of a chunk left over after every complete notification
+sequence was consumed."
+  (let* ((start (claudemacs--terminal-last-osc-introducer text))
+         (carry (cond
+                 ((and start
+                       (not (string-match-p "[\a]" (substring text (+ start 2))))
+                       (not (string-match-p "\e\\\\" (substring text (+ start 2)))))
+                  (substring text start))
+                 ((string-suffix-p "\e" text) "\e")
+                 (t ""))))
+    (if (> (length carry) claudemacs--terminal-osc-carry-limit) "" carry)))
+
+(defun claudemacs--terminal-last-osc-introducer (text)
+  "Return the position of the last OSC introducer (ESC ]) in TEXT, or nil."
+  (let ((position nil)
+        (search 0))
+    (while (setq search (string-match-p "\e\\]" text search))
+      (setq position search)
+      (setq search (1+ search)))
+    position))
+
+(defun claudemacs--terminal-parse-osc-notifications (text)
+  "Extract desktop notifications from terminal output TEXT.
+
+Return a cons of (NOTIFICATIONS . CARRY).  NOTIFICATIONS is a list of
+\(TITLE . BODY) conses in the order they appeared, where TITLE is nil for
+the title-less OSC 9 form.  CARRY is the trailing text of a sequence that
+was cut in half by the chunk boundary; prepend it to the next chunk."
+  (let ((position 0)
+        (notifications nil))
+    (while (string-match claudemacs--terminal-osc-notification-regexp text position)
+      (let ((command (match-string 1 text))
+            (payload (match-string 2 text)))
+        (setq position (match-end 0))
+        (when-let* ((notification
+                     (claudemacs--terminal-osc-notification command payload)))
+          (push notification notifications))))
+    (cons (nreverse notifications)
+          (claudemacs--terminal-osc-carry (substring text position)))))
+
+(defun claudemacs--terminal-osc-notification (command payload)
+  "Return a (TITLE . BODY) notification for OSC COMMAND with PAYLOAD, or nil."
+  (cond
+   ;; OSC 9 ; <body>.  ConEmu reuses OSC 9 for several terminal controls.
+   ((equal command "9")
+    (unless (or (string-match-p "\\`[1234];" payload)
+                (string-prefix-p "5" payload)
+                (string-prefix-p "9;" payload)
+                (string= payload "10")
+                (string-match-p "\\`10;[0-3]" payload)
+                (string-prefix-p "12" payload))
+      (let ((body (claudemacs--terminal-decode-osc-text payload)))
+        (unless (string-empty-p body)
+          (cons nil body)))))
+   ;; OSC 777 ; notify ; <title> ; <body>.
+   ((and (equal command "777")
+         (string-prefix-p "notify;" payload))
+    (let* ((rest (substring payload (length "notify;")))
+           (separator (cl-position ?\; rest))
+           (title (claudemacs--terminal-decode-osc-text
+                   (if separator (substring rest 0 separator) rest)))
+           (body (claudemacs--terminal-decode-osc-text
+                  (if separator (substring rest (1+ separator)) ""))))
+      (cond
+       ((not (string-empty-p body)) (cons title body))
+       ((not (string-empty-p title)) (cons title "")))))))
 
 (defun claudemacs--terminal-setup-faces ()
   "Apply backend-specific face configuration in the current buffer."

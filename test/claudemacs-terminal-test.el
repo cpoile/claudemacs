@@ -470,6 +470,39 @@ loading from leaking into another ERT test."
          (should (equal set-cursor-arguments
                         (list eat-terminal 'current-cursor-state))))))))
 
+(ert-deftest claudemacs-terminal-test-eat-defers-notification-delivery ()
+  "Eat's process filter queues notifications instead of displaying them."
+  :tags '(:unit :terminal-backend :eat)
+  (claudemacs-terminal-test--with-stubbed-adapter
+      'eat "claudemacs-terminal-eat.el"
+    (let ((buffer (generate-new-buffer " *claudemacs-eat-notification-test*"))
+          scheduled
+          delivered)
+      (unwind-protect
+          (progn
+            (with-current-buffer buffer
+              (setq-local claudemacs--eat-notification-handler
+                          (lambda (body title)
+                            (setq delivered
+                                  (list body title (current-buffer)))))
+              (cl-letf (((symbol-function 'process-buffer)
+                         (lambda (_process) buffer))
+                        ((symbol-function 'run-at-time)
+                         (lambda (delay repeat function &rest arguments)
+                           (setq scheduled
+                                 (list delay repeat function arguments)))))
+                (claudemacs--eat-scan-notifications
+                 :fake-process "\e]9;turn complete\a")))
+            (should-not delivered)
+            (pcase-let ((`(,delay ,repeat ,function ,arguments) scheduled))
+              (should (= delay 0))
+              (should-not repeat)
+              (apply function arguments))
+            (should (equal delivered
+                           (list "turn complete" nil buffer))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest claudemacs-terminal-test-ghostel-adapter-captures-lifecycle ()
   "Ghostel registration and lifecycle operations use its public API."
   :tags '(:unit :terminal-backend :ghostel)
@@ -646,6 +679,85 @@ loading from leaking into another ERT test."
       (setq claudemacs--terminal-initialized-backends old-initialized)
       (setq claudemacs-terminal-test--global-setup-count old-setup-count)
       (setq claudemacs-terminal-test--global-teardown-count old-teardown-count))))
+
+
+;;; Desktop notification escape sequences
+
+(ert-deftest claudemacs-terminal-test-parses-osc-9-notification ()
+  "An OSC 9 sequence yields its message with no title."
+  :tags '(:unit :terminal-backend)
+  (let ((result (claudemacs--terminal-parse-osc-notifications
+                 "text\e]9;banana pancakes\amore text")))
+    (should (equal (car result) '((nil . "banana pancakes"))))
+    (should (equal (cdr result) ""))))
+
+(ert-deftest claudemacs-terminal-test-parses-osc-777-notification ()
+  "An OSC 777 sequence yields both its title and its message."
+  :tags '(:unit :terminal-backend)
+  (let ((result (claudemacs--terminal-parse-osc-notifications
+                 "\e]777;notify;Codex;turn complete\e\\")))
+    (should (equal (car result) '(("Codex" . "turn complete"))))))
+
+(ert-deftest claudemacs-terminal-test-ignores-non-notification-sequences ()
+  "Titles, progress reports, and empty messages are not notifications."
+  :tags '(:unit :terminal-backend)
+  (dolist (output '("\e]0;spinner | claudemacs\a"
+                    "\e]9;1;500\a"
+                    "\e]9;2;task\a"
+                    "\e]9;3;value\a"
+                    "\e]9;4;50\a"
+                    "\e]9;5\a"
+                    "\e]9;9;/tmp/project\e\\"
+                    "\e]9;10\a"
+                    "\e]9;10;0more\a"
+                    "\e]9;10;3\a"
+                    "\e]9;12anything\a"
+                    "\e]9;\a"
+                    "plain output with no escapes"))
+    (should-not (car (claudemacs--terminal-parse-osc-notifications output)))))
+
+(ert-deftest claudemacs-terminal-test-keeps-non-control-numeric-notifications ()
+  "Numeric text outside ConEmu's OSC 9 grammar remains a notification."
+  :tags '(:unit :terminal-backend)
+  (dolist (body '("10;" "10;4" "10;abc" "42 tasks complete"))
+    (should (equal (car (claudemacs--terminal-parse-osc-notifications
+                         (concat "\e]9;" body "\a")))
+                   (list (cons nil body))))))
+
+(ert-deftest claudemacs-terminal-test-preserves-osc-777-title-and-body-shape ()
+  "OSC 777 keeps title-only and body-only fields in their protocol positions."
+  :tags '(:unit :terminal-backend)
+  (should (equal (car (claudemacs--terminal-parse-osc-notifications
+                       "\e]777;notify;Codex;\a"))
+                 '(("Codex" . ""))))
+  (should (equal (car (claudemacs--terminal-parse-osc-notifications
+                       "\e]777;notify;;done\a"))
+                 '(("" . "done"))))
+  (should-not (car (claudemacs--terminal-parse-osc-notifications
+                    "\e]777;notify;;\a"))))
+
+(ert-deftest claudemacs-terminal-test-notification-survives-a-split-chunk ()
+  "A sequence cut in half by a chunk boundary is carried into the next chunk."
+  :tags '(:unit :terminal-backend)
+  (let* ((first (claudemacs--terminal-parse-osc-notifications "out\e]9;banana "))
+         (second (claudemacs--terminal-parse-osc-notifications
+                  (concat (cdr first) "pancakes\a"))))
+    (should-not (car first))
+    (should (equal (car second) '((nil . "banana pancakes"))))
+    (should (equal (cdr second) ""))))
+
+(ert-deftest claudemacs-terminal-test-carry-does-not-grow-without-bound ()
+  "Output that never terminates an OSC sequence is dropped, not buffered."
+  :tags '(:unit :terminal-backend)
+  (let ((result (claudemacs--terminal-parse-osc-notifications
+                 (concat "\e]9;" (make-string 8192 ?x)))))
+    (should (equal (cdr result) ""))))
+
+(ert-deftest claudemacs-terminal-test-notification-setup-is-optional ()
+  "Backends without a notification operation report that they have none."
+  :tags '(:unit :terminal-backend)
+  (claudemacs-terminal-test--with-buffer
+    (should-not (claudemacs--terminal-setup-notifications #'ignore))))
 
 (provide 'claudemacs-terminal-test)
 ;;; claudemacs-terminal-test.el ends here

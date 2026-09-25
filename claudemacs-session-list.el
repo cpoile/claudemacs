@@ -30,7 +30,13 @@
 (declare-function claudemacs--list-all-sessions "claudemacs")
 (declare-function claudemacs--get-session-info "claudemacs")
 (declare-function claudemacs--format-tool-instance-name "claudemacs")
+(declare-function claudemacs--split-tool-instance-name "claudemacs")
+(declare-function claudemacs--call-with-tool-env "claudemacs")
+(declare-function claudemacs--tool-kind "claudemacs")
+(declare-function claudemacs--tool-kind-p "claudemacs")
+(declare-function claudemacs--tool-kind-for-buffer "claudemacs")
 (declare-function claudemacs--get-workspace-name "claudemacs")
+(defvar claudemacs-tool-registry)
 
 ;;;; Customization
 
@@ -59,12 +65,12 @@ the guard explicitly."
   :group 'claudemacs-session-list)
 
 (defcustom claudemacs-session-list-max-claude-entries-per-index 10000
-  "Maximum number of Claude index entries inspected in one refresh.
+  "Maximum number of Claude index entries normalized in one refresh.
 
-This is a second guard after the byte limit.  The first entries are
-processed because Claude normally writes its index newest-first; when the
-limit is reached the remainder is skipped and a diagnostic makes the partial
-result visible.  Set to nil to inspect every entry in an accepted index."
+This is a second guard after the byte limit.  Entries are ordered by their
+last-modified time before the newest ones are processed; when the limit is
+reached the remainder is skipped and a diagnostic makes the partial result
+visible.  Set to nil to inspect every entry in an accepted index."
   :type '(choice (const :tag "No limit" nil) integer)
   :group 'claudemacs-session-list)
 
@@ -446,9 +452,43 @@ allow-list are treated as unknown."
     (when safe-id
       (cons safe-id
             (if (and legacy-id (null tool-neutral-id)
-                     (or (null tool) (eq tool 'claude)))
+                     (or (null tool)
+                         (claudemacs--session-list--tool-kind-p
+                          tool 'claude buffer)))
                 'exact
               provenance)))))
+
+(defun claudemacs--session-list--tool-kind-p (tool kind &optional buffer)
+  "Return non-nil when TOOL belongs to CLI family KIND.
+Falls back to comparing TOOL itself when the lifecycle module that resolves
+registry families is unavailable."
+  (if (and buffer (fboundp 'claudemacs--tool-kind-for-buffer))
+      (eq (claudemacs--tool-kind-for-buffer buffer tool) kind)
+    (if (fboundp 'claudemacs--tool-kind-p)
+        (claudemacs--tool-kind-p tool kind)
+      (eq tool kind))))
+
+(defun claudemacs--session-list--call-with-tool-env (tool function)
+  "Call FUNCTION with TOOL's registry environment applied.
+Falls back to calling FUNCTION unchanged when the lifecycle module that owns
+per-tool environments is unavailable."
+  (if (fboundp 'claudemacs--call-with-tool-env)
+      (claudemacs--call-with-tool-env tool function)
+    (funcall function)))
+
+(defun claudemacs--session-list--split-instance-name (instance-name)
+  "Split INSTANCE-NAME into a (TOOL . INSTANCE) pair."
+  (save-match-data
+    (if (fboundp 'claudemacs--split-tool-instance-name)
+        (claudemacs--split-tool-instance-name instance-name)
+      (let ((exact-tool (intern instance-name)))
+        (if (and (boundp 'claudemacs-tool-registry)
+                 (assq exact-tool claudemacs-tool-registry))
+            (cons exact-tool 1)
+          (if (string-match "\\`\\(.+\\)-\\([0-9]+\\)\\'" instance-name)
+              (cons (intern (match-string 1 instance-name))
+                    (string-to-number (match-string 2 instance-name)))
+            (cons exact-tool 1)))))))
 
 (defun claudemacs--session-list--buffer-name-info (buffer)
   "Return tool, instance, and workspace parsed from BUFFER's display name.
@@ -458,13 +498,13 @@ for the current Claudemacs naming convention and is never treated as a CLI
 session ID."
   (when (and (buffer-live-p buffer)
              (string-match
-              "^\\*claudemacs:\\([^:-]+\\)\\(?:-\\([0-9]+\\)\\)?:\\(.+\\)\\*$"
+              "^\\*claudemacs:\\([^:]+\\):\\(.+\\)\\*$"
               (buffer-name buffer)))
-    (list :tool (intern (match-string 1 (buffer-name buffer)))
-          :instance (if (match-string 2 (buffer-name buffer))
-                        (string-to-number (match-string 2 (buffer-name buffer)))
-                      1)
-          :workspace (match-string 3 (buffer-name buffer)))))
+    (let ((name-parts (claudemacs--session-list--split-instance-name
+                       (match-string 1 (buffer-name buffer)))))
+      (list :tool (car name-parts)
+            :instance (cdr name-parts)
+            :workspace (match-string 2 (buffer-name buffer))))))
 
 (defun claudemacs--session-list--buffer-tool-and-instance (buffer)
   "Return BUFFER's tool and display instance as a two-element list."
@@ -796,6 +836,18 @@ cycles when a filesystem presents an alias to an already visited directory."
   (when (numberp claudemacs-session-list-max-claude-entries-per-index)
     (max 1 claudemacs-session-list-max-claude-entries-per-index)))
 
+(defun claudemacs--session-list--claude-entry-newer-first-p (left right)
+  "Return non-nil when raw Claude entry LEFT is newer than RIGHT."
+  (claudemacs--session-list--newer-first-p
+   (claudemacs--session-list--time
+    (when (claudemacs--session-list--json-object-p left)
+      (or (claudemacs--session-list--json-value left 'modified)
+          (claudemacs--session-list--json-value left 'updatedAt))))
+   (claudemacs--session-list--time
+    (when (claudemacs--session-list--json-object-p right)
+      (or (claudemacs--session-list--json-value right 'modified)
+          (claudemacs--session-list--json-value right 'updatedAt))))))
+
 (defun claudemacs--session-list--bounded-history-add (row rows)
   "Add ROW to newest-first ROWS without exceeding the history row cap.
 
@@ -814,37 +866,21 @@ second unbounded collection merely to sort it at the end of a refresh."
 Return non-nil when the per-index entry limit truncated ENTRIES.  Claude
 indexes normally arrive as lists; a vector remains accepted for callers that
 provide already-decoded data."
-  (let ((limit (claudemacs--session-list--claude-entry-limit))
-        (count 0)
-        (truncated nil))
-    (cond
-     ((vectorp entries)
-      (let ((length (length entries))
-            (end (if limit (min (length entries) limit)
-                   (length entries))))
-        (dotimes (index end)
-          (funcall function (aref entries index))
-          (setq count (1+ count)))
-        (setq truncated (and limit (> length end)))))
-     ((and (listp entries) entries)
-      (let ((remaining entries))
-        (while (and remaining (or (null limit) (< count limit)))
-          (funcall function (car remaining))
-          (setq count (1+ count)
-                remaining (cdr remaining)))
-        (setq truncated (and limit remaining))))
-     (t
-      ;; A nil list is a valid empty array.  The parser's private null
-      ;; sentinel is rejected by the caller before this helper is reached.
-      nil))
-    truncated))
+  (let* ((limit (claudemacs--session-list--claude-entry-limit))
+         (all (if (vectorp entries) (append entries nil) entries))
+         (ordered (sort (copy-sequence all)
+                        #'claudemacs--session-list--claude-entry-newer-first-p))
+         (selected (if limit (seq-take ordered limit) ordered)))
+    (dolist (entry selected)
+      (funcall function entry))
+    (and limit (> (length ordered) limit))))
 
 (defun claudemacs--session-list-claude-history (&optional cwd)
   "Read all valid Claude history rows once, optionally filtered to CWD.
 
 Malformed index files are diagnosed independently; valid files continue to
-contribute rows.  The returned IDs come directly from Claude's
-`sessionId' fields and are never selected by recency."
+contribute rows.  IDs come directly from Claude's `sessionId' fields; recency
+only determines their display order."
   (let* ((projects (expand-file-name
                     "projects"
                     (claudemacs--session-list-claude-config-dir)))
@@ -956,8 +992,11 @@ be represented without ever being mistaken for a history row:
 
   (:rows ROWS)
 
-When TOOL is nil both supported providers are queried once.  Each focused
-provider remains available separately for the overview refresh and tests."
+When TOOL is nil both supported providers are queried once, in Emacs's own
+environment, since no single registry entry applies.  Otherwise the providers
+run with TOOL's registry `:env', so a profile that sets `CODEX_HOME' or
+`CLAUDE_CONFIG_DIR' resolves its own storage.  Each focused provider remains
+available separately for the overview refresh and tests."
   (let* ((diagnostics-before
           (copy-sequence
            (or claudemacs-session-list-last-diagnostics
@@ -970,15 +1009,18 @@ provider remains available separately for the overview refresh and tests."
          (result
           (condition-case error-data
               (list :value
-                    (cond
-                     ((eq tool 'claude)
-                      (claudemacs--session-list-claude-history cwd))
-                     ((eq tool 'codex)
-                      (claudemacs--session-list-codex-history cwd))
-                     ((null tool)
-                      (append (claudemacs--session-list-claude-history cwd)
-                              (claudemacs--session-list-codex-history cwd)))
-                     (t nil)))
+                    (claudemacs--session-list--call-with-tool-env
+                     tool
+                     (lambda ()
+                       (cond
+                        ((claudemacs--session-list--tool-kind-p tool 'claude)
+                         (claudemacs--session-list-claude-history cwd))
+                        ((claudemacs--session-list--tool-kind-p tool 'codex)
+                         (claudemacs--session-list-codex-history cwd))
+                        ((null tool)
+                         (append (claudemacs--session-list-claude-history cwd)
+                                 (claudemacs--session-list-codex-history cwd)))
+                        (t nil)))))
             (error
              (list :error (error-message-string error-data)
                    :value nil))))
@@ -1151,6 +1193,14 @@ the schema query itself failed."
              claudemacs-session-list-description-max-length
            240)))
 
+(defun claudemacs--session-list--codex-selected-columns (columns)
+  "Return supported Codex history columns present in schema COLUMNS."
+  (append '("id" "created_at" "updated_at" "cwd")
+          (seq-filter
+           (lambda (column) (member column columns))
+           '("created_at_ms" "updated_at_ms" "recency_at" "recency_at_ms"
+             "name" "title" "preview" "first_user_message"))))
+
 (defun claudemacs--session-list--codex-query-sql (columns &optional cwd)
   "Construct a bounded Codex query from available COLUMNS and optional CWD.
 
@@ -1158,25 +1208,18 @@ The CWD predicate is deliberately part of the SQL query, before ORDER/LIMIT,
 so a busy Codex database cannot return only unrelated rows and then appear
 empty after the Lisp-side canonical-path check.  Values are quoted as SQL
 literals because the built-in and sqlite3 fallback APIs use the same query."
-  (let* ((base '("id" "created_at" "updated_at" "cwd"))
-         (optional-timestamps '("created_at_ms" "updated_at_ms"))
-         (optional-descriptions '("name" "title" "preview"
+  (let* ((optional-descriptions '("name" "title" "preview"
                                   "first_user_message"))
          (description-limit
           (claudemacs--session-list--description-sql-limit))
          (selected
-          (append
-           base
-           (seq-filter (lambda (column)
-                         (member column columns))
-                       optional-timestamps)
-           (mapcar
-            (lambda (column)
-              (format "substr(%s,1,%d) AS %s"
-                      column description-limit column))
-            (seq-filter (lambda (column)
-                          (member column columns))
-                        optional-descriptions))))
+          (mapcar
+           (lambda (column)
+             (if (member column optional-descriptions)
+                 (format "substr(%s,1,%d) AS %s"
+                         column description-limit column)
+               column))
+           (claudemacs--session-list--codex-selected-columns columns)))
          (cwd-values
           (when (claudemacs--session-list--string cwd)
             (delete-dups
@@ -1197,9 +1240,14 @@ literals because the built-in and sqlite3 fallback APIs use the same query."
                                    (mapconcat
                                     #'claudemacs--session-list--sql-quote
                                     cwd-values ","))))))
-         (order (if (member "updated_at_ms" columns)
-                    "updated_at_ms DESC, updated_at DESC"
-                  "updated_at DESC, created_at DESC")))
+         (order
+          (mapconcat
+           (lambda (column) (concat column " DESC"))
+           (seq-filter
+            (lambda (column) (member column columns))
+            '("recency_at_ms" "recency_at" "updated_at_ms" "updated_at"
+              "created_at_ms" "created_at" "id"))
+           ", ")))
     (format "SELECT %s FROM threads%s ORDER BY %s LIMIT %d;"
             (mapconcat #'identity selected ",")
             (if where (concat " WHERE " (mapconcat #'identity where " AND ")) "")
@@ -1257,7 +1305,10 @@ literals because the built-in and sqlite3 fallback APIs use the same query."
           (created (claudemacs--session-list--json-value record 'created_at))
           (updated (claudemacs--session-list--json-value record 'updated_at))
           (created-ms (claudemacs--session-list--json-value record 'created_at_ms))
-          (updated-ms (claudemacs--session-list--json-value record 'updated_at_ms)))
+          (updated-ms (claudemacs--session-list--json-value record 'updated_at_ms))
+          (recency (claudemacs--session-list--json-value record 'recency_at))
+          (recency-ms (claudemacs--session-list--json-value
+                       record 'recency_at_ms)))
       (when (and id (claudemacs--session-list--string cwd))
         (let ((description
                (claudemacs--session-list--description-from-values
@@ -1267,7 +1318,8 @@ literals because the built-in and sqlite3 fallback APIs use the same query."
                 (claudemacs--session-list--json-value
                  record 'first_user_message)))
               (updated-value (claudemacs--session-list--timestamp-value
-                              updated-ms updated created-ms created)))
+                              recency-ms recency updated-ms updated
+                              created-ms created)))
           (claudemacs--session-list--row
            (list :tool 'codex
                  :session-id id
@@ -1329,13 +1381,8 @@ discarded rather than displayed as a session."
                                (sqlite-available-p)))
                       (claudemacs--session-list--codex-built-in-records
                        database sql
-                       (let* ((base '("id" "created_at" "updated_at" "cwd"))
-                              (optional '("created_at_ms" "updated_at_ms" "name"
-                                          "title" "preview" "first_user_message")))
-                         (append base
-                                 (seq-filter (lambda (column)
-                                               (member column columns))
-                                             optional))))
+                       (claudemacs--session-list--codex-selected-columns
+                        columns))
                     (let ((records
                            (claudemacs--session-list--sqlite3-json
                             database sql)))

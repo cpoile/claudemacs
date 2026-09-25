@@ -1106,15 +1106,15 @@ identity merely because the value is non-nil."
       (claudemacs-session-list-test--write
        (expand-file-name "projects/capped/sessions-index.json" home)
        (json-encode
-        `((entries . (((sessionId . "newest")
+        `((entries . (((sessionId . "oldest")
+                       (projectPath . "/tmp/capped")
+                       (modified . "2026-08-13T12:00:00Z"))
+                      ((sessionId . "newest")
                        (projectPath . "/tmp/capped")
                        (modified . "2026-08-15T12:00:00Z"))
                       ((sessionId . "older")
                        (projectPath . "/tmp/capped")
-                       (modified . "2026-08-14T12:00:00Z"))
-                      ((sessionId . "oldest")
-                       (projectPath . "/tmp/capped")
-                       (modified . "2026-08-13T12:00:00Z")))))))
+                       (modified . "2026-08-14T12:00:00Z")))))))
       (let ((original (symbol-function
                        'claudemacs--session-list--claude-entry-row)))
         (cl-letf (((symbol-function 'claudemacs--session-list--claude-entry-row)
@@ -1126,6 +1126,27 @@ identity merely because the value is non-nil."
             (should (equal (car (claudemacs-session-list-test--result-id-list result))
                            "newest"))
             (should (<= processed 1))))))))
+
+(ert-deftest claudemacs-session-list-test-codex-history-prefers-recency-time ()
+  "Codex history uses its LRU timestamp ahead of content update time."
+  :tags '(:unit :session-list :provider :ordering)
+  (let* ((columns '("id" "created_at" "updated_at" "cwd"
+                    "created_at_ms" "updated_at_ms"
+                    "recency_at" "recency_at_ms"))
+         (sql (claudemacs--session-list--codex-query-sql columns))
+         (row (claudemacs--session-list--codex-alist-row
+               '((id . "recently-used")
+                 (cwd . "/tmp/project")
+                 (created_at_ms . 1000000000000)
+                 (updated_at_ms . 3000000000000)
+                 (recency_at_ms . 2000000000000)))))
+    (should (string-match-p
+             (regexp-quote
+              (concat "ORDER BY recency_at_ms DESC, recency_at DESC, "
+                      "updated_at_ms DESC, updated_at DESC, "
+                      "created_at_ms DESC, created_at DESC, id DESC"))
+             sql))
+    (should (= (float-time (plist-get row :updated-at)) 2000000000))))
 
 (ert-deftest claudemacs-session-list-test-claude-index-read-is-bounded ()
   "Claude index reads request only one overflow sentinel byte."

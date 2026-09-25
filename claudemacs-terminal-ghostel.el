@@ -179,9 +179,23 @@ Ghostel routes terminal BEL characters through Emacs's
   (setq-local ring-bell-function bell-function)
   ;; Claudemacs owns completion notifications.  Avoid a second notification
   ;; when a tool emits OSC 9/777 as well as BEL.
+  ;; `claudemacs--ghostel-setup-notifications' re-points this hook at
+  ;; Claudemacs when a notification should carry the tool's own message.
   (when (boundp 'ghostel-notification-function)
     (setq-local ghostel-notification-function nil))
   (current-buffer))
+
+(defun claudemacs--ghostel-setup-notifications (handler)
+  "Report the OSC 9 / OSC 777 notifications Ghostel parses to HANDLER.
+
+Ghostel already parses these sequences, so the adapter only has to redirect
+its notification hook into Claudemacs instead of letting Ghostel raise its
+own notification."
+  (when (boundp 'ghostel-notification-function)
+    (setq-local ghostel-notification-function
+                (lambda (title body)
+                  (funcall handler body title)))
+    t))
 
 (defun claudemacs--ghostel-setup-faces ()
   "Apply the Claudemacs REPL face to the current Ghostel terminal.
@@ -226,6 +240,7 @@ terminal's window hooks can establish its real dimensions before this redraw."
  :paste-string #'claudemacs--ghostel-paste-string
  :send-key #'claudemacs--ghostel-send-key
  :setup-buffer #'claudemacs--ghostel-setup-buffer
+ :setup-notifications #'claudemacs--ghostel-setup-notifications
  :setup-faces #'claudemacs--ghostel-setup-faces
  :post-display #'claudemacs--ghostel-post-display
  :force-redraw #'claudemacs--ghostel-force-redraw

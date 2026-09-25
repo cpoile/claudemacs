@@ -11,6 +11,8 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 ## Features
 
 - **Multi-tool support**: Use Claude, Codex, Gemini, or other AI coding tools via configurable tool registry
+- **Tool profiles**: Run one CLI under several registry entries — separate configs, switches, or accounts — each labeled in the menu (see [Tool Registry](#tool-registry))
+- **Per-tool environment**: Scope environment variables like `CODEX_HOME` to a single entry's sessions
 - **Selectable terminal backends**: Use Ghostel when available, with Eat as the fallback
 - **Multiple instances**: Run multiple sessions of the same tool per workspace (claude, claude-2, etc.)
 - **Broadcast to all sessions**: Use `C-u` prefix to send actions to all active sessions
@@ -44,6 +46,8 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
   - [Commands](#commands)
   - [Customization](#customization)
     - [Tool Registry](#tool-registry)
+      - [Which CLI an entry runs (`:tool`)](#which-cli-an-entry-runs-tool)
+      - [Per-tool environment variables (`:env`)](#per-tool-environment-variables-env)
     - [Basic Configuration](#basic-configuration)
     - [Process Environment](#process-environment)
     - [System Notifications](#system-notifications)
@@ -188,6 +192,35 @@ Other useful tweaks:
 
 First, set `claude config set --global preferredNotifChannel terminal_bell`.
 
+Claude Code's `iterm2` and `ghostty` channels work too, and they carry Claude's
+own notification text rather than just the event — see [tool messages in
+notifications](#tool-messages-in-notifications) below.
+
+#### Tool messages in notifications
+
+A terminal bell announces only that something happened.  Tools can instead
+announce a completion as an OSC 9 or OSC 777 escape sequence, which carries the
+notification text along with it, and Claudemacs shows that text as the body of
+the system notification, e.g.:
+
+> **Codex**
+> Renamed the helper and ran the tests; all 81 pass.
+
+For Codex sessions this is automatic: Claudemacs configures Codex's TUI
+notification path to use OSC 9 and to notify even while the session is focused.
+Codex sends response text verbatim, which Claudemacs truncates to fit the
+notification.  (This is separate from Codex's
+top-level `notify` hook, which runs an external command.)
+
+For Claude Code, set `preferredNotifChannel` to `iterm2` or `ghostty` instead of
+`terminal_bell`.  `iterm2_with_bell` also works — it announces the same event
+twice, and Claudemacs drops the duplicate.  The `kitty` channel uses OSC 99,
+which Claudemacs does not read.
+
+Set `claudemacs-notify-with-tool-message` to nil to always use the generic
+"awaiting your input" text.  Tools that only ring the bell have no message to
+send, so their notifications keep the generic text either way.
+
 #### -- Mac --
 
 For Mac, you need to do some setup to make notifications work.
@@ -195,12 +228,6 @@ For Mac, you need to do some setup to make notifications work.
 1. Accept the notification permissions. (Or go into System Settings -> Notifications -> Script Editor and allow notifications there.)
 
 Now you should receive System notifications when Claude Code is waiting for input, or when done.
-
-For Codex sessions, Claudemacs automatically configures Codex's TUI notification
-path to emit a terminal BEL and to notify even while the session is focused.
-That lets the selected terminal backend invoke the same Claudemacs system
-notification handler.  This is separate from Codex's top-level `notify` hook,
-which runs an external command.
 
 Unfortunately, clicking on the notification doesn't bring you to Emacs. Open to ideas on how to fix that.
 
@@ -434,6 +461,9 @@ These open a submenu where you can select which tool to start/resume:
 - `3` - Third tool (default: gemini)
 - `RET` - Start/resume default tool
 
+Historical sessions in the resume picker are ordered by most recent use, with
+the newest session at the top.
+
 Switches available in submenus:
 - `-d` - Skip permissions on start (`--dangerously-skip-permissions` or equivalent)
 - `-p` - Prompt for project root directory
@@ -480,13 +510,13 @@ Configure which AI coding tools are available:
 ```elisp
 ;; Default registry includes Claude, Codex, and Gemini
 (setq claudemacs-tool-registry
-  '((claude :program "claude" :switches nil
+  '((claude :label "Claude" :program "claude" :switches nil
             :model-types (("opus-max" :model "opus" :effort "max")
                           ("sonnet-high" :model "sonnet" :effort "high")))
-    (codex :program "codex" :switches nil
+    (codex :label "Codex" :program "codex" :switches nil
            :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
                          ("sol-high" :model "gpt-5.6-sol" :effort "high")))
-    (gemini :program "gemini-cli" :switches nil)))
+    (gemini :label "Gemini" :program "gemini-cli" :switches nil)))
 
 ;; Add a custom tool or modify switches
 (setq claudemacs-tool-registry
@@ -502,6 +532,73 @@ Configure which AI coding tools are available:
 (setq claudemacs-default-tool 'claude)
 ```
 
+The optional `:label` is the display name shown before the session name in the
+start and resume menus, so a tool reads as `1. Claude - claude-2 (opus-high)
+(default)`.  Omit `:label` to show only the session name (`1. claude-2 ...`).
+
+##### Which CLI an entry runs (`:tool`)
+
+Each registry key is one menu entry and one session identity, so **keys must be
+unique**.  The optional `:tool` says which CLI the entry actually runs —
+`claude`, `codex`, `gemini`, etc. — and that family, not the key, selects every
+CLI-specific behavior: notification switches, resume and fork arguments, `-d`
+translation, and session-identity tracking.
+
+When `:tool` is omitted it is inferred, first from `:program` and then from the
+key.  Inference handles paths and conventional names (`/usr/bin/codex`,
+`codex.exe`, `codex-personal` are all Codex), so most entries never need it.
+Set `:tool` when `:program` is an alias or wrapper whose name reveals nothing
+(`cdx`, `~/bin/work-cli`).  An entry matching nothing is a generic tool: it
+starts and sends text, without CLI-specific handling.
+
+Duplicate keys warn when the menu is built, since only the first entry for a
+key is ever used.
+
+##### Per-tool environment variables (`:env`)
+
+The optional `:env` is a list of `"VAR=VALUE"` strings applied to that tool's
+sessions only.  They take precedence over `claudemacs-process-environment`
+(which applies to every tool) and over the environment Emacs itself was started
+with, and they are not exported into Emacs — only the session's process sees
+them.
+
+Claudemacs applies an entry's `:env` to its own lookups too, not just to the
+session process: the configured model shown in the menu, and the session
+history offered when resuming or branching, both resolve `CODEX_HOME` /
+`CLAUDE_CONFIG_DIR` from `:env` first.  So a profile shows its own model and
+lists its own past sessions, never the default installation's.
+
+For Codex profiles, setting `CODEX_HOME` also scopes `CODEX_SQLITE_HOME` to
+that directory unless the profile sets `CODEX_SQLITE_HOME` explicitly.  This
+prevents an ambient SQLite override from mixing histories between profiles.
+
+Values are used **literally**: `:program` and `:env` never go through a shell,
+so `"$HOME"` and `"~"` are not expanded.  Build paths with `expand-file-name`
+and a backquoted registry:
+
+```elisp
+;; Two Codex profiles, each with its own CODEX_HOME
+(setq claudemacs-tool-registry
+  `((codex-work :label "Codex work" :program "codex"
+                :switches ("--approve-for-me"))
+    (codex-pers :label "Codex pers" :tool codex :program "cdx"  ; alias → :tool
+                :switches ("--approve-for-me")
+                :env (,(concat "CODEX_HOME=" (expand-file-name "~/.codex-personal"))))
+    (claude :label "Claude work" :program "claude"
+            :switches ("--verbose"))))
+```
+
+That produces:
+
+```
+1. Codex work - codex-work (default)
+2. Codex pers - codex-pers
+3. Claude work - claude
+```
+
+A malformed entry (not a `"VAR=VALUE"` string) signals an error when the
+session starts rather than launching the tool with an unintended environment.
+
 The configured model is shown beside each tool in the start-session menu by
 default, along with the `m` (`Toggle model type`) menu item.  Disable it with:
 
@@ -510,9 +607,11 @@ default, along with the `m` (`Toggle model type`) menu item.  Disable it with:
 ```
 
 When enabled, Claudemacs reads Codex's default `model` and
-`model_reasoning_effort` from `~/.codex/config.toml`.  It reads Claude Code's
-optional `model` and `effortLevel` from `~/.claude/settings.json`, falling back
-to the current `sonnet` alias when no model is configured.  The model text is
+`model_reasoning_effort` from `config.toml` under `CODEX_HOME` (`~/.codex` by
+default).  It reads Claude Code's optional `model` and `effortLevel` from
+`settings.json` under `CLAUDE_CONFIG_DIR` (`~/.claude` by default), falling back
+to the current `sonnet` alias when no model is configured.  Both directories
+come from the entry's `:env` when it sets them.  The model text is
 shown in comment-face.  Press `m` in the start menu to cycle the configured
 model types from each tool's configuration; the selection lasts only for the
 current menu invocation and applies only to newly started sessions.
@@ -613,6 +712,11 @@ Customize environment variables passed to Claude processes:
 ;; Set to nil to use Codex's own notification method and focus condition.
 ;; (setq claudemacs-codex-notification-switches nil)
 
+;; Whether a notification shows the message the tool sent with it -- for Codex,
+;; normally the last thing the agent said (default: t)
+;; Set to nil for the generic "awaiting your input" text.
+(setq claudemacs-notify-with-tool-message t)
+
 ;; Sound to use for macOS notifications (default: "Submarine")
 ;; Available sounds: Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, 
 ;; Ping, Pop, Purr, Sosumi, Submarine, Tink
@@ -649,9 +753,12 @@ Claudemacs creates workspace-aware buffer names that include the tool name:
 - Multiple instances: `*claudemacs:claude-2:workspace-name*`
 
 The format is `*claudemacs:TOOL(-N):SESSION-ID*` where:
-- `TOOL` is the tool name (claude, codex, gemini, etc.)
+- `TOOL` is the registry key (claude, codex, gemini, or a profile key like `codex-pers`)
 - `-N` is the instance number (omitted for first instance)
 - `SESSION-ID` is the workspace name or project path
+
+Only a trailing number is read as an instance, so a hyphenated profile key stays
+intact: `*claudemacs:codex-pers-2:workspace-name*` is instance 2 of `codex-pers`.
 
 Currently supports Doom Emacs workspaces and Perspective mode. Open an issue if you use another workspace package.
 

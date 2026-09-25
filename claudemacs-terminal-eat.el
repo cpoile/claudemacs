@@ -28,6 +28,7 @@
 (declare-function eat-term-send-string-as-yank "eat")
 
 (defvar claudemacs--tool)
+(declare-function claudemacs--tool-kind-for-buffer "claudemacs")
 (defvar eat-default-cursor-type)
 (defvar eat-enable-blinking-text)
 (defvar eat-horizontal-bar-cursor-type)
@@ -98,7 +99,9 @@
 
 (defun claudemacs--eat-disable-codex-cursor-blink ()
   "Disable Eat's expensive frame-redrawing cursor blink for Codex."
-  (when (eq claudemacs--tool 'codex)
+  (when (eq (claudemacs--tool-kind-for-buffer
+             (current-buffer) claudemacs--tool)
+            'codex)
     (setq-local eat-very-visible-cursor-type
                 (copy-tree eat-default-cursor-type))
     (setq-local eat-very-visible-vertical-bar-cursor-type
@@ -135,6 +138,54 @@
     (aset display-table #x23fa [?✽])
     (setq-local buffer-display-table display-table))
   (claudemacs--eat-disable-codex-cursor-blink))
+
+(defvar-local claudemacs--eat-notification-handler nil
+  "Function called with (BODY TITLE) for notifications from this terminal.")
+
+(defvar-local claudemacs--eat-notification-carry ""
+  "Terminal output held back because it may start an OSC notification.")
+
+(defun claudemacs--eat-setup-notifications (handler)
+  "Report OSC 9 / OSC 777 notifications from the current Eat buffer to HANDLER.
+
+Eat's terminal emulator drops these sequences, so Claudemacs reads them from
+the raw process output instead.  The scanner runs before Eat's own process
+filter and never modifies the output Eat receives."
+  (when-let* ((process (claudemacs--eat-process)))
+    (setq-local claudemacs--eat-notification-handler handler)
+    (setq-local claudemacs--eat-notification-carry "")
+    ;; Removing first keeps a repeated setup from installing a second scanner.
+    (remove-function (process-filter process)
+                     #'claudemacs--eat-scan-notifications)
+    (add-function :before (process-filter process)
+                  #'claudemacs--eat-scan-notifications)
+    t))
+
+(defun claudemacs--eat-scan-notifications (process output)
+  "Report desktop notifications found in PROCESS OUTPUT.
+
+This runs inside Eat's process filter, where an error would stop Eat from
+consuming the output at all, so it only parses and queues notifications here."
+  (with-demoted-errors "Claudemacs notification scan failed: %S"
+    (when-let* ((buffer (process-buffer process))
+                ((buffer-live-p buffer)))
+      (with-current-buffer buffer
+        (when claudemacs--eat-notification-handler
+          (let* ((handler claudemacs--eat-notification-handler)
+                 (result (claudemacs--terminal-parse-osc-notifications
+                          (concat claudemacs--eat-notification-carry output))))
+            (setq-local claudemacs--eat-notification-carry (cdr result))
+            (when (car result)
+              (run-at-time 0 nil #'claudemacs--eat-deliver-notifications
+                           buffer handler (car result)))))))))
+
+(defun claudemacs--eat-deliver-notifications (buffer handler notifications)
+  "Deliver NOTIFICATIONS to HANDLER in their originating BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (dolist (notification notifications)
+        (with-demoted-errors "Claudemacs notification delivery failed: %S"
+          (funcall handler (cdr notification) (car notification)))))))
 
 (defun claudemacs--eat-setup-faces ()
   "Apply Claudemacs face remapping to the current Eat buffer."
@@ -197,7 +248,9 @@
 (defun claudemacs--eat-hide-cursor (&rest _arguments)
   "Hide the Emacs cursor in Claude sessions using Eat semi-char mode."
   (when (and (claudemacs--eat-session-buffer-p)
-             (eq claudemacs--tool 'claude))
+             (eq (claudemacs--tool-kind-for-buffer
+                  (current-buffer) claudemacs--tool)
+                 'claude))
     (setq-local cursor-type nil)))
 
 (defun claudemacs--eat-maybe-left-key ()
@@ -258,6 +311,7 @@
  :paste-string #'claudemacs--eat-paste-string
  :send-key #'claudemacs--eat-send-key
  :setup-buffer #'claudemacs--eat-setup-buffer
+ :setup-notifications #'claudemacs--eat-setup-notifications
  :setup-faces #'claudemacs--eat-setup-faces
  :post-display #'claudemacs--eat-post-display
  :force-redraw #'claudemacs--eat-force-redraw
