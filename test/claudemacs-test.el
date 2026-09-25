@@ -1520,6 +1520,73 @@ The file is automatically cleaned up after BODY executes."
             (should-not (getenv "CLAUDEMACS_TEST_ENV"))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
+(ert-deftest claudemacs-test-codex-remote-profile-uses-own-daemon-and-project ()
+  "A remote Codex profile starts its own server and opens the requested root."
+  :tags '(:unit :multi-tool)
+  (let ((claudemacs-tool-registry
+         '((codex-pers :tool codex :program "codex"
+                       :switches ("--remote" "unix://")
+                       :env ("CODEX_HOME=/tmp/claudemacs-codex-personal"))))
+        (claudemacs-codex-notification-switches nil)
+        (claudemacs-program-switches nil)
+        (claudemacs-use-shell-env nil)
+        daemon-env daemon-command terminal-command)
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/codex"))
+              ((symbol-function 'call-process)
+               (lambda (program &rest args)
+                 (setq daemon-env (getenv "CODEX_HOME")
+                       daemon-command (cons program (nthcdr 3 args)))
+                 0))
+              ((symbol-function 'claudemacs--terminal-ensure-backend) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--terminal-post-display) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--setup-terminal-integration) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--set-session-identity) (lambda (&rest _) nil))
+              ((symbol-function 'display-buffer) (lambda (buffer &rest _)
+                                                   (set-window-buffer (selected-window) buffer)
+                                                   (selected-window)))
+              ((symbol-function 'select-window) (lambda (&rest _) nil))
+              ((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+              ((symbol-function 'claudemacs--terminal-start)
+               (lambda (_buffer _backend program switches)
+                 (setq terminal-command (cons program switches))
+                 nil)))
+      (let* ((work-dir default-directory)
+             (buffer (claudemacs--start work-dir 'codex-pers 1
+                                       "--profile" "sol-high")))
+        (unwind-protect
+            (progn
+              (should (equal daemon-env "/tmp/claudemacs-codex-personal"))
+              (should (equal daemon-command
+                             '("codex" "app-server" "daemon" "start")))
+              (should (equal terminal-command
+                             (list "codex" "--profile" "sol-high"
+                                   "--remote" "unix://" "--cd" work-dir))))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest claudemacs-test-codex-local-daemon-shell-and-remote-scope ()
+  "Use the configured shell for local startup without changing other remotes."
+  :tags '(:unit :multi-tool)
+  (let (daemon-command)
+    (cl-letf (((symbol-function 'claudemacs--get-shell-name)
+               (lambda () "/bin/zsh"))
+              ((symbol-function 'call-process)
+               (lambda (program &rest args)
+                 (setq daemon-command (cons program (nthcdr 3 args)))
+                 0)))
+      (claudemacs--ensure-codex-local-daemon "codex" t)
+      (should (equal daemon-command
+                     '("/bin/zsh" "-c" "codex app-server daemon start")))))
+  (let ((remote '("--remote" "wss://codex.example.com")))
+    (should (equal (claudemacs--codex-remote-switches
+                    'codex remote "/tmp/local-project")
+                   remote))
+    (should-not (claudemacs--codex-local-daemon-requested-p
+                 'codex remote)))
+  (should (equal (claudemacs--codex-remote-switches
+                  'codex '("--remote" "unix://" "--cd" "/tmp/selected")
+                  "/tmp/local-project")
+                 '("--remote" "unix://" "--cd" "/tmp/selected"))))
+
 ;;; Model Menu Tests
 
 (ert-deftest claudemacs-test-model-menu-is-off-by-default ()

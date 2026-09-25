@@ -13,6 +13,7 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
 - **Multi-tool support**: Use Claude, Codex, Gemini, or other AI coding tools via configurable tool registry
 - **Tool profiles**: Run one CLI under several registry entries — separate configs, switches, or accounts — each labeled in the menu (see [Tool Registry](#tool-registry))
 - **Per-tool environment**: Scope environment variables like `CODEX_HOME` to a single entry's sessions
+- **Codex background server**: Connect Codex 0.157.0 sessions to its shared local server while switching models in the start menu (see [Codex 0.157.0 background server](#codex-01570-background-server))
 - **Selectable terminal backends**: Use Ghostel when available, with Eat as the fallback
 - **Multiple instances**: Run multiple sessions of the same tool per workspace (claude, claude-2, etc.)
 - **Broadcast to all sessions**: Use `C-u` prefix to send actions to all active sessions
@@ -48,12 +49,13 @@ https://github.com/user-attachments/assets/a7a8348d-471c-4eec-85aa-946c3ef9d364
     - [Tool Registry](#tool-registry)
       - [Which CLI an entry runs (`:tool`)](#which-cli-an-entry-runs-tool)
       - [Per-tool environment variables (`:env`)](#per-tool-environment-variables-env)
+      - [Codex 0.157.0 background server](#codex-01570-background-server)
     - [Basic Configuration](#basic-configuration)
     - [Process Environment](#process-environment)
-    - [System Notifications](#system-notifications)
+    - [Notification Settings](#notification-settings)
 - [Buffer Naming](#buffer-naming)
 - [Tips and Tricks](#tips-and-tricks)
-  - [Using eat-mode effectively](#using-eat-mode-effectively)
+  - [Using semi-char mode effectively](#using-semi-char-mode-effectively)
   - [Copy file path with line number](#copy-file-path-with-line-number)
   - [Scroll-popping, input box sticking, input box border draw issues](#scroll-popping-input-box-sticking-input-box-border-draw-issues)
   - [Buffer Toggle Edge Case](#buffer-toggle-edge-case)
@@ -206,11 +208,12 @@ the system notification, e.g.:
 > **Codex**
 > Renamed the helper and ran the tests; all 81 pass.
 
-For Codex sessions this is automatic: Claudemacs configures Codex's TUI
-notification path to use OSC 9 and to notify even while the session is focused.
-Codex sends response text verbatim, which Claudemacs truncates to fit the
-notification.  (This is separate from Codex's
-top-level `notify` hook, which runs an external command.)
+By default, Claudemacs sets Codex's TUI notification path to OSC 9 and makes it
+notify even while the session is focused.  For Codex 0.157.0 background server
+sessions, put those settings in `config.toml` instead; see
+[the setup below](#codex-01570-background-server).  Codex sends response text
+verbatim, which Claudemacs truncates to fit the notification.  This is separate
+from Codex's top-level `notify` hook, which runs an external command.
 
 For Claude Code, set `preferredNotifChannel` to `iterm2` or `ghostty` instead of
 `terminal_bell`.  `iterm2_with_bell` also works — it announces the same event
@@ -511,22 +514,12 @@ Configure which AI coding tools are available:
 ;; Default registry includes Claude, Codex, and Gemini
 (setq claudemacs-tool-registry
   '((claude :label "Claude" :program "claude" :switches nil
-            :model-types (("opus-max" :model "opus" :effort "max")
+            :model-types (("opus-high" :model "opus" :effort "high")
                           ("sonnet-high" :model "sonnet" :effort "high")))
     (codex :label "Codex" :program "codex" :switches nil
            :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
                          ("sol-high" :model "gpt-5.6-sol" :effort "high")))
     (gemini :label "Gemini" :program "gemini-cli" :switches nil)))
-
-;; Add a custom tool or modify switches
-(setq claudemacs-tool-registry
-  '((claude :program "claude" :switches ("--verbose")
-            :model-types (("opus-max" :model "opus" :effort "max")
-                          ("sonnet-high" :model "sonnet" :effort "high")))
-    (codex :program "codex" :switches nil
-           :model-types (("luna-max" :model "gpt-5.6-luna" :effort "max")
-                         ("sol-high" :model "gpt-5.6-sol" :effort "high")))
-    (aider :program "aider" :switches ("--no-auto-commits"))))
 
 ;; Set the default tool (default: 'claude)
 (setq claudemacs-default-tool 'claude)
@@ -577,11 +570,11 @@ so `"$HOME"` and `"~"` are not expanded.  Build paths with `expand-file-name`
 and a backquoted registry:
 
 ```elisp
-;; Two Codex profiles, each with its own CODEX_HOME
+;; Two Codex registry entries, each with its own CODEX_HOME
 (setq claudemacs-tool-registry
   `((codex-work :label "Codex work" :program "codex"
                 :switches ("--approve-for-me"))
-    (codex-pers :label "Codex pers" :tool codex :program "cdx"  ; alias → :tool
+    (codex-pers :label "Codex pers" :program "codex"
                 :switches ("--approve-for-me")
                 :env (,(concat "CODEX_HOME=" (expand-file-name "~/.codex-personal"))))
     (claude :label "Claude work" :program "claude"
@@ -617,23 +610,74 @@ model types from each tool's configuration; the selection lasts only for the
 current menu invocation and applies only to newly started sessions.
 
 Model types are `(NAME PLIST)` entries in each tool's registry plist.  The
-standard `:model` and `:effort` keys are translated for Claude Code and Codex;
-use `:switches` for a tool-specific command-line form.  For example, this is
-a complete custom setting suitable for an `init.el`:
+standard `:model` and `:effort` keys generate Claude Code and Codex command
+line switches.  An explicit `:switches` list replaces those generated switches
+for that choice.  Use explicit Codex `--profile` switches for the background
+server setup below.
 
-```elisp
-(setq claudemacs-tool-registry
-  '((claude :program "claude" :switches nil
-            :model-types (("careful" :model "opus" :effort "max")
-                          ("quick" :model "sonnet" :effort "medium")))
-    (codex :program "codex" :switches nil
-           :model-types (("local-fast"
-                          :switches ("--model" "gpt-5.6-sol"
-                                     "--config" "model_reasoning_effort=\"high\""))
-                         ("local-deep"
-                          :switches ("--model" "gpt-5.6-luna"
-                                     "--config" "model_reasoning_effort=\"max\"")))))
-```
+##### Codex 0.157.0 background server
+
+[Codex CLI 0.157.0](https://learn.chatgpt.com/docs/changelog) added automatic
+background server startup for eligible interactive sessions.  In 0.157.0,
+launching with a custom `--profile` or Claudemacs' default Codex notification
+`--config` switches can instead show **"Running without the shared background
+server"**.  Selecting a Codex profile alone does not guarantee a shared server.
+
+For a local Unix socket on macOS or Linux, use an explicit
+[`--remote unix://`](https://learn.chatgpt.com/docs/developer-commands)
+connection.  With this setting, Claudemacs runs `codex app-server daemon start`
+for that entry's `CODEX_HOME` before opening the terminal; an already running
+managed server is reused.  It also passes the project directory with `--cd`,
+so a new session opens the selected project.  Separate `CODEX_HOME` values use
+separate servers.  This setup requires Codex CLI 0.157.0 or later.
+
+1. Put the TUI notification settings in `$CODEX_HOME/config.toml` (normally
+   `~/.codex/config.toml`), under its existing `[tui]` table if it has one:
+
+   ```toml
+   [tui]
+   notification_method = "osc9"
+   notification_condition = "always"
+   ```
+
+2. Create a [Codex profile file](https://learn.chatgpt.com/docs/config-file/config-advanced)
+   for each model choice next to `config.toml`.  For example,
+   `~/.codex/sol-high.config.toml` contains:
+
+   ```toml
+   model = "gpt-6-sol"
+   model_reasoning_effort = "high"
+   ```
+
+   And `~/.codex/luna-max.config.toml` contains:
+
+   ```toml
+   model = "gpt-6-luna"
+   model_reasoning_effort = "max"
+   ```
+
+3. Add this to your Emacs config:
+
+   ```elisp
+   (setq claudemacs-codex-notification-switches nil
+         claudemacs-tool-registry
+         '((codex :label "Codex" :program "codex"
+                  :switches ("--remote" "unix://")
+                  :model-types (("sol-high" :model "gpt-6-sol" :effort "high"
+                                 :switches ("--profile" "sol-high"))
+                                ("luna-max" :model "gpt-6-luna" :effort "max"
+                                 :switches ("--profile" "luna-max"))))))
+   ```
+
+   If an entry sets `CODEX_HOME` in `:env`, put its base config and profile files
+   there instead.  Repeat steps 1 and 2 for each Codex home you use.
+
+The `:model` and `:effort` fields keep Claudemacs' model menu readable; the
+`--profile` switches select the actual Codex settings.  Press `m` in the start
+menu to choose a model for a **new** session.  Existing sessions keep their
+current connection and model.  Users who leave the registry and notification
+settings at their defaults retain the usual Codex launch behavior; this local
+server setup is opt-in.
 
 #### Basic Configuration
 
@@ -701,15 +745,16 @@ Customize environment variables passed to Claude processes:
 (add-to-list 'claudemacs-process-environment "CLAUDE_CODE_SYNTAX_HIGHLIGHT=off")
 ```
 
-#### System Notifications
+#### Notification Settings
 
 ```elisp
 ;; Whether to show system notifications when Claude is awaiting input (default: t)
 (setq claudemacs-notify-on-await t)
 
 ;; Codex notification switches are enabled by default so notifications reach
-;; the selected terminal backend.
-;; Set to nil to use Codex's own notification method and focus condition.
+;; the selected terminal backend.  For the Codex 0.157.0 background server
+;; setup above, set this to nil and put the TUI notification settings in
+;; $CODEX_HOME/config.toml instead.
 ;; (setq claudemacs-codex-notification-switches nil)
 
 ;; Whether a notification shows the message the tool sent with it -- for Codex,

@@ -1,6 +1,6 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
-;; Version: 0.5.0
+;; Version: 0.5.1
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
@@ -17,6 +17,12 @@
 ;; claude-code.el: https://github.com/stevemolitor/claude-code.el
 
 ;;; Changelog:
+
+;; Version 0.5.1 (2026-09-25)
+;; - Codex 0.157.0 shared background server support: registry entries using
+;;   `--remote unix://' start or reuse the managed server for their `CODEX_HOME'
+;;   and pass the selected project with `--cd'.  Named `--profile' model choices
+;;   can use that connection; the README documents the required setup.
 
 ;; Version 0.5.0 (2026-09-25)
 ;; - Selectable Eat and Ghostel terminal backends, with backend ownership
@@ -2050,6 +2056,39 @@ the prompt's original position while retaining the real Emacs cursor."
              (eq backend 'ghostel))
     (setenv "CLAUDE_CODE_ACCESSIBILITY" "1")))
 
+(defun claudemacs--codex-local-daemon-requested-p (tool switches)
+  "Return non-nil when TOOL's SWITCHES select Codex's local server."
+  (and (claudemacs--tool-kind-p tool 'codex)
+       (equal (cadr (member "--remote" switches)) "unix://")))
+
+(defun claudemacs--codex-remote-switches (tool switches work-dir)
+  "Add WORK-DIR to local Codex remote SWITCHES when needed.
+The local server otherwise uses its current project instead of the project
+Claudemacs is opening."
+  (if (and (claudemacs--codex-local-daemon-requested-p tool switches)
+           (not (or (member "--cd" switches)
+                    (member "-C" switches))))
+      (append switches (list "--cd" work-dir))
+    switches))
+
+(defun claudemacs--ensure-codex-local-daemon (program use-shell-env)
+  "Start PROGRAM's managed local server if it is not already running.
+The caller binds `process-environment' to the selected tool profile, so a
+profile with its own `CODEX_HOME' starts the server for that home.
+USE-SHELL-ENV runs PROGRAM through the same shell as the terminal launch."
+  (with-temp-buffer
+    (let* ((arguments '("app-server" "daemon" "start"))
+           (status
+            (if use-shell-env
+                (call-process
+                 (claudemacs--get-shell-name) nil t nil "-c"
+                 (mapconcat #'shell-quote-argument
+                            (cons program arguments) " "))
+              (apply #'call-process program nil t nil arguments))))
+      (unless (and (integerp status) (zerop status))
+        (error "Codex background server could not start: %s"
+               (string-trim (buffer-string)))))))
+
 (defun claudemacs--argument-value (args flag)
   "Return the string value following FLAG in ARGS, or nil.
 
@@ -2177,10 +2216,16 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
                  (process-adaptive-read-buffering nil)
                  (uuid-args (when session-uuid
                               (list "--session-id" session-uuid)))
-                 (switches (remove nil
-                                   (append uuid-args args program-switches)))
+                 (switches (claudemacs--codex-remote-switches
+                            tool-name
+                            (remove nil
+                                    (append uuid-args args program-switches))
+                            work-dir))
                  (start-program program)
                  (start-switches switches))
+            (when (claudemacs--codex-local-daemon-requested-p
+                   tool-name switches)
+              (claudemacs--ensure-codex-local-daemon program use-shell-env))
             (when use-shell-env
               (setq start-program (claudemacs--get-shell-name)
                     start-switches
