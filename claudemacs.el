@@ -1,6 +1,6 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
-;; Version: 0.3.0
+;; Version: 0.5.0
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
@@ -18,7 +18,7 @@
 
 ;;; Changelog:
 
-;; Version 0.5.0 (unreleased)
+;; Version 0.5.0 (2026-09-25)
 ;; - Selectable Eat and Ghostel terminal backends, with backend ownership
 ;;   captured per session so both can coexist; Ghostel is preferred by default
 ;;   when its package is available
