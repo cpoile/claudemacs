@@ -1,6 +1,6 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
-;; Version: 0.5.1
+;; Version: 0.5.2
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
@@ -17,6 +17,12 @@
 ;; claude-code.el: https://github.com/stevemolitor/claude-code.el
 
 ;;; Changelog:
+
+;; Version 0.5.2 (2026-09-26)
+;; - Expand abbreviated project roots before launching tools, so a `~/...'
+;;   root opens in the intended directory.
+;; - Pass normalized `--cd' paths to Codex's local background server, avoiding
+;;   the previous project's directory and duplicate project trust prompts.
 
 ;; Version 0.5.1 (2026-09-25)
 ;; - Codex 0.157.0 shared background server support: registry entries using
@@ -560,32 +566,35 @@ If DIR is given, use it as the starting location.
 When `claudemacs-prefer-projectile-root' is enabled, tries in order:
 1. `projectile-project-root' (if projectile is installed)
 2. .projectile marker file (works without projectile)
-Then falls back to `vc-git-root', then to the directory itself."
-  (let ((loc (or dir
-                 (when (buffer-file-name)
-                   (file-name-directory (buffer-file-name)))
-                 default-directory)))
-    (or
-     ;; Try projectile if enabled
-     (when claudemacs-prefer-projectile-root
-       (or
-        ;; First try projectile-project-root if available
-        (when (fboundp 'projectile-project-root)
-          (condition-case nil
-              ;; Projectile consults `default-directory' rather than taking a
-              ;; location argument.  Bind it so an explicit DIRECTORY does
-              ;; not accidentally resolve the caller's current project.
-              (let ((default-directory loc))
-                (let ((proj-root (projectile-project-root)))
-                  (when (and proj-root (file-directory-p proj-root))
-                    proj-root)))
-            (error nil)))
-        ;; Fall back to .projectile marker file
-        (claudemacs--find-projectile-root loc)))
-     ;; Fallback to vc-git-root (built-in via vc-git)
-     (vc-git-root loc)
-     ;; Final fallback to location itself
-     loc)))
+Then falls back to `vc-git-root', then to the directory itself.
+Always return an expanded path, even when a project finder abbreviates HOME."
+  (let* ((loc (expand-file-name
+               (or dir
+                   (when (buffer-file-name)
+                     (file-name-directory (buffer-file-name)))
+                   default-directory)))
+         (root (or
+                ;; Try projectile if enabled
+                (when claudemacs-prefer-projectile-root
+                  (or
+                   ;; First try projectile-project-root if available
+                   (when (fboundp 'projectile-project-root)
+                     (condition-case nil
+                         ;; Projectile consults `default-directory' rather than taking a
+                         ;; location argument.  Bind it so an explicit DIRECTORY does
+                         ;; not accidentally resolve the caller's current project.
+                         (let ((default-directory loc))
+                           (let ((proj-root (projectile-project-root)))
+                             (when (and proj-root (file-directory-p proj-root))
+                               proj-root)))
+                       (error nil)))
+                   ;; Fall back to .projectile marker file
+                   (claudemacs--find-projectile-root loc)))
+                ;; Fallback to vc-git-root (built-in via vc-git)
+                (vc-git-root loc)
+                ;; Final fallback to location itself
+                loc)))
+    (expand-file-name root)))
 
 (defun claudemacs--get-tool-config (tool)
   "Get the configuration plist for TOOL from `claudemacs-tool-registry'.
@@ -2068,7 +2077,10 @@ Claudemacs is opening."
   (if (and (claudemacs--codex-local-daemon-requested-p tool switches)
            (not (or (member "--cd" switches)
                     (member "-C" switches))))
-      (append switches (list "--cd" work-dir))
+      ;; Use the same spelling as Codex's project trust entries, which omit
+      ;; the final slash even when Emacs' project root includes one.
+      (append switches
+              (list "--cd" (directory-file-name (expand-file-name work-dir))))
     switches))
 
 (defun claudemacs--ensure-codex-local-daemon (program use-shell-env)
@@ -2152,7 +2164,8 @@ TOOL defaults to `claudemacs-default-tool' if not specified.
 INSTANCE-NUM specifies which instance number to use (1, 2, 3, etc.).
 If INSTANCE-NUM is nil, the next available instance number is used.
 The tool configuration is looked up in `claudemacs-tool-registry'."
-  (let* ((tool-name (or tool claudemacs-default-tool))
+  (let* ((work-dir (expand-file-name work-dir))
+         (tool-name (or tool claudemacs-default-tool))
          (terminal-backend claudemacs-terminal-backend)
          (tool-config (claudemacs--get-tool-config tool-name))
          ;; Validate the tool's environment before a session buffer exists, so

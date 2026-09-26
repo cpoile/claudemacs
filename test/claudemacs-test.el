@@ -111,6 +111,15 @@ The file is automatically cleaned up after BODY executes."
       (when (file-exists-p test-dir)
         (delete-directory test-dir t)))))
 
+(ert-deftest claudemacs-test-project-root-expands-home ()
+  "Expand an abbreviated root returned by a project finder."
+  :tags '(:unit :project)
+  (let ((claudemacs-prefer-projectile-root nil))
+    (cl-letf (((symbol-function 'vc-git-root)
+               (lambda (_dir) "~/.emacs.d/claudemacs/")))
+      (should (equal (claudemacs--project-root "/tmp/")
+                     (expand-file-name "~/.emacs.d/claudemacs/"))))))
+
 (ert-deftest claudemacs-test-project-root-with-explicit-dir ()
   "Test project root detection with explicit directory parameter."
   :tags '(:unit :project)
@@ -1550,7 +1559,8 @@ The file is automatically cleaned up after BODY executes."
                (lambda (_buffer _backend program switches)
                  (setq terminal-command (cons program switches))
                  nil)))
-      (let* ((work-dir default-directory)
+      (let* ((work-dir "~/")
+             (absolute-dir (expand-file-name work-dir))
              (buffer (claudemacs--start work-dir 'codex-pers 1
                                        "--profile" "sol-high")))
         (unwind-protect
@@ -1558,9 +1568,12 @@ The file is automatically cleaned up after BODY executes."
               (should (equal daemon-env "/tmp/claudemacs-codex-personal"))
               (should (equal daemon-command
                              '("codex" "app-server" "daemon" "start")))
+              (should (equal (buffer-local-value 'claudemacs--cwd buffer)
+                             absolute-dir))
               (should (equal terminal-command
                              (list "codex" "--profile" "sol-high"
-                                   "--remote" "unix://" "--cd" work-dir))))
+                                   "--remote" "unix://" "--cd"
+                                   (directory-file-name absolute-dir)))))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest claudemacs-test-codex-local-daemon-shell-and-remote-scope ()
@@ -1576,6 +1589,10 @@ The file is automatically cleaned up after BODY executes."
       (claudemacs--ensure-codex-local-daemon "codex" t)
       (should (equal daemon-command
                      '("/bin/zsh" "-c" "codex app-server daemon start")))))
+  (should (equal (claudemacs--codex-remote-switches
+                  'codex '("--remote" "unix://") "~/.emacs.d/claudemacs/")
+                 (list "--remote" "unix://" "--cd"
+                       (expand-file-name "~/.emacs.d/claudemacs"))))
   (let ((remote '("--remote" "wss://codex.example.com")))
     (should (equal (claudemacs--codex-remote-switches
                     'codex remote "/tmp/local-project")
