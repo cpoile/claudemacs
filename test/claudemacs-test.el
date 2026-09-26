@@ -1606,6 +1606,15 @@ The file is automatically cleaned up after BODY executes."
 
 ;;; Model Menu Tests
 
+(ert-deftest claudemacs-test-default-tool-return-keys-work-in-tty-and-gui ()
+  "Start and resume menus accept both terminal and graphical Return events."
+  :tags '(:unit :menu)
+  (dolist (menu '(claudemacs-start-menu claudemacs-resume-menu))
+    (should (transient-get-suffix menu "<return>"))
+    (should (equal (plist-get (cdr (transient-get-suffix menu "RET"))
+                             :format)
+                   ""))))
+
 (ert-deftest claudemacs-test-model-menu-is-off-by-default ()
   "The start menu does not read or display model information by default."
   :tags '(:unit :model-menu)

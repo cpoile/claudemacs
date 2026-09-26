@@ -18,6 +18,10 @@
 
 ;;; Changelog:
 
+;; Version 0.5.3 (unreleased)
+;; - Handle TTY Return keys in start/resume menus and optional session key
+;;   overrides while preserving existing graphical Return bindings.
+
 ;; Version 0.5.2 (2026-09-26)
 ;; - Expand abbreviated project roots before launching tools, so a `~/...'
 ;;   root opens in the intended directory.
@@ -2034,15 +2038,17 @@ the return-key options cannot leave stale bindings behind."
       (when (eq claudemacs--terminal-backend 'ghostel)
         (claudemacs--setup-ghostel-escape-map))
 
-      ;; Handle return key swapping if enabled
+      ;; Bind both terminal and graphical Return events when overriding them.
       (when claudemacs-m-return-is-submit
-        (define-key map (kbd "<return>") #'claudemacs--meta-ret-key)
-        (define-key map (kbd "<M-return>") #'claudemacs--ret-key)
+        (dolist (key '("RET" "<return>"))
+          (define-key map (kbd key) #'claudemacs--meta-ret-key))
+        (dolist (key '("M-RET" "<M-return>"))
+          (define-key map (kbd key) #'claudemacs--ret-key))
         (message "Swapped RET and M-RET"))
-      
-      ;; Handle shift-return newline if enabled
+
       (when claudemacs-shift-return-newline
-        (define-key map (kbd "<S-return>") #'claudemacs--meta-ret-key)
+        (dolist (key '("S-RET" "<S-return>"))
+          (define-key map (kbd key) #'claudemacs--meta-ret-key))
         (message "Defined S-RET -> newline"))
 
       ;; Apply the keymap as truly buffer-local
@@ -3125,7 +3131,9 @@ Returns a list of parsed transient suffix objects."
   ["Tools"
    :class transient-column
    :setup-children claudemacs--setup-start-tool-suffixes]
-  ["" ("<return>" "Start default tool" (lambda () (interactive) (claudemacs--start-tool-by-index 0)))]
+  ["" ("<return>" "Start default tool" (lambda () (interactive) (claudemacs--start-tool-by-index 0)))
+   ;; Keep the existing GUI suffix visible; this TTY alias is active but hidden.
+   ("RET" "Start default tool" (lambda () (interactive) (claudemacs--start-tool-by-index 0)) :format "")]
   (interactive)
   (claudemacs--reset-model-type-state)
   (add-hook 'transient-post-exit-hook #'claudemacs--reset-model-type-state)
@@ -3142,7 +3150,8 @@ Returns a list of parsed transient suffix objects."
   ["Tools"
    :class transient-column
    :setup-children claudemacs--setup-resume-tool-suffixes]
-  ["" ("<return>" "Resume default tool" (lambda () (interactive) (claudemacs--resume-tool-by-index 0)))])
+  ["" ("<return>" "Resume default tool" (lambda () (interactive) (claudemacs--resume-tool-by-index 0)))
+   ("RET" "Resume default tool" (lambda () (interactive) (claudemacs--resume-tool-by-index 0)) :format "")])
 
 ;;;###autoload (autoload 'claudemacs-transient-menu "claudemacs" nil t)
 (transient-define-prefix claudemacs-transient-menu ()

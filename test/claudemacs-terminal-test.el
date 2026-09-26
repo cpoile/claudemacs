@@ -279,6 +279,43 @@ loading from leaking into another ERT test."
   (should (eq claudemacs-terminal-backend
               (if (locate-library "ghostel") 'ghostel 'eat))))
 
+(ert-deftest claudemacs-terminal-test-eat-return-keys-cover-tty-and-gui ()
+  "Eat's optional Return overrides recognize both event forms."
+  :tags '(:unit :terminal-backend)
+  (with-temp-buffer
+    (rename-buffer "*claudemacs:eat-key-test*" t)
+    (setq-local claudemacs--terminal-backend 'eat)
+    (let ((claudemacs-m-return-is-submit t)
+          (claudemacs-shift-return-newline t))
+      (use-local-map (make-sparse-keymap))
+      (claudemacs--setup-buffer-keymap)
+      (dolist (binding '(("RET" . claudemacs--meta-ret-key)
+                         ("<return>" . claudemacs--meta-ret-key)
+                         ("M-RET" . claudemacs--ret-key)
+                         ("<M-return>" . claudemacs--ret-key)
+                         ("S-RET" . claudemacs--meta-ret-key)
+                         ("<S-return>" . claudemacs--meta-ret-key)))
+        (should (eq (lookup-key (current-local-map) (kbd (car binding)))
+                    (cdr binding)))))))
+
+(ert-deftest claudemacs-terminal-test-eat-disabled-return-options-preserve-bindings ()
+  "Disabled options leave inherited Return bindings intact."
+  :tags '(:unit :terminal-backend)
+  (with-temp-buffer
+    (rename-buffer "*claudemacs:eat-default-key-test*" t)
+    (setq-local claudemacs--terminal-backend 'eat)
+    (let ((claudemacs-m-return-is-submit nil)
+          (claudemacs-shift-return-newline nil)
+          (original-map (make-sparse-keymap)))
+      (dolist (key '("RET" "<return>" "M-RET" "<M-return>"
+                     "S-RET" "<S-return>"))
+        (define-key original-map (kbd key) #'ignore))
+      (use-local-map original-map)
+      (claudemacs--setup-buffer-keymap)
+      (dolist (key '("RET" "<return>" "M-RET" "<M-return>"
+                     "S-RET" "<S-return>"))
+        (should (eq (lookup-key (current-local-map) (kbd key)) #'ignore))))))
+
 (ert-deftest claudemacs-terminal-test-ghostel-key-bindings-survive-map-changes ()
   "Ghostel key overrides survive map replacement and option changes."
   :tags '(:unit :terminal-backend :ghostel)
