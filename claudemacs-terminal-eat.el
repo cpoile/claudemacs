@@ -217,7 +217,10 @@ consuming the output at all, so it only parses and queues notifications here."
 
 (defun claudemacs--eat-post-display (buffer)
   "Adjust Eat BUFFER after it has been displayed."
-  (claudemacs--eat-resize-to-window buffer))
+  (claudemacs--eat-resize-to-window buffer)
+  ;; Eat enters semi-char mode before the session's tool identity is set.
+  (with-current-buffer buffer
+    (claudemacs--eat-keep-claude-cursor-steady)))
 
 (defun claudemacs--eat-force-redraw ()
   "Force the current Eat terminal and process to adopt its window size."
@@ -245,13 +248,24 @@ consuming the output at all, so it only parses and queues notifications here."
   (when (claudemacs--eat-session-buffer-p)
     (setq-local cursor-type 'box)))
 
-(defun claudemacs--eat-hide-cursor (&rest _arguments)
-  "Hide the Emacs cursor in Claude sessions using Eat semi-char mode."
-  (when (and (claudemacs--eat-session-buffer-p)
+(defun claudemacs--eat-keep-claude-cursor-steady (&rest _arguments)
+  "Keep the Eat cursor visible without blinking in Claude semi-char mode."
+  (when (and (bound-and-true-p eat--semi-char-mode)
+             (claudemacs--eat-session-buffer-p)
              (eq (claudemacs--tool-kind-for-buffer
                   (current-buffer) claudemacs--tool)
-                 'claude))
-    (setq-local cursor-type nil)))
+                 'claude)
+             (bound-and-true-p eat-terminal))
+    ;; Map Eat's blinking shapes to their existing nonblinking shapes.
+    (setq-local eat-very-visible-cursor-type
+                (copy-tree eat-default-cursor-type))
+    (setq-local eat-very-visible-vertical-bar-cursor-type
+                (copy-tree eat-vertical-bar-cursor-type))
+    (setq-local eat-very-visible-horizontal-bar-cursor-type
+                (copy-tree eat-horizontal-bar-cursor-type))
+    (funcall (eat-term-parameter eat-terminal 'set-cursor-function)
+             eat-terminal
+             (eat-term-cursor-type eat-terminal))))
 
 (defun claudemacs--eat-maybe-left-key ()
   "Send left in Claudemacs Eat buffers, otherwise preserve Eat behavior."
@@ -277,7 +291,7 @@ consuming the output at all, so it only parses and queues notifications here."
   "Install global integration needed by Claudemacs Eat buffers."
   (unless claudemacs--eat-global-setup-done
     (advice-add 'eat-emacs-mode :after #'claudemacs--eat-show-cursor)
-    (advice-add 'eat-semi-char-mode :after #'claudemacs--eat-hide-cursor)
+    (advice-add 'eat-semi-char-mode :after #'claudemacs--eat-keep-claude-cursor-steady)
     (add-hook 'window-buffer-change-functions
               #'claudemacs--eat-check-and-disable-window-adjust)
     (when (boundp 'eat-semi-char-mode-map)
@@ -291,7 +305,10 @@ consuming the output at all, so it only parses and queues notifications here."
   "Remove global integration installed for Claudemacs Eat buffers."
   (when claudemacs--eat-global-setup-done
     (advice-remove 'eat-emacs-mode #'claudemacs--eat-show-cursor)
+    (advice-remove 'eat-semi-char-mode #'claudemacs--eat-keep-claude-cursor-steady)
+    ;; Clear advice from a previous in-memory version when reloading.
     (advice-remove 'eat-semi-char-mode #'claudemacs--eat-hide-cursor)
+    (advice-remove 'eat--set-cursor #'claudemacs--eat-hide-cursor)
     (remove-hook 'window-buffer-change-functions
                  #'claudemacs--eat-check-and-disable-window-adjust)
     (when (and (boundp 'eat-semi-char-mode-map)

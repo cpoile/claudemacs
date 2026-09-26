@@ -507,6 +507,69 @@ loading from leaking into another ERT test."
          (should (equal set-cursor-arguments
                         (list eat-terminal 'current-cursor-state))))))))
 
+(ert-deftest claudemacs-terminal-test-eat-initial-cursor-is-scoped-to-claude-semi-char ()
+  "Post-display leaves the cursor visible in Claude Eat and other buffers."
+  :tags '(:unit :terminal-backend :eat)
+  (claudemacs-terminal-test--with-stubbed-adapter
+      'eat "claudemacs-terminal-eat.el"
+    (cl-letf (((symbol-function 'claudemacs--eat-resize-to-window)
+               (lambda (_buffer) nil)))
+      (dolist (case '((eat claude t)
+                      (eat claude nil)
+                      (eat codex t)
+                      (ghostel claude t)
+                      (nil claude t)))
+        (with-temp-buffer
+          (setq-local claudemacs--terminal-backend (nth 0 case)
+                      claudemacs--tool (nth 1 case)
+                      claudemacs--session-tool-kind (nth 1 case)
+                      claudemacs--session-tool-kind-set-p t
+                      eat--semi-char-mode (nth 2 case)
+                      cursor-type 'box)
+          (claudemacs--eat-post-display (current-buffer))
+          (should (eq cursor-type 'box)))))))
+
+(ert-deftest claudemacs-terminal-test-eat-claude-cursor-remains-visible-without-blink ()
+  "Claude Eat preserves a visible cursor through blinking cursor updates."
+  :tags '(:unit :terminal-backend :eat)
+  (claudemacs-terminal-test--with-stubbed-adapter
+      'eat "claudemacs-terminal-eat.el"
+    (with-temp-buffer
+      (setq-local claudemacs--terminal-backend 'eat
+                  claudemacs--tool 'claude
+                  claudemacs--session-tool-kind 'claude
+                  claudemacs--session-tool-kind-set-p t
+                  eat--semi-char-mode t
+                  eat-terminal :fake-eat-terminal
+                  eat-default-cursor-type '(box nil nil)
+                  eat-vertical-bar-cursor-type '(bar nil nil)
+                  eat-horizontal-bar-cursor-type '(hbar nil nil)
+                  eat-very-visible-cursor-type '(box 2 hollow)
+                  eat-very-visible-vertical-bar-cursor-type '(bar 2 nil)
+                  eat-very-visible-horizontal-bar-cursor-type '(hbar 2 nil)
+                  cursor-type nil)
+      (cl-letf (((symbol-function 'claudemacs--eat-resize-to-window)
+                 (lambda (_buffer) nil))
+                ((symbol-function 'eat-term-parameter)
+                 (lambda (_terminal _parameter)
+                   (lambda (_terminal state)
+                     (let ((shape (pcase state
+                                    (:blinking-block eat-very-visible-cursor-type)
+                                    (:blinking-bar eat-very-visible-vertical-bar-cursor-type)
+                                    (:blinking-underline eat-very-visible-horizontal-bar-cursor-type))))
+                       (setq-local cursor-type (car shape)
+                                   eat--cursor-blink-mode (cadr shape))))))
+                ((symbol-function 'eat-term-cursor-type)
+                 (lambda (_terminal) :blinking-block)))
+        (claudemacs--eat-post-display (current-buffer))
+        (dolist (case '((:blinking-block . box)
+                        (:blinking-bar . bar)
+                        (:blinking-underline . hbar)))
+          (funcall (eat-term-parameter eat-terminal 'set-cursor-function)
+                   eat-terminal (car case))
+          (should (eq cursor-type (cdr case)))
+          (should-not eat--cursor-blink-mode))))))
+
 (ert-deftest claudemacs-terminal-test-eat-defers-notification-delivery ()
   "Eat's process filter queues notifications instead of displaying them."
   :tags '(:unit :terminal-backend :eat)

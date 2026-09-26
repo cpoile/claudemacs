@@ -1,6 +1,6 @@
 ;;; claudemacs.el --- AI pair programming with Claude Code -*- lexical-binding: t; -*-
 ;; Author: Christopher Poile <cpoile@gmail.com>
-;; Version: 0.5.2
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; Keywords: claudecode ai emacs llm ai-pair-programming tools
 ;; URL: https://github.com/cpoile/claudemacs
@@ -18,9 +18,11 @@
 
 ;;; Changelog:
 
-;; Version 0.5.3 (unreleased)
+;; Version 0.5.3 (2026-09-26)
 ;; - Handle TTY Return keys in start/resume menus and optional session key
 ;;   overrides while preserving existing graphical Return bindings.
+;; - Keep the Claude Eat cursor visible without blinking in semi-char mode,
+;;   including at startup and after Eat cursor updates.
 
 ;; Version 0.5.2 (2026-09-26)
 ;; - Expand abbreviated project roots before launching tools, so a `~/...'
