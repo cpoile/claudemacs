@@ -1768,6 +1768,30 @@ The file is automatically cleaned up after BODY executes."
         (should (equal (funcall model-name 'tool-one) "one-first"))
         (should-not (funcall model-name 'tool-two))))))
 
+(ert-deftest claudemacs-test-model-toggle-hint-follows-menu-default ()
+  "The toggle hint follows the first menu tool's custom model order."
+  :tags '(:unit :model-menu)
+  (let ((claudemacs--model-type-offset nil)
+        (claudemacs-default-tool 'claude)
+        (claudemacs-tool-registry
+         '((codex :model-types (("luna-max" :model "luna" :effort "max")
+                                ("sol-high" :model "sol" :effort "high")
+                                ("astra-medium" :model "astra" :effort "medium")))
+           (claude :model-types (("opus-high" :model "opus" :effort "high")
+                                 ("sonnet-high" :model "sonnet" :effort "high"))))))
+    (cl-letf (((symbol-function 'claudemacs--get-tool-configured-model)
+               (lambda (tool)
+                 (if (eq tool 'codex)
+                     '(:model "luna" :effort "max")
+                   '(:model "sonnet" :effort "high")))))
+      (should (equal (substring-no-properties
+                      (claudemacs--get-toggle-model-type-description))
+                     "Toggle model type (→ sol-high)"))
+      (claudemacs-toggle-model-type)
+      (should (equal (substring-no-properties
+                      (claudemacs--get-toggle-model-type-description))
+                     "Toggle model type (→ astra-medium)")))))
+
 (ert-deftest claudemacs-test-start-menu-adds-selected-model-switches ()
   "Starting a tool from the menu passes its selected model switches."
   :tags '(:unit :model-menu)

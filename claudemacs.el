@@ -947,12 +947,10 @@ Return nil when either value differs from every configured model type."
     (if counts (apply #'max counts) 0)))
 
 (defun claudemacs--model-type-reference-tool ()
-  "Return a tool to use for model-type toggle labels and cycling."
-  (or (and (claudemacs--get-tool-model-types claudemacs-default-tool)
-           claudemacs-default-tool)
-      (cl-loop for entry in claudemacs-tool-registry
-               when (claudemacs--get-tool-model-types (car entry))
-               return (car entry))))
+  "Return the first menu tool with model types for toggle labels."
+  (cl-loop for entry in claudemacs-tool-registry
+           when (claudemacs--get-tool-model-types (car entry))
+           return (car entry)))
 
 (defun claudemacs--model-type-toggle-available-p ()
   "Return non-nil when at least two model types are configured."
