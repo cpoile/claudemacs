@@ -1426,6 +1426,23 @@ identity merely because the value is non-nil."
             (should (equal (claudemacs-session-list-test--result-id-list rows)
                            '("matching-id")))))))))
 
+(ert-deftest claudemacs-session-list-test-codex-windows-extended-cwd-matches ()
+  "Codex's //?/ drive spelling matches the ordinary Emacs Windows CWD."
+  :tags '(:unit :session-list :provider :paths :windows)
+  (let ((system-type 'windows-nt)
+        (ordinary "C:/Users/Chris/project/")
+        (extended "//?/C:/Users/Chris/project/"))
+    (should (claudemacs--session-list--same-path-p ordinary extended))
+    (should (claudemacs--same-cwd-p ordinary extended))
+    (let ((sql (claudemacs--session-list--codex-query-sql
+                '("id" "created_at" "updated_at" "cwd") ordinary)))
+      (should (string-match-p
+               (regexp-quote "'//?/C:/Users/Chris/project'") sql))
+      (should (string-match-p
+               (regexp-quote "'//?/C:/Users/Chris/project/'") sql))
+      (should (string-match-p
+               (regexp-quote "'\\\\?\\C:\\Users\\Chris\\project'") sql)))))
+
 (ert-deftest claudemacs-session-list-test-codex-provider-diagnostic-includes-resolved-database ()
   "Codex schema failures identify the resolved database path."
   :tags '(:unit :session-list :provider :errors :paths)

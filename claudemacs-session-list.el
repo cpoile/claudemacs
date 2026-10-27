@@ -200,10 +200,75 @@ or concurrently removed directory.  In that case the expanded absolute path
 is still a safe display/filter value."
   (when (claudemacs--session-list--string path)
     (let ((expanded (expand-file-name path)))
-      (condition-case nil
-          (file-name-as-directory
-           (directory-file-name (file-truename expanded)))
-        (error (file-name-as-directory (directory-file-name expanded)))))))
+      (let* ((resolved (condition-case nil
+                           (file-truename expanded)
+                         (error expanded)))
+             ;; Codex records native Windows CWDs using the extended-path
+             ;; spelling //?/C:/..., while Emacs normally presents C:/....
+             ;; They name the same case-insensitive filesystem path.
+             (ordinary
+              (if (and (eq system-type 'windows-nt)
+                       (string-prefix-p "//?/" resolved))
+                  (substring resolved 4)
+                resolved)))
+        (file-name-as-directory (directory-file-name ordinary))))))
+
+(defun claudemacs--session-list--codex-cwd-values (cwd)
+  "Return exact Codex database spellings that may identify CWD.
+
+On Windows Codex commonly persists an extended path (//?/C:/...), whereas
+Emacs supplies an ordinary drive path.  Include both spellings so the SQL CWD
+predicate remains before LIMIT without filtering out valid Windows sessions."
+  (when (claudemacs--session-list--string cwd)
+    (let* ((expanded (expand-file-name cwd))
+           (resolved (condition-case nil
+                         (file-truename expanded)
+                       (error expanded)))
+           (ordinary (if (and (eq system-type 'windows-nt)
+                              (string-prefix-p "//?/" resolved))
+                         (substring resolved 4)
+                       resolved))
+           (ordinary (directory-file-name ordinary))
+           (drive-normalized
+            (if (and (eq system-type 'windows-nt)
+                     (string-match-p "\\`[A-Za-z]:/" ordinary))
+                (concat (upcase (substring ordinary 0 1))
+                        (substring ordinary 1))
+              ordinary))
+           (native (and (eq system-type 'windows-nt)
+                        (subst-char-in-string ?/ ?\\ drive-normalized)))
+           (native-device
+            (when (and native
+                       (string-match-p "\\`[A-Za-z]:\\\\" native))
+              (concat "\\\\?\\" native))))
+      (let ((slash-spellings
+             (delq nil
+                   (list cwd
+                         ordinary
+                         drive-normalized
+                         (when (and (eq system-type 'windows-nt)
+                                    (string-match-p "\\`[A-Za-z]:/"
+                                                    drive-normalized))
+                           (concat "//?/" drive-normalized))))))
+        ;; Codex versions have stored both directory spellings, so retain
+        ;; variants with and without the trailing separator.
+        (delete-dups
+         (append
+          (apply #'append
+                 (mapcar
+                  (lambda (path)
+                    (let ((without-separator (directory-file-name path)))
+                      (list without-separator
+                            (file-name-as-directory without-separator))))
+                  slash-spellings))
+          ;; Do not pass native spellings through `directory-file-name': on
+          ;; Windows Emacs translates their backslashes back to forward
+          ;; slashes, defeating the exact SQLite comparison.
+          (delq nil
+                (list native
+                      (and native (concat native "\\"))
+                      native-device
+                      (and native-device (concat native-device "\\"))))))))))
 
 (defun claudemacs--session-list--path-under-directory-p (path directory)
   "Return non-nil when canonical PATH is a strict child of DIRECTORY.
@@ -222,10 +287,15 @@ separator-aware prefix check avoids confusing sibling names such as
   "Return non-nil when LEFT and RIGHT identify the same CWD."
   (or (and (null left) (null right))
       (and left right
-           (equal (directory-file-name
-                   (claudemacs--session-list--canonical-path left))
+           (let ((canonical-left
                   (directory-file-name
-                   (claudemacs--session-list--canonical-path right))))))
+                   (claudemacs--session-list--canonical-path left)))
+                 (canonical-right
+                  (directory-file-name
+                   (claudemacs--session-list--canonical-path right))))
+             (if (eq system-type 'windows-nt)
+                 (string-equal-ignore-case canonical-left canonical-right)
+               (equal canonical-left canonical-right))))))
 
 (defun claudemacs--session-list--time (value)
   "Convert a supported VALUE to an Emacs time value, or nil.
@@ -1220,16 +1290,7 @@ literals because the built-in and sqlite3 fallback APIs use the same query."
                          column description-limit column)
                column))
            (claudemacs--session-list--codex-selected-columns columns)))
-         (cwd-values
-          (when (claudemacs--session-list--string cwd)
-            (delete-dups
-             (delq nil
-                   (mapcar
-                    (lambda (path)
-                      (when (claudemacs--session-list--string path)
-                        (directory-file-name path)))
-                    (list cwd
-                          (claudemacs--session-list--canonical-path cwd)))))))
+         (cwd-values (claudemacs--session-list--codex-cwd-values cwd))
          (where (append (when (member "archived" columns)
                           '("archived = 0"))
                         (when (member "source" columns)
