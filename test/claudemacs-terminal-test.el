@@ -723,6 +723,60 @@ loading from leaking into another ERT test."
       (when (buffer-live-p unrelated-buffer)
         (kill-buffer unrelated-buffer)))))
 
+(ert-deftest claudemacs-terminal-test-ghostel-bold-color-rendering ()
+  "Override explicit bold colors without changing other faces or buffers."
+  :tags '(:unit :terminal-backend :ghostel)
+  (claudemacs-terminal-test--with-stubbed-adapter
+   'ghostel "claudemacs-terminal-ghostel.el"
+   (let* ((bold-face '(:foreground "#cba6f7" :weight bold :slant italic))
+          (normal-face '(:foreground "#E7DCC4"))
+          (claudemacs-ghostel-bold-color "#a7c080")
+          (render (lambda (&rest _args)
+                    (erase-buffer)
+                    (insert "bold normal")
+                    (put-text-property 1 5 'face bold-face)
+                    (put-text-property 6 12 'face normal-face)
+                    (put-text-property 1 5 'help-echo "link")
+                    t)))
+     (with-temp-buffer
+       (setq-local claudemacs--terminal-backend 'ghostel)
+       (claudemacs--ghostel-render-bold-color render :term)
+       (should (equal (get-text-property 1 'face)
+                      '(:foreground "#a7c080" :weight bold :slant italic)))
+       (should (equal (get-text-property 6 'face) normal-face))
+       (should (equal (get-text-property 1 'help-echo) "link"))
+       ;; Cached native faces and writes outside rendering stay untouched.
+       (should (equal (plist-get bold-face :foreground) "#cba6f7"))
+       (put-text-property 1 5 'face bold-face)
+       (should (equal (get-text-property 1 'face) bold-face))
+       (let ((claudemacs-ghostel-bold-color nil))
+         (claudemacs--ghostel-render-bold-color render :term)
+         (should (equal (get-text-property 1 'face) bold-face))))
+     (with-temp-buffer
+       (claudemacs--ghostel-render-bold-color render :term)
+       (should (equal (get-text-property 1 'face) bold-face))))))
+
+(ert-deftest claudemacs-terminal-test-ghostel-bold-color-refresh ()
+  "Changing or disabling bold colors rebuilds faces; skipped renders retry."
+  :tags '(:unit :terminal-backend :ghostel)
+  (claudemacs-terminal-test--with-stubbed-adapter
+   'ghostel "claudemacs-terminal-ghostel.el"
+   (with-temp-buffer
+     (setq-local claudemacs--terminal-backend 'ghostel)
+     (let ((claudemacs-ghostel-bold-color "#a7c080")
+           calls
+           (success nil))
+       (let ((render (lambda (&rest args) (push args calls) success)))
+         (claudemacs--ghostel-render-bold-color render :term nil t)
+         (setq success t)
+         (claudemacs--ghostel-render-bold-color render :term nil t)
+         (claudemacs--ghostel-render-bold-color render :term nil t)
+         (setq claudemacs-ghostel-bold-color nil)
+         (claudemacs--ghostel-render-bold-color render :term nil t)
+         (should (equal (nreverse calls)
+                        '((:term t t) (:term t t)
+                          (:term nil t) (:term t t)))))))))
+
 ;;; Selection and lifecycle errors
 
 (ert-deftest claudemacs-terminal-test-no-automatic-fallback-for-missing-backend ()

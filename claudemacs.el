@@ -170,6 +170,7 @@
 ;; consult: optional, enables live buffer preview in session switching
 (declare-function consult--read "consult")
 (declare-function consult--original-window "consult")
+(declare-function ghostel-force-redraw "ghostel")
 (declare-function w32-notification-notify "w32fns.c" (&rest params))
 
 ;;;; Customization
@@ -213,6 +214,24 @@ of submitting.  This delay makes Return arrive as a separate key event.  Set
 this higher if submission is unreliable on a heavily loaded system."
   :type 'number
   :group 'claudemacs)
+
+(defcustom claudemacs-ghostel-bold-color nil
+  "Foreground override for bold text in Claudemacs Ghostel sessions.
+When nil, preserve colors sent by the terminal application.  A color string
+overrides all bold text, including explicit colors sent by applications such
+as Codex.  Normal text and unrelated Ghostel buffers are unaffected.
+Use Customize to redraw visible sessions immediately.  After `setq', run
+`claudemacs-unstick-terminal' to refresh existing text."
+  :type '(choice (const :tag "Application colors" nil) color)
+  :group 'claudemacs
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (fboundp 'ghostel-force-redraw)
+           (dolist (buffer (buffer-list))
+             (with-current-buffer buffer
+               (when (eq (bound-and-true-p claudemacs--terminal-backend)
+                         'ghostel)
+                 (ghostel-force-redraw)))))))
 
 (defcustom claudemacs-program-switches nil
   "List of command line switches to pass to the Claude program.

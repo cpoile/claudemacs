@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'claudemacs-terminal)
+(require 'cl-lib)
 (require 'ghostel)
 (require 'subr-x)
 
@@ -34,6 +35,53 @@ faces, while Claudemacs may have several sessions with different themes or
 local face customizations.")
 
 (defvar claudemacs-ghostel-query-before-killing)
+(defvar claudemacs-ghostel-bold-color)
+
+(defvar-local claudemacs--ghostel-rendered-bold-color nil
+  "Bold foreground used by the last successful Ghostel redraw.")
+
+(defun claudemacs--ghostel-render-bold-color (render &rest arguments)
+  "Call RENDER with ARGUMENTS, applying the configured bold foreground.
+Ghostel's native renderer writes anonymous face plists, including explicit
+RGB foregrounds, so remapping the Emacs `bold' face cannot override them.
+Intercept face writes only during this synchronous render, copying each
+changed plist because Ghostel caches and reuses its faces.  This also avoids
+rescanning the scrollback on every redraw."
+  (if (not (eq claudemacs--terminal-backend 'ghostel))
+      (apply render arguments)
+    (let ((color (bound-and-true-p claudemacs-ghostel-bold-color))
+          (buffer (current-buffer))
+          (put-property (symbol-function 'put-text-property)))
+      ;; A normal redraw only updates dirty rows.  Rebuild existing faces
+      ;; when the option changes, including when returning to tool colors.
+      (unless (equal color claudemacs--ghostel-rendered-bold-color)
+        (setq arguments (cons (car arguments) (cons t (cddr arguments)))))
+      (let ((rendered
+             (if (not color)
+                 (apply render arguments)
+               (cl-letf (((symbol-function 'put-text-property)
+                          (lambda (start end property value &optional object)
+                            (funcall put-property start end property
+                                     (if (and (eq property 'face)
+                                              (eq (or object (current-buffer)) buffer)
+                                              (listp value)
+                                              (eq (plist-get value :weight) 'bold))
+                                         (plist-put (copy-sequence value)
+                                                    :foreground color)
+                                       value)
+                                     object))))
+                 (apply render arguments)))))
+        (when rendered
+          (setq claudemacs--ghostel-rendered-bold-color color))
+        rendered))))
+
+(defun claudemacs--ghostel-global-setup ()
+  "Install the Claudemacs-only Ghostel rendering customization."
+  (advice-add 'ghostel--redraw :around #'claudemacs--ghostel-render-bold-color))
+
+(defun claudemacs--ghostel-global-teardown ()
+  "Remove the Claudemacs Ghostel rendering customization."
+  (advice-remove 'ghostel--redraw #'claudemacs--ghostel-render-bold-color))
 
 (defun claudemacs--ghostel-apply-kill-query-setting ()
   "Apply Claudemacs' Ghostel kill-query setting to the current buffer.
@@ -232,6 +280,8 @@ terminal's window hooks can establish its real dimensions before this redraw."
 
 (claudemacs--terminal-register-backend
  'ghostel
+ :global-setup #'claudemacs--ghostel-global-setup
+ :global-teardown #'claudemacs--ghostel-global-teardown
  :start #'claudemacs--ghostel-start
  :ready-p #'claudemacs--ghostel-ready-p
  :live-p #'claudemacs--ghostel-live-p

@@ -166,7 +166,17 @@ explicitly, set the backend before creating a session:
 
 ;; Increase this if programmatically sent prompts occasionally fail to submit.
 (setq claudemacs-ghostel-submit-delay 0.15)
+
+;; Override bold text colors, including colors explicitly sent by Codex.
+;; nil (default) preserves the application's colors.
+(setq claudemacs-ghostel-bold-color "#a7c080") ; Forestbones dark green
 ```
+
+`M-x customize-variable RET claudemacs-ghostel-bold-color` applies color
+changes to visible sessions immediately.  When using `setq`, run
+`M-x claudemacs-unstick-terminal` from your project buffer to refresh existing
+text.  The override applies to all bold text in Claudemacs Ghostel sessions;
+other Ghostel buffers keep their own colors.
 
 The selector is checked when a session starts and affects new sessions only.
 Kill and restart existing sessions after changing it.  Claudemacs does not
