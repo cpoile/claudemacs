@@ -777,6 +777,29 @@ loading from leaking into another ERT test."
                         '((:term t t) (:term t t)
                           (:term nil t) (:term t t)))))))))
 
+(ert-deftest claudemacs-terminal-test-ghostel-stop-preview-coexists-with-status ()
+  "A Claudemacs Stop preview reaches Ghostel's hook during status reporting."
+  :tags '(:unit :terminal-backend :ghostel)
+  (claudemacs-terminal-test--with-stubbed-adapter
+   'ghostel "claudemacs-terminal-ghostel.el"
+   (let (received)
+     (cl-letf (((symbol-function 'ghostel--handle-notification)
+                (lambda (_title body)
+                  (unless (bound-and-true-p ghostel-status--osc7501-seen)
+                    (push body received)))))
+       (claudemacs--ghostel-global-setup)
+       (unwind-protect
+           (with-temp-buffer
+             (setq-local ghostel-status--osc7501-seen t)
+             (ghostel--handle-notification
+              claudemacs--claude-stop-notification-title "Other session")
+             (setq-local claudemacs--terminal-backend 'ghostel)
+             (ghostel--handle-notification
+              claudemacs--claude-stop-notification-title "Final reply")
+             (ghostel--handle-notification "Claude Code" "Native alert")
+             (should (equal received '("Final reply"))))
+         (claudemacs--ghostel-global-teardown))))))
+
 ;;; Selection and lifecycle errors
 
 (ert-deftest claudemacs-terminal-test-no-automatic-fallback-for-missing-backend ()

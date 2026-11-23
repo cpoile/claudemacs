@@ -202,11 +202,9 @@ Other useful tweaks:
 
 ### System Notifications
 
-First, set `claude config set --global preferredNotifChannel terminal_bell`.
-
-Claude Code's `iterm2` and `ghostty` channels work too, and they carry Claude's
-own notification text rather than just the event — see [tool messages in
-notifications](#tool-messages-in-notifications) below.
+Claudemacs can show the final reply from Claude Code and Codex as soon as the
+tool finishes. See [tool messages in notifications](#tool-messages-in-notifications)
+for setup and fallbacks.
 
 #### Tool messages in notifications
 
@@ -225,10 +223,19 @@ sessions, put those settings in `config.toml` instead; see
 verbatim, which Claudemacs truncates to fit the notification.  This is separate
 from Codex's top-level `notify` hook, which runs an external command.
 
-For Claude Code, set `preferredNotifChannel` to `iterm2` or `ghostty` instead of
-`terminal_bell`.  `iterm2_with_bell` also works — it announces the same event
-twice, and Claudemacs drops the duplicate.  The `kitty` channel uses OSC 99,
-which Claudemacs does not read.
+For Claude Code 2.1.141 or newer with `jq` on Emacs' `exec-path`, Claudemacs
+automatically installs a session-local [Stop hook](https://code.claude.com/docs/en/hooks#stop)
+on launch. The hook sends a preview of the final reply as soon as Claude
+finishes. Claudemacs routes built-in alerts through the `ghostty` channel and
+skips the later idle reminder when the Stop hook has already sent a notification.
+Restart an existing Claude Code session to pick up the hook.
+
+If you disable `claudemacs-claude-notify-on-stop`, pass your own `--settings`
+or `--bare` flag, or lack `jq`, Claude Code uses its configured notification
+channel. To receive its built-in alerts in Claudemacs, set
+`"preferredNotifChannel": "ghostty"` in Claude Code's `settings.json` or
+choose `terminal_bell` for a generic alert. Built-in completion alerts follow
+[Claude Code's idle timer](https://code.claude.com/docs/en/hooks#notification).
 
 Set `claudemacs-notify-with-tool-message` to nil to always use the generic
 "awaiting your input" text.  Tools that only ring the bell have no message to
@@ -758,8 +765,11 @@ Customize environment variables passed to Claude processes:
 #### Notification Settings
 
 ```elisp
-;; Whether to show system notifications when Claude is awaiting input (default: t)
+;; Whether to show system notifications when a tool awaits input (default: t)
 (setq claudemacs-notify-on-await t)
+
+;; Show Claude Code's completion notification as soon as it finishes (default: t)
+;; (setq claudemacs-claude-notify-on-stop nil)
 
 ;; Codex notification switches are enabled by default so notifications reach
 ;; the selected terminal backend.  For the Codex 0.157.0 background server
@@ -767,8 +777,7 @@ Customize environment variables passed to Claude processes:
 ;; $CODEX_HOME/config.toml instead.
 ;; (setq claudemacs-codex-notification-switches nil)
 
-;; Whether a notification shows the message the tool sent with it -- for Codex,
-;; normally the last thing the agent said (default: t)
+;; Whether notifications show the tool's message, such as its final reply (default: t)
 ;; Set to nil for the generic "awaiting your input" text.
 (setq claudemacs-notify-with-tool-message t)
 

@@ -170,6 +170,9 @@ sequences simply omit it, and this returns nil for them."
 
 ;;;; Desktop Notification Escape Sequences
 
+(defconst claudemacs--claude-stop-notification-title "Claudemacs Stop"
+  "OSC 777 title identifying a notification from the Claude Code Stop hook.")
+
 ;; Terminal programs that want to raise a desktop notification write it as an
 ;; OSC sequence rather than as a plain BEL: OSC 9 carries a body only
 ;; (iTerm2 style), OSC 777 carries a title and a body (urxvt style).  Codex

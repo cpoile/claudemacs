@@ -18,6 +18,18 @@
 
 ;;; Changelog:
 
+;; Unreleased
+;; - Claude Code completion notifications show a preview of the final reply
+;;   as soon as the turn finishes.  Claudemacs suppresses duplicate completion
+;;   alerts in Eat and Ghostel.  New sessions use this by default with Claude
+;;   Code 2.1.141 or later and jq.  See `claudemacs-claude-notify-on-stop'.
+;; - Customize bold text color in Claudemacs Ghostel sessions with
+;;   `claudemacs-ghostel-bold-color', including colors set by the tool.
+;; - Match Codex session history on Windows when Codex stores an extended
+;;   path and Emacs uses the ordinary drive path.
+;; - Show the model toggle hint for the first tool in menu order that has
+;;   configured model types.
+
 ;; Version 0.5.3 (2026-09-26)
 ;; - Handle TTY Return keys in start/resume menus and optional session key
 ;;   overrides while preserving existing graphical Return bindings.
@@ -132,6 +144,7 @@
 
 ;;;; Dependencies
 (require 'cl-lib)
+(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'transient)
@@ -417,6 +430,14 @@ When nil, no notification is shown (silent operation)."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-claude-notify-on-stop t
+  "Whether to notify when Claude Code finishes responding.
+When non-nil, add a session-local Stop hook on launch.  It requires Claude
+Code 2.1.141 or later and jq.  Sessions with an explicit `--settings' flag
+keep their own notification configuration."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defconst claudemacs--legacy-codex-notification-switches
   '("--config" "tui.notification_method=\"bel\""
     "--config" "tui.notification_condition=\"always\"")
@@ -450,10 +471,9 @@ Set this to nil to use Codex's own notification settings."
   "Whether system notifications show the message the AI tool sent with them.
 
 Tools raise a desktop notification by writing an OSC 9 or OSC 777 escape
-sequence that carries the notification text — for Codex, normally the last
-thing the agent said.  When non-nil, Claudemacs uses that text as the body
-of the system notification instead of the generic \"awaiting your input\"
-message.
+sequence that carries the notification text.  For Codex and Claude Code
+completion notifications, this is the agent's final reply.  When non-nil,
+Claudemacs uses that text as the body of the system notification.
 
 Tools that only ring the terminal bell have no message to show, so those
 notifications keep the generic text either way."
@@ -1063,11 +1083,38 @@ selection is reset when the start menu is opened again."
           (transient--refresh-transient))))))
 
 (defun claudemacs--get-tool-notification-switches (tool)
-  "Get notification-related command-line switches for TOOL.
-Codex notifications are routed through Eat's BEL handler; other tools use
-their own notification mechanisms."
+  "Get the configured Codex notification switches for TOOL."
   (when (claudemacs--tool-kind-p tool 'codex)
     claudemacs-codex-notification-switches))
+
+(defconst claudemacs--claude-stop-notification-filter
+  (concat "(.last_assistant_message // \"\""
+          " | gsub(\"[[:cntrl:]\\u0080-\\u009f]+\"; \" \") | .[0:512]) as $body"
+          " | {terminalSequence: (\"\\u001b]777;notify;\" + $title + \";\""
+          " + $body + \"\\u0007\")}")
+  "jq filter that encodes a bounded Claude reply as a terminal notification.")
+
+(defun claudemacs--claude-notification-switches (switches)
+  "Return session settings for Claude Code given the existing SWITCHES."
+  (when-let* ((claudemacs-notify-on-await)
+              (claudemacs-claude-notify-on-stop)
+              ((not (member "--bare" switches)))
+              ((not (seq-some (lambda (arg)
+                                (or (equal arg "--settings")
+                                    (string-prefix-p "--settings=" arg)))
+                              switches)))
+              (jq (executable-find "jq")))
+    ;; Route built-in alerts through OSC too so Emacs can recognize the
+    ;; delayed idle alert while still showing permission and other alerts.
+    (let ((hook `((type . "command")
+                  (command . ,jq)
+                  (args . ["--compact-output"
+                           "--arg" "title" ,claudemacs--claude-stop-notification-title
+                           ,claudemacs--claude-stop-notification-filter]))))
+      (list "--settings"
+            (json-encode
+             `((preferredNotifChannel . "ghostty")
+               (hooks (Stop . [((hooks . [,hook]))]))))))))
 
 (defun claudemacs--get-resume-flag (tool)
   "Return TOOL's resume token for compatibility with older callers.
@@ -1733,20 +1780,20 @@ stays readable in a system notification."
 (defvar-local claudemacs--last-tool-notification-time nil
   "When this session last handled an OSC notification from the tool.")
 
-(defconst claudemacs--tool-notification-bell-window 2.0
-  "Seconds after a tool notification during which a BEL is a duplicate.
-A tool can be configured to announce the same event twice, as Claude Code
-does with its `iterm2_with_bell' channel: once with its message and once as
-a bare bell.  The second one has nothing to add, so it is dropped.")
+(defvar-local claudemacs--claude-stop-notified nil
+  "Whether this session showed a Stop notification since Claude's last idle alert.")
+
+(defconst claudemacs--tool-notification-duplicate-window 2.0
+  "Seconds during which a second completion alert may duplicate the first.")
 
 (defconst claudemacs--bell-notification-delay 0.01
   "Seconds to wait for a preceding OSC notification before handling BEL.")
 
-(defun claudemacs--duplicate-bell-p ()
-  "Return non-nil when a BEL just repeats a notification already shown."
+(defun claudemacs--recent-tool-notification-p ()
+  "Return non-nil when this session just handled a tool notification."
   (and claudemacs--last-tool-notification-time
        (< (float-time (time-subtract nil claudemacs--last-tool-notification-time))
-          claudemacs--tool-notification-bell-window)))
+          claudemacs--tool-notification-duplicate-window)))
 
 (defun claudemacs--show-generic-notification (&optional title)
   "Show the generic completion notification with optional TITLE."
@@ -1760,7 +1807,7 @@ a bare bell.  The second one has nothing to add, so it is dropped.")
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when (and claudemacs-notify-on-await
-                 (not (claudemacs--duplicate-bell-p)))
+                 (not (claudemacs--recent-tool-notification-p)))
         (claudemacs--show-generic-notification)))))
 
 (defun claudemacs--bell-handler (&rest _arguments)
@@ -1772,24 +1819,34 @@ The short delay lets a message-bearing OSC event suppress its duplicate BEL."
                  #'claudemacs--deliver-bell-notification (current-buffer))))
 
 (defun claudemacs--notification-handler (body &optional title)
-  "Handle a desktop notification from the current AI tool.
-
-BODY is the message the tool sent with its OSC 9 or OSC 777 notification and
-TITLE is the title it supplied, if any.  Tools send these instead of a
-bell character, so this is the same completion event `claudemacs--bell-handler'
-reports — just one that arrives with the tool's own text attached.  Fall back
-to that generic handler when there is no usable message."
+  "Handle the current AI tool's OSC notification with BODY and optional TITLE."
   (when claudemacs-notify-on-await
-    (let ((message (and claudemacs-notify-with-tool-message
-                        (claudemacs--notification-message-text body))))
-      (setq-local claudemacs--last-tool-notification-time (current-time))
-      (if message
-          (claudemacs--system-notification
-           message
-           (or (claudemacs--notification-message-text title)
-               (claudemacs--notification-tool-name)))
-        (claudemacs--show-generic-notification
-         (claudemacs--notification-message-text title))))))
+    (let* ((tool (or claudemacs--tool claudemacs-default-tool))
+           (claude (eq (claudemacs--tool-kind-for-buffer (current-buffer) tool)
+                       'claude)))
+      (cond
+       ((and claude claudemacs--claude-stop-notified
+             (equal title "Claude Code")
+             (equal body "Claude is waiting for your input"))
+        (setq claudemacs--claude-stop-notified nil))
+       ((and claude claudemacs--claude-stop-notified
+             (eq claudemacs--terminal-backend 'ghostel)
+             (equal title "claude-code") (equal body "done")
+             (claudemacs--recent-tool-notification-p))
+        nil)
+       (t
+        (when (and claude
+                   (equal title claudemacs--claude-stop-notification-title))
+          (setq-local claudemacs--claude-stop-notified t)
+          (setq title (claudemacs--notification-tool-name)))
+        (let ((message (and claudemacs-notify-with-tool-message
+                            (claudemacs--notification-message-text body)))
+              (title (claudemacs--notification-message-text title)))
+          (setq-local claudemacs--last-tool-notification-time (current-time))
+          (if message
+              (claudemacs--system-notification
+               message (or title (claudemacs--notification-tool-name)))
+            (claudemacs--show-generic-notification title))))))))
 
 
 (defun claudemacs--windows-notification-shortcut ()
@@ -2246,19 +2303,22 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
       (error "Program '%s' not found in PATH" program))
 
     (condition-case error-data
-        (progn
-          ;; Load before displaying the new buffer so a missing optional package
-          ;; fails without leaving an empty session window behind.
-          (claudemacs--terminal-ensure-backend terminal-backend)
+        ;; Load before displaying the new buffer so a missing optional package
+        ;; fails without leaving an empty session window behind.
+        (let ((operations (claudemacs--terminal-ensure-backend terminal-backend)))
           (let* ((window (display-buffer buffer))
                  (process-adaptive-read-buffering nil)
                  (uuid-args (when session-uuid
                               (list "--session-id" session-uuid)))
-                 (switches (claudemacs--codex-remote-switches
-                            tool-name
-                            (remove nil
-                                    (append uuid-args args program-switches))
-                            work-dir))
+                 (cli-switches (claudemacs--codex-remote-switches
+                                tool-name
+                                (remove nil (append uuid-args args program-switches))
+                                work-dir))
+                 (switches (if (and (claudemacs--tool-kind-p tool-name 'claude)
+                                    (plist-get operations :setup-notifications))
+                               (append (claudemacs--claude-notification-switches cli-switches)
+                                       cli-switches)
+                             cli-switches))
                  (start-program program)
                  (start-switches switches))
             (when (claudemacs--codex-local-daemon-requested-p
@@ -2281,7 +2341,8 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
                           claudemacs--tool-instance instance
                           claudemacs--session-tool-kind
                           (claudemacs--tool-kind tool-name)
-                          claudemacs--session-tool-kind-set-p t)
+                          claudemacs--session-tool-kind-set-p t
+                          claudemacs--claude-stop-notified nil)
               ;; A reused buffer can still hold the identity of an older
               ;; process.  Reset it before establishing this process's
               ;; identity; ordinary library reloads never call this path and

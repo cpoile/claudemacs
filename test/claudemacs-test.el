@@ -687,6 +687,79 @@ The file is automatically cleaned up after BODY executes."
         (claudemacs--bell-handler)
         (should (= count 2))))))
 
+(ert-deftest claudemacs-test-claude-stop-notification-replaces-only-idle-alert ()
+  "A Stop preview replaces the later idle alert and preserves permission alerts."
+  :tags '(:unit :config)
+  (let ((claudemacs-notify-on-await t)
+        (claudemacs-notify-with-tool-message t)
+        (claudemacs--tool 'claude)
+        received)
+    (cl-letf (((symbol-function 'claudemacs--system-notification)
+               (lambda (text &optional _title) (push text received))))
+      (with-temp-buffer
+        (setq-local claudemacs--terminal-backend 'ghostel)
+        (claudemacs--notification-handler
+         "Finished the fix" claudemacs--claude-stop-notification-title)
+        (claudemacs--notification-handler "done" "claude-code")
+        (claudemacs--notification-handler "Claude needs your permission" "Claude Code")
+        ;; Claude's idle alert arrives well after the short BEL deduplication window.
+        (setq-local claudemacs--last-tool-notification-time (seconds-to-time 0))
+        (claudemacs--notification-handler "Claude is waiting for your input" "Claude Code")
+        (should (equal received
+                       '("Claude needs your permission" "Finished the fix")))
+        ;; A later native alert can stand on its own if the hook did not fire.
+        (claudemacs--notification-handler "Claude is waiting for your input" "Claude Code")
+        (should (equal (car received) "Claude is waiting for your input"))
+        (claudemacs--notification-handler "done" "claude-code")
+        (should (equal (car received) "done"))))))
+
+(ert-deftest claudemacs-test-claude-stop-hook-encodes-reply-for-terminal ()
+  "The generated hook keeps reply text from breaking the OSC notification."
+  :tags '(:unit :config)
+  (skip-unless (executable-find "jq"))
+  (let* ((claudemacs-notify-on-await t)
+         (claudemacs-claude-notify-on-stop t)
+         (json-object-type 'hash-table)
+         (json-array-type 'vector)
+         (json-key-type 'string)
+         (coding-system-for-read 'utf-8)
+         (coding-system-for-write 'utf-8)
+         (settings (json-read-from-string
+                    (cadr (claudemacs--claude-notification-switches nil))))
+         (stop (gethash "Stop" (gethash "hooks" settings)))
+         (hook (aref (gethash "hooks" (aref stop 0)) 0)))
+    (with-temp-buffer
+      (insert (json-encode
+               '((last_assistant_message . "1; Checked \"quotes\" and café.\nOK\a\e"))))
+      (should (zerop (apply #'call-process-region
+                            (point-min) (point-max) (gethash "command" hook)
+                            t t nil (append (gethash "args" hook) nil))))
+      (let* ((sequence (gethash "terminalSequence"
+                                (json-read-from-string (buffer-string))))
+             (notification (caar (claudemacs--terminal-parse-osc-notifications
+                                  sequence))))
+        (should (equal notification
+                       (cons claudemacs--claude-stop-notification-title
+                             "1; Checked \"quotes\" and café. OK ")))))))
+
+(ert-deftest claudemacs-test-claude-stop-hook-respects-explicit-launch-settings ()
+  "Preserve custom settings, minimal mode, and notification opt-outs."
+  :tags '(:unit :config)
+  (let ((claudemacs-notify-on-await t)
+        (claudemacs-claude-notify-on-stop t))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_) "/opt/bin/jq")))
+      (should (claudemacs--claude-notification-switches nil))
+      (dolist (switches '(("--settings" "custom.json")
+                          ("--settings=custom.json")
+                          ("--bare")))
+        (should-not (claudemacs--claude-notification-switches switches)))
+      (let ((claudemacs-claude-notify-on-stop nil))
+        (should-not (claudemacs--claude-notification-switches nil)))
+      (let ((claudemacs-notify-on-await nil))
+        (should-not (claudemacs--claude-notification-switches nil))))
+    (cl-letf (((symbol-function 'executable-find) #'ignore))
+      (should-not (claudemacs--claude-notification-switches nil)))))
+
 (ert-deftest claudemacs-test-deferred-bell-lets-ghostel-notification-win ()
   "A deferred Ghostel OSC callback suppresses its following BEL."
   :tags '(:unit :config :ghostel)

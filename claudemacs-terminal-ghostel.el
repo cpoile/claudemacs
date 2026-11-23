@@ -36,6 +36,7 @@ local face customizations.")
 
 (defvar claudemacs-ghostel-query-before-killing)
 (defvar claudemacs-ghostel-bold-color)
+(defvar ghostel-status--osc7501-seen)
 
 (defvar-local claudemacs--ghostel-rendered-bold-color nil
   "Bold foreground used by the last successful Ghostel redraw.")
@@ -75,13 +76,30 @@ rescanning the scrollback on every redraw."
           (setq claudemacs--ghostel-rendered-bold-color color))
         rendered))))
 
+(defun claudemacs--ghostel-allow-stop-notification (notify title body)
+  "Let the Claude Stop notification reach NOTIFY with TITLE and BODY."
+  (if (and (bound-and-true-p ghostel-status--osc7501-seen)
+           (eq claudemacs--terminal-backend 'ghostel)
+           (equal title claudemacs--claude-stop-notification-title))
+      ;; Ghostel normally prefers status reports over OSC notifications.
+      ;; The Stop hook is the only report that contains Claude's reply.
+      (let ((ghostel-status--osc7501-seen nil))
+        (funcall notify title body))
+    (funcall notify title body)))
+
 (defun claudemacs--ghostel-global-setup ()
-  "Install the Claudemacs-only Ghostel rendering customization."
-  (advice-add 'ghostel--redraw :around #'claudemacs--ghostel-render-bold-color))
+  "Install Ghostel customizations for Claudemacs."
+  (advice-add 'ghostel--redraw :around #'claudemacs--ghostel-render-bold-color)
+  (when (fboundp 'ghostel--handle-notification)
+    (advice-add 'ghostel--handle-notification :around
+                #'claudemacs--ghostel-allow-stop-notification)))
 
 (defun claudemacs--ghostel-global-teardown ()
-  "Remove the Claudemacs Ghostel rendering customization."
-  (advice-remove 'ghostel--redraw #'claudemacs--ghostel-render-bold-color))
+  "Remove Ghostel customizations for Claudemacs."
+  (advice-remove 'ghostel--redraw #'claudemacs--ghostel-render-bold-color)
+  (when (fboundp 'ghostel--handle-notification)
+    (advice-remove 'ghostel--handle-notification
+                   #'claudemacs--ghostel-allow-stop-notification)))
 
 (defun claudemacs--ghostel-apply-kill-query-setting ()
   "Apply Claudemacs' Ghostel kill-query setting to the current buffer.
