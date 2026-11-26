@@ -23,6 +23,8 @@
 ;;   as soon as the turn finishes.  Claudemacs suppresses duplicate completion
 ;;   alerts in Eat and Ghostel.  New sessions use this by default with Claude
 ;;   Code 2.1.141 or later and jq.  See `claudemacs-claude-notify-on-stop'.
+;; - Cursor CLI sessions can show reply previews while focused or unfocused.
+;;   See `claudemacs-cursor-notify-with-preview' and the README hook setup.
 ;; - Customize bold text color in Claudemacs Ghostel sessions with
 ;;   `claudemacs-ghostel-bold-color', including colors set by the tool.
 ;; - Match Codex session history on Windows when Codex stores an extended
@@ -438,6 +440,13 @@ keep their own notification configuration."
   :type 'boolean
   :group 'claudemacs)
 
+(defcustom claudemacs-cursor-notify-with-preview nil
+  "Whether to receive reply previews from the Claudemacs Cursor CLI hook.
+Install the `afterAgentResponse' hook described in the README, then enable
+this option before starting a new Cursor session."
+  :type 'boolean
+  :group 'claudemacs)
+
 (defconst claudemacs--legacy-codex-notification-switches
   '("--config" "tui.notification_method=\"bel\""
     "--config" "tui.notification_condition=\"always\"")
@@ -471,8 +480,7 @@ Set this to nil to use Codex's own notification settings."
   "Whether system notifications show the message the AI tool sent with them.
 
 Tools raise a desktop notification by writing an OSC 9 or OSC 777 escape
-sequence that carries the notification text.  For Codex and Claude Code
-completion notifications, this is the agent's final reply.  When non-nil,
+sequence or a reply hook that carries the notification text.  When non-nil,
 Claudemacs uses that text as the body of the system notification.
 
 Tools that only ring the terminal bell have no message to show, so those
@@ -654,7 +662,7 @@ empty or non-string value is treated as no label."
     (when (and (stringp label) (not (string-empty-p label)))
       label)))
 
-(defconst claudemacs--tool-kinds '(claude codex gemini)
+(defconst claudemacs--tool-kinds '(claude codex gemini cursor)
   "CLI families Claudemacs can infer from a program name or registry key.
 An entry's `:tool' may name any family, including one absent from this list;
 the list only drives inference when `:tool' is omitted.")
@@ -1783,6 +1791,21 @@ stays readable in a system notification."
 (defvar-local claudemacs--claude-stop-notified nil
   "Whether this session showed a Stop notification since Claude's last idle alert.")
 
+(defvar-local claudemacs--cursor-preview-directory nil
+  "Private directory for reply previews from this Cursor session.")
+
+(defvar-local claudemacs--cursor-preview-timer nil
+  "Timer reading previews from the current Cursor session.")
+
+(defvar-local claudemacs--cursor-last-preview-time nil
+  "When this session last received a Cursor reply preview.")
+
+(defconst claudemacs--cursor-preview-interval 0.2
+  "Seconds between checks for new Cursor reply previews.")
+
+(defconst claudemacs--cursor-idle-notification-delay 0.8
+  "Seconds to wait for the reply hook before using Cursor's native alert.")
+
 (defconst claudemacs--tool-notification-duplicate-window 2.0
   "Seconds during which a second completion alert may duplicate the first.")
 
@@ -1818,13 +1841,97 @@ The short delay lets a message-bearing OSC event suppress its duplicate BEL."
     (run-at-time claudemacs--bell-notification-delay nil
                  #'claudemacs--deliver-bell-notification (current-buffer))))
 
+(defun claudemacs--display-tool-notification (body title)
+  "Show a tool notification with BODY and TITLE using session preferences."
+  (when claudemacs-notify-on-await
+    (let ((message (and claudemacs-notify-with-tool-message
+                        (claudemacs--notification-message-text body)))
+          (title (claudemacs--notification-message-text title)))
+      (setq-local claudemacs--last-tool-notification-time (current-time))
+      (if message
+          (claudemacs--system-notification
+           message (or title (claudemacs--notification-tool-name)))
+        (claudemacs--show-generic-notification title)))))
+
+(defun claudemacs--cursor-stop-previews ()
+  "Release the current Cursor session's timer and reply files."
+  (remove-hook 'kill-buffer-hook #'claudemacs--cursor-stop-previews t)
+  (remove-hook 'change-major-mode-hook #'claudemacs--cursor-stop-previews t)
+  (when claudemacs--cursor-preview-timer
+    (cancel-timer claudemacs--cursor-preview-timer))
+  (when (and claudemacs--cursor-preview-directory
+             (file-directory-p claudemacs--cursor-preview-directory))
+    (ignore-errors (delete-directory claudemacs--cursor-preview-directory t)))
+  (setq claudemacs--cursor-preview-timer nil
+        claudemacs--cursor-preview-directory nil
+        claudemacs--cursor-last-preview-time nil))
+
+(defun claudemacs--cursor-drain-previews (directory)
+  "Consume previews queued by the Cursor hook in DIRECTORY."
+  (when (file-directory-p directory)
+    (dolist (file (directory-files directory t "\\`reply-.*\\.txt\\'"))
+      (with-demoted-errors "Claudemacs Cursor reply preview failed: %S"
+        (let ((reply (with-temp-buffer
+                       (let ((coding-system-for-read 'utf-8))
+                         (insert-file-contents file))
+                       (buffer-string))))
+          (delete-file file)
+          (setq claudemacs--cursor-last-preview-time (current-time))
+          (claudemacs--display-tool-notification reply nil))))))
+
+(defun claudemacs--cursor-poll-previews (buffer directory)
+  "Deliver Cursor previews in BUFFER if it still owns DIRECTORY."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (equal directory claudemacs--cursor-preview-directory)
+        (claudemacs--cursor-drain-previews directory)
+        (unless (claudemacs--terminal-live-p)
+          (claudemacs--cursor-stop-previews))))))
+
+(defun claudemacs--cursor-start-previews (directory)
+  "Watch the Cursor reply DIRECTORY for the current session."
+  (setq-local claudemacs--cursor-preview-directory directory)
+  (setq-local claudemacs--cursor-last-preview-time nil)
+  (add-hook 'kill-buffer-hook #'claudemacs--cursor-stop-previews nil t)
+  (add-hook 'change-major-mode-hook #'claudemacs--cursor-stop-previews nil t)
+  (setq-local claudemacs--cursor-preview-timer
+              (run-at-time 0 claudemacs--cursor-preview-interval
+                           #'claudemacs--cursor-poll-previews
+                           (current-buffer) directory)))
+
+(defun claudemacs--cursor-stop-all-previews ()
+  "Release the temporary reply files owned by this Emacs process."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when claudemacs--cursor-preview-directory
+        (claudemacs--cursor-stop-previews)))))
+
+(defun claudemacs--cursor-idle-fallback (buffer directory time body title)
+  "Display Cursor's idle BODY and TITLE if BUFFER has no preview near TIME.
+DIRECTORY identifies the session that received the original alert."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (equal directory claudemacs--cursor-preview-directory)
+        (claudemacs--cursor-drain-previews directory)
+        (unless (and claudemacs--cursor-last-preview-time
+                     (time-less-p time claudemacs--cursor-last-preview-time))
+          (claudemacs--display-tool-notification body title))))))
+
 (defun claudemacs--notification-handler (body &optional title)
   "Handle the current AI tool's OSC notification with BODY and optional TITLE."
   (when claudemacs-notify-on-await
     (let* ((tool (or claudemacs--tool claudemacs-default-tool))
-           (claude (eq (claudemacs--tool-kind-for-buffer (current-buffer) tool)
-                       'claude)))
+           (kind (claudemacs--tool-kind-for-buffer (current-buffer) tool))
+           (claude (eq kind 'claude)))
       (cond
+       ((and (eq kind 'cursor) claudemacs--cursor-preview-directory
+             (equal body "Cursor is waiting for you")
+             (or (null title) (equal title "") (equal title "Cursor")))
+        (run-at-time claudemacs--cursor-idle-notification-delay nil
+                     #'claudemacs--cursor-idle-fallback
+                     (current-buffer) claudemacs--cursor-preview-directory
+                     (time-subtract nil (/ claudemacs--cursor-idle-notification-delay 2))
+                     body title))
        ((and claude claudemacs--claude-stop-notified
              (equal title "Claude Code")
              (equal body "Claude is waiting for your input"))
@@ -1839,14 +1946,7 @@ The short delay lets a message-bearing OSC event suppress its duplicate BEL."
                    (equal title claudemacs--claude-stop-notification-title))
           (setq-local claudemacs--claude-stop-notified t)
           (setq title (claudemacs--notification-tool-name)))
-        (let ((message (and claudemacs-notify-with-tool-message
-                            (claudemacs--notification-message-text body)))
-              (title (claudemacs--notification-message-text title)))
-          (setq-local claudemacs--last-tool-notification-time (current-time))
-          (if message
-              (claudemacs--system-notification
-               message (or title (claudemacs--notification-tool-name)))
-            (claudemacs--show-generic-notification title))))))))
+        (claudemacs--display-tool-notification body title))))))
 
 
 (defun claudemacs--windows-notification-shortcut ()
@@ -2293,6 +2393,7 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
                   claudemacs-program-switches
                   (plist-get tool-config :switches)))
          (use-shell-env claudemacs-use-shell-env)
+         (cursor-preview-directory nil)
          (process-environment
           (append tool-env claudemacs-process-environment process-environment)))
     (claudemacs--configure-terminal-process-environment
@@ -2324,6 +2425,16 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
             (when (claudemacs--codex-local-daemon-requested-p
                    tool-name switches)
               (claudemacs--ensure-codex-local-daemon program use-shell-env))
+            (when (and claudemacs-notify-on-await
+                       claudemacs-cursor-notify-with-preview
+                       (claudemacs--tool-kind-p tool-name 'cursor)
+                       (not (file-remote-p work-dir)))
+              (with-demoted-errors "Claudemacs Cursor preview setup failed: %S"
+                (setq cursor-preview-directory
+                      (make-temp-file
+                       (expand-file-name "claudemacs-cursor-" temporary-file-directory)
+                       t))
+                (setenv "CLAUDEMACS_CURSOR_PREVIEW_DIR" cursor-preview-directory)))
             (when use-shell-env
               (setq start-program (claudemacs--get-shell-name)
                     start-switches
@@ -2343,6 +2454,8 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
                           (claudemacs--tool-kind tool-name)
                           claudemacs--session-tool-kind-set-p t
                           claudemacs--claude-stop-notified nil)
+              (when cursor-preview-directory
+                (claudemacs--cursor-start-previews cursor-preview-directory))
               ;; A reused buffer can still hold the identity of an older
               ;; process.  Reset it before establishing this process's
               ;; identity; ordinary library reloads never call this path and
@@ -2363,6 +2476,9 @@ The tool configuration is looked up in `claudemacs-tool-registry'."
       (error
        (when (buffer-live-p buffer)
          (kill-buffer buffer))
+       (when (and cursor-preview-directory
+                  (file-directory-p cursor-preview-directory))
+         (ignore-errors (delete-directory cursor-preview-directory t)))
        (error "Failed to start %s with terminal backend `%s': %s"
               program terminal-backend (error-message-string error-data))))))
 
@@ -3304,10 +3420,13 @@ Safe to call multiple times."
   (interactive)
   (when-let* ((migrated (claudemacs--migrated-codex-notification-switches)))
     (setq-default claudemacs-codex-notification-switches migrated))
+  (add-hook 'kill-emacs-hook #'claudemacs--cursor-stop-all-previews)
   (claudemacs--terminal-setup-loaded-backends))
 
 (defun claudemacs-unload-function ()
-  "Clean up terminal backend integrations."
+  "Clean up terminal and notification integrations."
+  (claudemacs--cursor-stop-all-previews)
+  (remove-hook 'kill-emacs-hook #'claudemacs--cursor-stop-all-previews)
   (claudemacs--terminal-teardown-loaded-backends)
   nil)
 

@@ -760,6 +760,69 @@ The file is automatically cleaned up after BODY executes."
     (cl-letf (((symbol-function 'executable-find) #'ignore))
       (should-not (claudemacs--claude-notification-switches nil)))))
 
+(ert-deftest claudemacs-test-cursor-hook-delivers-each-reply-once ()
+  "Cursor command hooks queue reply text for their originating session."
+  :tags '(:unit :config)
+  (let* ((python (executable-find "python3"))
+         (hook (expand-file-name "claudemacs-cursor-hook.py"
+                                 (file-name-directory (locate-library "claudemacs"))))
+         (directory (make-temp-file "claudemacs-test-cursor-" t))
+         (process-environment (copy-sequence process-environment))
+         (coding-system-for-write 'utf-8)
+         (claudemacs-notify-on-await t)
+         (claudemacs-notify-with-tool-message t)
+         received)
+    (unwind-protect
+        (progn
+          (skip-unless python)
+          (setenv "CLAUDEMACS_CURSOR_PREVIEW_DIR" directory)
+          (dolist (reply '("First reply.\nMore text." "Second reply with café."))
+            (with-temp-buffer
+              (insert (json-encode `((hook_event_name . "afterAgentResponse")
+                                     (text . ,reply))))
+              (should (zerop (call-process-region (point-min) (point-max)
+                                                  python nil nil nil hook)))))
+          (with-temp-buffer
+            (setq-local claudemacs--tool 'cursor)
+            (cl-letf (((symbol-function 'claudemacs--system-notification)
+                       (lambda (message &optional title)
+                         (push (cons title message) received))))
+              (claudemacs--cursor-drain-previews directory)
+              (claudemacs--cursor-drain-previews directory)))
+          (should (equal (nreverse received)
+                         '(("Cursor" . "First reply. More text.")
+                           ("Cursor" . "Second reply with café.")))))
+      (delete-directory directory t))))
+
+(ert-deftest claudemacs-test-cursor-preview-replaces-only-native-completion ()
+  "Cursor permission alerts and completions without a preview stay available."
+  :tags '(:unit :config)
+  (let ((directory (make-temp-file "claudemacs-test-cursor-" t))
+        (claudemacs-notify-on-await t)
+        (claudemacs-notify-with-tool-message t)
+        received pending)
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local claudemacs--tool 'cursor
+                      claudemacs--cursor-preview-directory directory)
+          (cl-letf (((symbol-function 'claudemacs--system-notification)
+                     (lambda (text &optional _title) (push text received)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_delay _repeat function &rest args)
+                       (setq pending (cons function args)))))
+            (claudemacs--notification-handler "Cursor is waiting for you" "Cursor")
+            (should-not received)
+            (claudemacs--notification-handler "Cursor needs your input" "Cursor")
+            (with-temp-file (expand-file-name "reply-test.txt" directory)
+              (insert "Final reply"))
+            (apply (car pending) (cdr pending))
+            (should (equal received '("Final reply" "Cursor needs your input")))
+            (setq claudemacs--cursor-last-preview-time (seconds-to-time 0))
+            (claudemacs--notification-handler "Cursor is waiting for you" "Cursor")
+            (apply (car pending) (cdr pending))
+            (should (equal (car received) "Cursor is waiting for you"))))
+      (delete-directory directory t))))
+
 (ert-deftest claudemacs-test-deferred-bell-lets-ghostel-notification-win ()
   "A deferred Ghostel OSC callback suppresses its following BEL."
   :tags '(:unit :config :ghostel)

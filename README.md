@@ -237,6 +237,27 @@ channel. To receive its built-in alerts in Claudemacs, set
 choose `terminal_bell` for a generic alert. Built-in completion alerts follow
 [Claude Code's idle timer](https://code.claude.com/docs/en/hooks#notification).
 
+For Cursor CLI, enable `claudemacs-cursor-notify-with-preview` and add an
+[`afterAgentResponse` hook](https://cursor.com/docs/hooks#afteragentresponse)
+to your Cursor user hooks in `~/.cursor/hooks.json`. The hook requires Python
+3.8 or later. Point it to `claudemacs-cursor-hook.py` in your Claudemacs checkout
+and merge the entry into any existing hooks.
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "afterAgentResponse": [
+      { "command": "python3 \"/absolute/path/to/claudemacs-cursor-hook.py\"" }
+    ]
+  }
+}
+```
+
+Start a new Claudemacs Cursor session to receive a preview when Cursor
+finishes, including while the buffer is focused. The hook also respects
+`claudemacs-notify-on-await` and `claudemacs-notify-with-tool-message`.
+
 Set `claudemacs-notify-with-tool-message` to nil to always use the generic
 "awaiting your input" text.  Tools that only ring the bell have no message to
 send, so their notifications keep the generic text either way.
@@ -770,6 +791,9 @@ Customize environment variables passed to Claude processes:
 
 ;; Show Claude Code's completion notification as soon as it finishes (default: t)
 ;; (setq claudemacs-claude-notify-on-stop nil)
+
+;; Use the configured Cursor CLI reply hook (default: nil)
+;; (setq claudemacs-cursor-notify-with-preview t)
 
 ;; Codex notification switches are enabled by default so notifications reach
 ;; the selected terminal backend.  For the Codex 0.157.0 background server
